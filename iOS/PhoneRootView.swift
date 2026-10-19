@@ -4,7 +4,10 @@ import SwiftUI
 /// A mini player sits above the tab bar whenever something is in the queue.
 struct PhoneRootView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.appTheme) private var theme
+    @Namespace private var playerNS
     @State private var showPlayer = false
     /// Full-screen video. The cover is presented FROM INSIDE the player sheet (PhoneNowPlayingView), so
     /// leaving full screen simply uncovers the sheet with its controls: no dismiss-then-present dance.
@@ -31,11 +34,15 @@ struct PhoneRootView: View {
                 .tag(3)
         }
         .environment(\.showPlayer, { showPlayer = true })
+        .environment(\.playerNamespace, playerNS)
         .onAppear {
             if DemoRoute.is("player") { DemoRoute.whenLoaded(engine) { showPlayer = true } }
         }
         .sheet(isPresented: $showPlayer) {
             PhoneNowPlayingView(fullScreen: $fullScreen)
+                .environmentObject(artwork)
+                .environment(\.appTheme, theme)
+                .environment(\.playerNamespace, playerNS)
         }
         // A video picked here starts on this iPhone: the player sheet, and full screen on top of it when the
         // phone is already in landscape.
@@ -96,8 +103,27 @@ struct LibraryTab: View {
     @EnvironmentObject var library: LibraryStore
     @State private var query = ""
 
+    @Environment(\.appTheme) private var theme
+
     var body: some View {
         NavigationStack {
+            Group {
+                if !theme.isClassic && query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    PhoneHome()
+                } else {
+                    classicList
+                }
+            }
+            .searchable(text: $query, prompt: "Title, artist, album, folder")
+            .navigationTitle("ATV Player")
+            .demoPush("videos")
+            .demoPush("folder")
+            .withMiniPlayer()
+            .task { await library.load() }
+        }
+    }
+
+    private var classicList: some View {
             List {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     Section {
@@ -117,16 +143,10 @@ struct LibraryTab: View {
                         ConnectionStatusRow()
                     }
                 } else {
-                    SearchResults(query: query)
+                    SearchResults(query: query).themedRow()
                 }
             }
-            .searchable(text: $query, prompt: "Title, artist, album, folder")
-            .navigationTitle("ATV Player")
-            .demoPush("videos")
-            .demoPush("folder")
-            .withMiniPlayer()
-            .task { await library.load() }
-        }
+            .phoneThemed()
     }
 
     private func shuffle(_ name: String) {
@@ -199,12 +219,26 @@ extension View {
 struct ItemRow: View {
     let item: MediaItem
     var highlighted = false
+    @Environment(\.appTheme) private var theme
+    @EnvironmentObject private var engine: PlayerEngine
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: highlighted ? "speaker.wave.2.fill" : (item.isVideo ? "film" : "music.note"))
-                .frame(width: 24)
-                .foregroundStyle(highlighted ? Color.accentColor : .secondary)
+            if theme.isClassic {
+                Image(systemName: highlighted ? "speaker.wave.2.fill" : (item.isVideo ? "film" : "music.note"))
+                    .frame(width: 24)
+                    .foregroundStyle(highlighted ? Color.accentColor : .secondary)
+            } else {
+                ZStack {
+                    ItemThumb(item: item, corner: theme == .noir ? 2 : 6)
+                        .frame(width: item.isVideo ? 64 : 44, height: item.isVideo ? 36 : 44)
+                    if highlighted || engine.current?.id == item.id {
+                        RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.45))
+                        EqualizerBars(animating: engine.isPlaying, color: .white, bars: 3, width: 3, height: 16, spacing: 2)
+                    }
+                }
+                .frame(width: item.isVideo ? 64 : 44, height: item.isVideo ? 36 : 44)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).lineLimit(1).foregroundStyle(highlighted ? Color.accentColor : .primary)
                 let detail = [item.artist, item.lossless == true ? "lossless" : nil].compactMap { $0 }
@@ -242,7 +276,9 @@ struct PhoneVideoListView: View {
                 }
                 .itemMenu(item)
             }
+            .themedRow()
         }
+        .phoneThemed()
         .navigationTitle("Music videos")
         .withMiniPlayer()
         .task {
@@ -270,7 +306,9 @@ struct PhoneFolderRootsView: View {
                     Label("\(root.name) (\(root.count))", systemImage: "externaldrive")
                 }
             }
+            .themedRow()
         }
+        .phoneThemed()
         .navigationTitle("Folders")
         .withMiniPlayer()
         .task {
@@ -311,6 +349,7 @@ struct PhoneFolderView: View {
                         }
                     }
                 }
+                .themedRow()
                 if !result.subfolders.isEmpty {
                     Section("Folders") {
                         ForEach(result.subfolders) { sub in
@@ -321,6 +360,7 @@ struct PhoneFolderView: View {
                             }
                         }
                     }
+                    .themedRow()
                 }
                 if !result.items.isEmpty {
                     Section("Files") {
@@ -331,9 +371,11 @@ struct PhoneFolderView: View {
                             .itemMenu(item)
                         }
                     }
+                    .themedRow()
                 }
             }
         }
+        .phoneThemed()
         .navigationTitle(title)
         .withMiniPlayer()
         .task {
@@ -359,7 +401,9 @@ struct PhoneFolderView: View {
 
 struct PhonePlaylistsView: View {
     @EnvironmentObject var connection: ServerConnection
+    @Environment(\.appTheme) private var theme
     @State private var playlists: [PlaylistInfo]?
+    @State private var covers: [Int: [MediaItem]] = [:]
     @State private var errorText: String?
 
     var body: some View {
@@ -374,14 +418,23 @@ struct PhonePlaylistsView: View {
                     NavigationLink {
                         PhonePlaylistView(playlistID: playlist.id, title: playlist.name)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(playlist.name)
-                            Text(playlist.detail).font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            if !theme.isClassic {
+                                PlaylistMosaic(playlistID: playlist.id, items: covers[playlist.id] ?? [])
+                                    .frame(width: 52, height: 52)
+                                    .clipShape(RoundedRectangle(cornerRadius: theme == .noir ? 2 : 8))
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(playlist.name)
+                                Text(playlist.detail).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
+                .themedRow()
             }
         }
+        .phoneThemed()
         .navigationTitle("Playlists")
         .withMiniPlayer()
         .refreshable { await load() }
@@ -391,8 +444,16 @@ struct PhonePlaylistsView: View {
     private func load() async {
         do {
             let (data, _) = try await URLSession.shared.data(from: .api("api/playlists"))
-            playlists = try JSONDecoder.server().decode(PlaylistList.self, from: data).playlists
+            let list = try JSONDecoder.server().decode(PlaylistList.self, from: data).playlists
+            playlists = list
             errorText = nil
+            guard !theme.isClassic else { return }
+            for playlist in list.prefix(40) {
+                if let (d, _) = try? await URLSession.shared.data(from: .api("api/playlists/\(playlist.id)")),
+                   let detail = try? JSONDecoder.server().decode(PlaylistDetail.self, from: d) {
+                    covers[playlist.id] = detail.items.filter { !$0.isMissing }.prefix(4).map(\.asMediaItem)
+                }
+            }
         } catch {
             errorText = error.localizedDescription
         }
@@ -401,6 +462,7 @@ struct PhonePlaylistsView: View {
 
 struct PhonePlaylistView: View {
     @EnvironmentObject var connection: ServerConnection
+    @Environment(\.appTheme) private var theme
     let playlistID: Int
     let title: String
     @State private var detail: PlaylistDetail?
@@ -421,6 +483,7 @@ struct PhonePlaylistView: View {
                         Text("Empty. Add songs and videos in the web remote.").foregroundStyle(.secondary)
                     }
                 }
+                .themedRow()
                 Section("Songs and videos") {
                     // By position: the same song can be in a playlist twice.
                     ForEach(Array(detail.items.enumerated()), id: \.offset) { index, entry in
@@ -429,22 +492,28 @@ struct PhonePlaylistView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             Button { play(shuffle: false, startIndex: index) } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: entry.isVideo ? "film" : "music.note")
-                                        .frame(width: 24).foregroundStyle(.secondary)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.title).lineLimit(1)
-                                        if let artist = entry.artist, !artist.isEmpty {
-                                            Text(artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                if theme.isClassic {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: entry.isVideo ? "film" : "music.note")
+                                            .frame(width: 24).foregroundStyle(.secondary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(entry.title).lineLimit(1)
+                                            if let artist = entry.artist, !artist.isEmpty {
+                                                Text(artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                            }
                                         }
                                     }
+                                } else {
+                                    ItemRow(item: entry.asMediaItem)
                                 }
                             }
                         }
                     }
                 }
+                .themedRow()
             }
         }
+        .phoneThemed()
         .navigationTitle(detail?.name ?? title)
         .withMiniPlayer()
         .task(id: connection.playlistsVersion) { await load() }
@@ -498,6 +567,7 @@ struct QueueTab: View {
                             }
                         }
                         .id(index)
+                        .themedRow()
                         .swipeActions {
                             if index != current {
                                 Button(role: .destructive) {
@@ -509,6 +579,7 @@ struct QueueTab: View {
                         }
                     }
                 }
+                .phoneThemed()
                 .navigationTitle("Queue")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {

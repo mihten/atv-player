@@ -23,6 +23,8 @@ struct PhoneSettingsView: View {
     @AppStorage(PlayerSettings.subMarginKey) private var margin = 0
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
+    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
+    @AppStorage(AppTheme.motionKey) private var motion = true
 
     private var appliedKey: String {
         "\(subsOn)|\(subLang)|\(size)|\(font)|\(color)|\(bold)|\(outline)|\(background)|\(margin)|\(eqPreset)|\(widen)"
@@ -35,6 +37,26 @@ struct PhoneSettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(AppTheme.allCases) { look in
+                            ThemeCard(theme: look, selected: themeRaw == look.rawValue)
+                                .onTapGesture { themeRaw = look.rawValue }
+                        }
+                    }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 2)
+                }
+                .sensoryFeedback(.selection, trigger: themeRaw)
+                Toggle("Moving background and spinning record", isOn: $motion)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text((AppTheme(rawValue: themeRaw) ?? .aurora).tagline + ".")
+            }
+            .themedRow()
+
             Section {
                 TextField("Address (empty = automatic)", text: $serverAddress)
                     .textInputAutocapitalization(.never)
@@ -51,6 +73,7 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("Leave empty to find the server automatically on the Wi-Fi (Bonjour). Type an address (e.g. 10.0.0.5 or 10.0.0.5:8080) only if it is not found.")
             }
+            .themedRow()
 
             Section("Sound") {
                 Picker("Equalizer", selection: $eqPreset) {
@@ -67,6 +90,7 @@ struct PhoneSettingsView: View {
                     Text("Strong").tag(3)
                 }
             }
+            .themedRow()
 
             Section {
                 Toggle("Music keeps playing in the background", isOn: $keepMusic)
@@ -77,6 +101,7 @@ struct PhoneSettingsView: View {
             } footer: {
                 Text("Background = Home button or locked screen. With the second switch on, a music video continues as audio only and its picture is back when you return; off = it pauses. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
             }
+            .themedRow()
 
             Section("Lyrics / subtitles") {
                 Toggle("Show lyrics / subtitles", isOn: $subsOn)
@@ -121,11 +146,14 @@ struct PhoneSettingsView: View {
                     Text("Higher").tag(100)
                 }
             }
+            .themedRow()
 
             Section {
                 Text(appVersion).foregroundStyle(.secondary)
             }
+            .themedRow()
         }
+        .phoneThemed()
         .navigationTitle("Settings")
         .withMiniPlayer()
         .onChange(of: appliedKey) {
@@ -166,6 +194,7 @@ struct PhoneEqualizerView: View {
                 Text((loadedFrom.map { "Started from \($0) (rounded to 1 dB). " } ?? "")
                      + "Preamp 0 dB = same loudness as the equalizer off; its maximum is +8 dB. Saved and applied when you go back.")
             }
+            .themedRow()
             Section {
                 Button("Reset to flat") {
                     values = Array(repeating: 0, count: values.count)
@@ -173,7 +202,9 @@ struct PhoneEqualizerView: View {
                     loadedFrom = nil
                 }
             }
+            .themedRow()
         }
+        .phoneThemed()
         .navigationTitle("Custom equalizer")
         .toolbar {
             Menu("Load preset") {

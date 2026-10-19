@@ -232,39 +232,6 @@ struct VinylPlayer: View {
     }
 }
 
-/// Sleeve with the cover; the record slides out of it after the song starts, the tonearm follows play/pause.
-struct Turntable: View {
-    let item: MediaItem
-    var side: CGFloat = 600
-    @EnvironmentObject var engine: PlayerEngine
-    @EnvironmentObject var artwork: ArtworkStore
-    @AppStorage(AppTheme.motionKey) private var motion = true
-    @State private var out = false
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
-                        spinning: engine.isPlaying && motion && out, size: side - 20,
-                        labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.55).color)
-                .offset(x: out ? side * 0.5 : 10)
-            CurrentArtwork(item: item, corner: 4)
-                .frame(width: side, height: side)
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.1), lineWidth: 2))
-                .shadow(color: .black.opacity(0.6), radius: 26, x: 14, y: 14)
-        }
-        .frame(width: side * 1.55, height: side, alignment: .leading)
-        .overlay(alignment: .topTrailing) {
-            Tonearm(engaged: engine.isPlaying && out, length: side * 0.66)
-                .frame(width: side * 0.12, height: side * 0.66)
-                .offset(x: -side * 0.02, y: -side * 0.04)
-                .opacity(out ? 1 : 0)
-        }
-        .onAppear {
-            withAnimation(.spring(response: 1.1, dampingFraction: 0.82).delay(0.45)) { out = true }
-        }
-    }
-}
-
 // MARK: - Shared pieces
 
 struct StatusEyebrow: View {

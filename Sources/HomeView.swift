@@ -324,37 +324,6 @@ struct HeroProgress: View {
     }
 }
 
-/// Card background behind the hero, per theme.
-struct HeroBackground: View {
-    @Environment(\.appTheme) private var theme
-    @EnvironmentObject private var artwork: ArtworkStore
-
-    var body: some View {
-        switch theme {
-        case .noir:
-            ZStack {
-                Color.white.opacity(0.035)
-                RoundedRectangle(cornerRadius: theme.corner + 6).strokeBorder(.white.opacity(0.14), lineWidth: 1.5)
-            }
-        case .vinyl:
-            ZStack {
-                LinearGradient(colors: [Color(red: 0.24, green: 0.16, blue: 0.10).opacity(0.85),
-                                        Color(red: 0.12, green: 0.08, blue: 0.05).opacity(0.85)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                GrainOverlay().opacity(0.06)
-                RoundedRectangle(cornerRadius: theme.corner + 6)
-                    .strokeBorder(Color(red: 0.93, green: 0.66, blue: 0.29).opacity(0.25), lineWidth: 1.5)
-            }
-        default:
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                LinearGradient(colors: [artwork.palette.tones[0].color.opacity(0.35), .clear],
-                               startPoint: .leading, endPoint: .trailing)
-            }
-        }
-    }
-}
-
 /// Big coloured tile for the shuffle actions.
 struct ActionTile: View {
     let title: String

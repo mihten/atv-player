@@ -8,6 +8,7 @@ struct PhoneApp: App {
     @StateObject private var connection = ServerConnection()
     @StateObject private var engine = PlayerEngine()
     @StateObject private var library = LibraryStore()
+    @StateObject private var artwork = ArtworkStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -19,10 +20,13 @@ struct PhoneApp: App {
                     ServerSearchView()
                 }
             }
+            .modifier(PhoneAppearance())
+            .themeRoot()
             .environmentObject(locator)
             .environmentObject(connection)
             .environmentObject(engine)
             .environmentObject(library)
+            .environmentObject(artwork)
             .onAppear {
                 engine.connection = connection
                 connection.engine = engine
@@ -83,5 +87,14 @@ final class LibraryStore: ObservableObject {
                 .joined(separator: " ").lowercased()
             return words.allSatisfy { haystack.contains($0) }
         }
+    }
+}
+
+/// Themed looks are dark by design; Classic follows the system setting as before.
+private struct PhoneAppearance: ViewModifier {
+    @Environment(\.appTheme) private var theme
+
+    func body(content: Content) -> some View {
+        content.preferredColorScheme(theme.isClassic ? nil : .dark)
     }
 }

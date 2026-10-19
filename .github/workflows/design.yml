@@ -65,15 +65,22 @@ jobs:
           test -d build-sim/Build/Products/Debug-appletvsimulator/AtvPlayer.app
           test -d build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app
 
+      - name: Cache demo library
+        if: env.PLATFORMS != 'none'
+        uses: actions/cache@v4
+        with:
+          path: ~/demo-library
+          key: demo-library-${{ hashFiles('tools/demo_library.py') }}
+
       - name: Demo library + throwaway media server
         if: env.PLATFORMS != 'none'
         run: |
           command -v ffmpeg || brew install ffmpeg
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install -q aiohttp mutagen pillow
-          /tmp/venv/bin/python tools/demo_library.py "$RUNNER_TEMP/demo"
+          [ -d ~/demo-library/videos ] || /tmp/venv/bin/python tools/demo_library.py ~/demo-library
           mkdir -p "$RUNNER_TEMP/data" "$RUNNER_TEMP/cache"
-          ATV_ROOTS="{\"music\": \"$RUNNER_TEMP/demo/music\", \"videos\": \"$RUNNER_TEMP/demo/videos\"}" \
+          ATV_ROOTS="{\"music\": \"$HOME/demo-library/music\", \"videos\": \"$HOME/demo-library/videos\"}" \
           ATV_ROOT_NAMES='{"music": "Music", "videos": "Music videos"}' \
           ATV_DATA="$RUNNER_TEMP/data" ATV_CACHE="$RUNNER_TEMP/cache" ATV_PORT=8080 \
             nohup /tmp/venv/bin/python server/server.py > server.log 2>&1 &
