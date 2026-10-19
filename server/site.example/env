@@ -1,0 +1,10 @@
+# Copy this folder to server/site/ (git-ignored) and fill in your values; deploy.sh installs it.
+# Values are single-quoted: systemd's EnvironmentFile strips double quotes and backslashes otherwise.
+# Library roots: {"<key>": "<path>"}. Keys are stored in the library DB: never rename them later.
+ATV_ROOTS='{"music": "/media/music", "videos": "/media/videos"}'
+# Optional display names in the app / web remote
+ATV_ROOT_NAMES='{"music": "Music", "videos": "Music videos"}'
+# Optional: Apple TV screenshots (folder must be writable by the service, see override.conf)
+#ATV_SHOT_DIR='/srv/screenshots'
+# Optional: how users see that folder (shown in the web remote toast)
+#ATV_SHOT_SHARE='\\server\share\screenshots'

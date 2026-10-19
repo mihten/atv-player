@@ -1,0 +1,6 @@
+[Unit]
+Description=ATV Player media server: daily library rescan
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8080/api/rescan

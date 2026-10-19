@@ -1,0 +1,109 @@
+name: Build unsigned tvOS + iOS IPAs
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "infra/**", "server/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 50
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+          xcodebuild -showsdks | grep -iE 'appletv|iphoneos'
+
+      - name: Cache CocoaPods (TVVLCKit + MobileVLCKit are large)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            Pods
+          key: pods-${{ hashFiles('Podfile') }}
+
+      - name: Generate Xcode project (XcodeGen) + install pods
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          pod --version
+          pod install
+
+      - name: Build Apple TV app (unsigned, device)
+        run: |
+          xcodebuild build \
+            -workspace AtvPlayer.xcworkspace -scheme AtvPlayer -configuration Release \
+            -sdk appletvos -destination 'generic/platform=tvOS' -derivedDataPath build \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            > xcodebuild-tvos.log 2>&1 || true
+          grep -E '(\*\* BUILD|: error:|: warning:.*(Sources|Shared)/)' xcodebuild-tvos.log | head -80 || true
+          test -d build/Build/Products/Release-appletvos/AtvPlayer.app
+
+      - name: Build iPhone app (unsigned, device)
+        run: |
+          xcodebuild build \
+            -workspace AtvPlayer.xcworkspace -scheme AtvPlayerPhone -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            > xcodebuild-ios.log 2>&1 || true
+          grep -E '(\*\* BUILD|: error:|: warning:.*(iOS|Shared)/)' xcodebuild-ios.log | head -80 || true
+          test -d build/Build/Products/Release-iphoneos/AtvPlayerPhone.app
+
+      - name: Package IPAs
+        run: |
+          package() {  # $1 = products dir, $2 = app name, $3 = ipa name
+            rm -rf Payload && mkdir Payload
+            cp -R "build/Build/Products/$1/$2.app" Payload/
+            /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' -c 'Print CFBundleVersion' -c 'Print MinimumOSVersion' "Payload/$2.app/Info.plist"
+            lipo -info "Payload/$2.app/$2"
+            ls -la "Payload/$2.app/Frameworks" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print CFBundleIcons' "Payload/$2.app/Info.plist" || echo "NO CFBundleIcons"
+            test -f "Payload/$2.app/Assets.car" && echo "Assets.car present"
+            du -sh "Payload/$2.app"
+            zip -qry "$3" Payload
+            ls -l "$3"
+            shasum -a 256 "$3" | tee "$3.sha256"
+          }
+          package Release-appletvos AtvPlayer AtvPlayer.ipa
+          package Release-iphoneos AtvPlayerPhone AtvPlayer-iOS.ipa
+          # Widener hack needs these libVLC symbols exported (see Shared/VLCInternals.swift).
+          for bin in Payload/AtvPlayerPhone.app/Frameworks/MobileVLCKit.framework/MobileVLCKit Payload/AtvPlayerPhone.app/AtvPlayerPhone; do
+            [ -f "$bin" ] && echo "$bin: $(nm -gU "$bin" 2>/dev/null | grep -cE ' _(var_SetChecked|vlc_list_children|vlc_list_release)$') of 3 VLC symbols exported"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AtvPlayer-build-${{ env.BUILD_NUMBER }}
+          path: |
+            AtvPlayer.ipa
+            AtvPlayer-iOS.ipa
+            xcodebuild-tvos.log
+            xcodebuild-ios.log
+          retention-days: 14
+
+      - name: Publish GitHub release (ATVLoadly tracks AtvPlayer.ipa)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-$BUILD_NUMBER"
+          gh release create "$TAG" AtvPlayer.ipa AtvPlayer.ipa.sha256 AtvPlayer-iOS.ipa AtvPlayer-iOS.ipa.sha256 \
+            --title "ATV Player build $BUILD_NUMBER" \
+            --notes "Unsigned IPAs from commit ${GITHUB_SHA::7}: AtvPlayer.ipa = Apple TV (ATVLoadly), AtvPlayer-iOS.ipa = iPhone (Sideloadly)." \
+            --latest

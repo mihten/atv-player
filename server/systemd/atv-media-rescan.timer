@@ -1,0 +1,9 @@
+[Unit]
+Description=ATV Player media server: daily library rescan (new MeTube downloads etc.)
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,85 @@
+name: AtvPlayer
+options:
+  bundleIdPrefix: eu.mihten
+  deploymentTarget:
+    tvOS: "17.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.11.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  # Apple TV app (TVVLCKit). Shared/ = engine, server connection, models, settings models.
+  AtvPlayer:
+    type: application
+    platform: tvOS
+    scheme: {}
+    sources:
+      - Sources
+      - Shared
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: ATV Player
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
+        # Keep music playing when the user leaves the app (Home button / screensaver).
+        UIBackgroundModes: [audio]
+        # The app streams plain HTTP from the LAN media server.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: ATV Player streams music and videos from your home media server.
+        # The server advertises itself over Bonjour (no address built into the app).
+        NSBonjourServices: [_atvmedia._tcp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.mihten.atvplayer
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
+        TARGETED_DEVICE_FAMILY: "3"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+
+  # iPhone app (MobileVLCKit): same queue as the Apple TV, plays itself or acts as its remote.
+  AtvPlayerPhone:
+    type: application
+    platform: iOS
+    scheme: {}
+    sources:
+      - iOS
+      - Shared
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: ATV Player
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Lock screen / Control Center playback.
+        UIBackgroundModes: [audio]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: ATV Player finds your home media server on the Wi-Fi and streams music and videos from it.
+        NSBonjourServices: [_atvmedia._tcp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.mihten.atvplayer.phone
+        PRODUCT_NAME: AtvPlayerPhone
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""

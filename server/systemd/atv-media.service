@@ -1,0 +1,28 @@
+[Unit]
+Description=ATV Player media server (library, streaming, queue/remote)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=atvmedia
+Group=atvmedia
+WorkingDirectory=/opt/atv-media
+ExecStart=/usr/bin/python3 /opt/atv-media/server.py
+Environment=ATV_PORT=8080
+# Advertise the server over Bonjour (_atvmedia._tcp) so the apps find it; needs python3-zeroconf.
+Environment=ATV_BONJOUR=1
+# Site config (ATV_ROOTS, ATV_ROOT_NAMES, ATV_SHOT_DIR, ATV_SHOT_SHARE): installed by deploy.sh from server/site/
+EnvironmentFile=-/etc/atv-media/env
+StateDirectory=atv-media
+CacheDirectory=atv-media
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/media
+# Writable screenshot folder: ReadWritePaths= in the site drop-in (server/site/override.conf)
+
+[Install]
+WantedBy=multi-user.target

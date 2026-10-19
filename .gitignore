@@ -1,0 +1,15 @@
+*.xcodeproj/
+build/
+Payload/
+*.ipa
+*.ipa.sha256
+xcodebuild.log
+.DS_Store
+Pods/
+*.xcworkspace/
+Podfile.lock
+server/__pycache__/
+
+# Site-specific config (addresses, paths, share names) never goes to the public repo
+local.env
+server/site/
