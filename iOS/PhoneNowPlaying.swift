@@ -79,9 +79,11 @@ struct MiniPlayer: View {
 struct PhoneNowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
-    @Environment(\.showFullScreen) private var openFullScreen
+    @Binding var fullScreen: Bool
     @State private var scrubbing = false
-    @State private var scrubValue: Double = 0
+    @State private var scrubStarted = Date.distantPast
+    @State private var shown: Double = 0           // position shown by the slider
+    @State private var holdUntil = Date.distantPast // after a seek: keep the new value until VLC has caught up
 
     var body: some View {
         let transport = Transport(connection: connection, engine: engine)
@@ -90,10 +92,11 @@ struct PhoneNowPlayingView: View {
             if let item = transport.item {
                 if item.isVideo {
                     VideoSurface(engine: engine)
+                        .id(fullScreen)  // re-attach the video view here after the full-screen cover closes
                         .aspectRatio(16 / 9, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(alignment: .bottomTrailing) {
-                            Button { openFullScreen() } label: {
+                            Button { fullScreen = true } label: {
                                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                                     .padding(10).background(.ultraThinMaterial, in: Circle())
                             }
@@ -117,31 +120,42 @@ struct PhoneNowPlayingView: View {
         }
         .padding(.horizontal, 24)
         .presentationDragIndicator(.visible)
+        .fullScreenCover(isPresented: $fullScreen) {
+            FullScreenVideo(transport: transport)
+        }
     }
 
+    /// The slider is a STABLE view bound to `shown`; a timer only moves `shown` while nobody is dragging.
+    /// (It used to sit inside a TimelineView, which rebuilt the slider twice a second: a rebuild during a
+    /// drag could cancel it without the "editing ended" callback, and after letting go the value fell back to
+    /// VLC's old time before the seek had been applied.)
     private func scrubber(_ transport: Transport) -> some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-            let duration = max(transport.duration, 1)
-            let position = scrubbing ? scrubValue : min(transport.position, duration)
-            VStack(spacing: 4) {
-                Slider(value: Binding(get: { position }, set: { scrubValue = $0 }), in: 0...duration,
-                       onEditingChanged: { editing in
-                    if editing {
-                        scrubValue = position
-                        scrubbing = true
-                    } else {
-                        transport.seek(to: scrubValue)
-                        scrubbing = false
-                    }
-                })
-                HStack {
-                    Text(formatTime(position))
-                    Spacer()
-                    Text("-" + formatTime(max(0, duration - position)))
+        let duration = max(transport.duration, 1)
+        return VStack(spacing: 4) {
+            Slider(value: $shown, in: 0...duration, onEditingChanged: { editing in
+                if editing {
+                    scrubbing = true
+                    scrubStarted = Date()
+                } else {
+                    transport.seek(to: shown)
+                    holdUntil = Date().addingTimeInterval(1.5)
+                    scrubbing = false
                 }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            })
+            HStack {
+                Text(formatTime(shown))
+                Spacer()
+                Text("-" + formatTime(max(0, duration - shown)))
             }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .onAppear { shown = min(transport.position, duration) }
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            // safety: an "editing ended" that never arrived must not freeze the slider
+            if scrubbing, Date().timeIntervalSince(scrubStarted) > 20 { scrubbing = false }
+            guard !scrubbing, Date() >= holdUntil else { return }
+            shown = min(transport.position, max(transport.duration, 1))
         }
     }
 
@@ -178,6 +192,7 @@ struct FullScreenVideo: View {
     @Environment(\.dismiss) private var dismiss
     let transport: Transport
     @State private var controls = true
+    @State private var hideTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -193,11 +208,11 @@ struct FullScreenVideo: View {
                     }
                     Spacer()
                     HStack(spacing: 50) {
-                        Button { transport.previous() } label: { Image(systemName: "backward.end.fill") }
-                        Button { transport.toggle() } label: {
+                        Button { transport.previous(); showControls() } label: { Image(systemName: "backward.end.fill") }
+                        Button { transport.toggle(); showControls() } label: {
                             Image(systemName: transport.isPlaying ? "pause.fill" : "play.fill")
                         }
-                        Button { transport.next() } label: { Image(systemName: "forward.end.fill") }
+                        Button { transport.next(); showControls() } label: { Image(systemName: "forward.end.fill") }
                     }
                     .font(.largeTitle)
                     .padding(.bottom, 30)
@@ -205,14 +220,34 @@ struct FullScreenVideo: View {
                 .padding()
                 .foregroundStyle(.white)
                 .buttonStyle(.plain)
+                .transition(.opacity)
             }
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .contentShape(Rectangle())
-        .onTapGesture { withAnimation { controls.toggle() } }
+        // Tap: show the controls (they hide again after 3 s); tap while shown hides them at once.
+        .onTapGesture {
+            if controls {
+                hideTask?.cancel()
+                withAnimation { controls = false }
+            } else {
+                showControls()
+            }
+        }
+        .onAppear { showControls() }
+        .onDisappear { hideTask?.cancel() }
         .onChange(of: engine.current?.isVideo == true) { _, isVideo in
             if !isVideo { dismiss() }  // the queue moved on to a song
+        }
+    }
+
+    private func showControls() {
+        withAnimation { controls = true }
+        hideTask?.cancel()
+        hideTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { withAnimation { controls = false } }
         }
     }
 }

@@ -317,6 +317,7 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func seek(to seconds: Double) {
         let target = max(0, seconds)
+        log("seek to \(Int(target)) s requested: seekable \(vlc.isSeekable), state \(VLCMediaPlayerStateToString(vlc.state))")
         vlc.time = VLCTime(int: Int32(target * 1000))
         position = target
         clock.position = target
