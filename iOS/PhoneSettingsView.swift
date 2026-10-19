@@ -10,6 +10,7 @@ struct PhoneSettingsView: View {
     @State private var addressInvalid = false
 
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
+    @AppStorage(PlayerSettings.keepVideoAudioKey) private var keepVideoAudio = PlayerSettings.keepVideoAudioDefault
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
@@ -68,12 +69,13 @@ struct PhoneSettingsView: View {
             }
 
             Section {
-                Toggle("Keep music playing in the background", isOn: $keepMusic)
+                Toggle("Music keeps playing in the background", isOn: $keepMusic)
+                Toggle("Music videos keep playing as audio", isOn: $keepVideoAudio)
                 Toggle("Fast seek", isOn: $fastSeek)
             } header: {
                 Text("Playback")
             } footer: {
-                Text("Music videos pause when you leave the app. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
+                Text("Background = Home button or locked screen. With the second switch on, a music video continues as audio only and its picture is back when you return; off = it pauses. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
             }
 
             Section("Lyrics / subtitles") {
@@ -154,7 +156,7 @@ struct PhoneEqualizerView: View {
                     HStack {
                         Text(i < labels.count ? labels[i] : "").frame(width: 72, alignment: .leading)
                         Slider(value: Binding(get: { values[i] }, set: { values[i] = $0.rounded(); changed = true }),
-                               in: -12...12, step: 1)
+                               in: -12...(i == 0 ? 8 : 12), step: 1)
                         Text(values[i] > 0 ? "+\(Int(values[i]))" : "\(Int(values[i]))")
                             .font(.body.monospacedDigit())
                             .frame(width: 36, alignment: .trailing)
@@ -162,7 +164,7 @@ struct PhoneEqualizerView: View {
                 }
             } footer: {
                 Text((loadedFrom.map { "Started from \($0) (rounded to 1 dB). " } ?? "")
-                     + "Preamp 0 dB = same loudness as the equalizer off. Saved and applied when you go back.")
+                     + "Preamp 0 dB = same loudness as the equalizer off; its maximum is +8 dB. Saved and applied when you go back.")
             }
             Section {
                 Button("Reset to flat") {

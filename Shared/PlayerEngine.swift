@@ -60,6 +60,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var startTimeout: Task<Void, Never>?
     /// iOS: playback was running when a call/Siri interrupted it.
     fileprivate var resumeAfterInterruption = false
+    /// The app is not in the foreground; the video track of a playing music video is switched off.
+    private var inBackground = false
+    private var videoHidden = false
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -334,12 +337,43 @@ final class PlayerEngine: NSObject, ObservableObject {
         connection?.command("prev", ["position": position])
     }
 
-    /// Leaving the app (TV/Home button): videos always pause; music keeps playing unless disabled in Settings.
+    /// Leaving the app (Home button / lock): music keeps playing unless disabled in Settings; a music video
+    /// keeps playing as audio only if its Settings switch is on (the picture is switched off, because iOS
+    /// does not render video in the background and VLC would stall), else it pauses.
     func appDidEnterBackground() {
+        inBackground = true
         guard wantPlaying else { return }
-        if current?.isVideo == true || !PlayerSettings.keepMusicInBackground {
+        if current?.isVideo == true {
+            if PlayerSettings.keepVideoAudioInBackground {
+                hideVideo()
+            } else {
+                pause(source: "background")
+            }
+        } else if !PlayerSettings.keepMusicInBackground {
             pause(source: "background")
         }
+    }
+
+    /// Back in the app: bring the picture back.
+    func appDidBecomeActive() {
+        inBackground = false
+        showVideo()
+    }
+
+    private func hideVideo() {
+        guard !videoHidden else { return }
+        videoHidden = true
+        vlc.currentVideoTrackIndex = -1
+        log("background: video track off, audio keeps playing")
+    }
+
+    private func showVideo() {
+        guard videoHidden else { return }
+        videoHidden = false
+        if let track = trackIDs(vlc.videoTrackIndexes).first {
+            vlc.currentVideoTrackIndex = track
+        }
+        log("foreground: video track back on")
     }
 
     /// Re-read Settings. Subtitle style options need a new VLC instance; playback resumes at the same position.
@@ -367,6 +401,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         vlc.delegate = nil
         vlc.stop()
         vlc = Self.makePlayer(vlcOptions)
+        videoHidden = false
         vlc.delegate = self
         vlc.drawable = videoView
         configureAudio()
@@ -475,6 +510,10 @@ final class PlayerEngine: NSObject, ObservableObject {
         let subtitles = trackIDs(vlc.videoSubTitlesIndexes)
         if item.isVideo && audio.isEmpty { return }  // streams not known yet, retry on the next event
         tracksApplied = true
+        if inBackground, item.isVideo, PlayerSettings.keepVideoAudioInBackground {
+            videoHidden = false  // new media: its video track is on again, switch it off
+            hideVideo()
+        }
         if let ordinal = item.audioOrd, ordinal < audio.count {
             vlc.currentAudioTrackIndex = audio[ordinal]
         }

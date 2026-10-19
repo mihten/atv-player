@@ -4,6 +4,7 @@ import Foundation
 /// bindings in SettingsView; the defaults here must match the ones there.
 enum PlayerSettings {
     static let keepMusicKey = "keepMusicInBackground"
+    static let keepVideoAudioKey = "keepVideoAudioInBackground"
     static let subsOnKey = "subsOn"
     static let subLangKey = "subLang"  // "" = file default, "eng", "hrv"
     static let subSizeKey = "subSize"
@@ -24,6 +25,17 @@ enum PlayerSettings {
     private static var defaults: UserDefaults { .standard }
 
     static var keepMusicInBackground: Bool { defaults.object(forKey: keepMusicKey) as? Bool ?? true }
+    /// Music videos keep playing as audio only when the app is left (iPhone). The Apple TV pauses them.
+    static let keepVideoAudioDefault: Bool = {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }()
+    static var keepVideoAudioInBackground: Bool {
+        defaults.object(forKey: keepVideoAudioKey) as? Bool ?? keepVideoAudioDefault
+    }
     static var subtitlesOn: Bool { defaults.object(forKey: subsOnKey) as? Bool ?? true }
     static var subtitleLanguage: String { defaults.string(forKey: subLangKey) ?? "" }
 

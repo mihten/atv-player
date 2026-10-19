@@ -37,7 +37,9 @@ struct PhoneApp: App {
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .background: engine.appDidEnterBackground()
-                case .active: if locator.url != nil { connection.resume() }
+                case .active:
+                    engine.appDidBecomeActive()
+                    if locator.url != nil { connection.resume() }
                 default: break
                 }
             }

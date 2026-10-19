@@ -31,6 +31,8 @@ struct AtvPlayerApp: App {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background {
                     engine.appDidEnterBackground()
+                } else if phase == .active {
+                    engine.appDidBecomeActive()
                 }
             }
         }
