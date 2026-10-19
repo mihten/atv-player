@@ -6,10 +6,13 @@ import UIKit
 struct NowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
+    @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
     @State private var overlay = true
     @State private var hideTask: Task<Void, Never>?
+    /// Direction of the last skip: themed screens slide the next song in from that side.
+    @State private var forward = true
 
     var body: some View {
         ZStack {
@@ -17,18 +20,30 @@ struct NowPlayingView: View {
             if let item = engine.current {
                 if item.isVideo {
                     VideoSurface(engine: engine).ignoresSafeArea()
-                } else {
+                } else if theme.isClassic {
                     AudioScreen(item: item)
+                } else {
+                    ThemedAudioScreen(item: item, forward: forward, hints: overlay)
+                        .ignoresSafeArea()
                 }
             } else {
                 Text("Nothing playing").foregroundStyle(.secondary)
             }
-            if overlay || engine.current?.isVideo != true {
+            if theme.isClassic {
+                if overlay || engine.current?.isVideo != true {
+                    VStack {
+                        Spacer()
+                        InfoBar()
+                    }
+                    .transition(.opacity)
+                }
+            } else if overlay, engine.current?.isVideo == true {
                 VStack {
                     Spacer()
-                    InfoBar()
+                    ThemedInfoBar()
                 }
-                .transition(.opacity)
+                .ignoresSafeArea(edges: theme == .noir ? .bottom : [])
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .focusable()
@@ -40,8 +55,12 @@ struct NowPlayingView: View {
         }
         .onMoveCommand { direction in
             switch direction {
-            case .down: engine.next()
-            case .up: engine.previous()
+            case .down:
+                forward = true
+                engine.next()
+            case .up:
+                forward = false
+                engine.previous()
             case .left: engine.seek(by: -PlayerSettings.seekBack)
             case .right: engine.seek(by: PlayerSettings.seekForward)
             default: break
@@ -54,6 +73,10 @@ struct NowPlayingView: View {
         }
         .onTapGesture { flash() }
         .onExitCommand { dismiss() }
+        .onChange(of: engine.current?.id) {
+            // auto-advance after a "previous" goes forward again
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { forward = true }
+        }
     }
 
     private func flash() {

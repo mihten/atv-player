@@ -50,6 +50,8 @@ struct SoundSettingsView: View {
         .pickerStyle(.navigationLink)
         .font(.system(size: 32))
         .frame(width: 1000)
+        .frame(maxWidth: .infinity)
+        .themedScreen(intensity: 0.55)
         .navigationTitle("Sound")
         .onChange(of: "\(preset)|\(widen)") {
             engine.applySettings()
@@ -127,6 +129,8 @@ struct CustomEqualizerView: View {
                 .font(.system(size: 22))
                 .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .themedScreen(intensity: 0.55)
         .navigationTitle("Custom equalizer")
         // A pushed full-screen list like the other pickers in Settings. A .sheet is a fixed-size card on
         // tvOS and clipped the list (build 19, user's photo).
@@ -188,6 +192,8 @@ struct PresetPickerList: View {
         }
         .font(.system(size: 32))
         .frame(width: 1000)
+        .frame(maxWidth: .infinity)
+        .themedScreen(intensity: 0.55)
         .navigationTitle("Load preset")
     }
 }

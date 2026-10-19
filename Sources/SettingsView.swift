@@ -23,6 +23,8 @@ struct SettingsView: View {
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 30
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
+    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
+    @AppStorage(AppTheme.motionKey) private var motion = true
 
     /// Changes to any of these re-apply immediately (pickers open their own screen, so
     /// "apply on leaving Settings" would fire every time a picker opens).
@@ -65,6 +67,7 @@ struct SettingsView: View {
                 .focusSection()
         }
         .focusScope(settingsScope)
+        .themedScreen(intensity: 0.55)
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             panelReady = false
@@ -96,12 +99,22 @@ struct SettingsView: View {
                 .prefersDefaultFocus(true, in: settingsScope)
             }
 
-            Section("Display") {
+            Section {
+                Picker("Look", selection: $themeRaw) {
+                    ForEach(AppTheme.allCases) { look in
+                        Text(look.name).tag(look.rawValue)
+                    }
+                }
+                Toggle("Moving background and spinning record", isOn: $motion)
                 Picker("Text size in music & folder lists", selection: $listTextSize) {
                     ForEach(ListTextSize.allCases, id: \.rawValue) { size in
                         Text(size.label).tag(size.rawValue)
                     }
                 }
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Aurora takes its colours from the cover art; Noir is black with big type; Vinyl is warm, with a record that spins while it plays; Classic is the original look. With motion off, backgrounds and records stand still.")
             }
 
             Section {

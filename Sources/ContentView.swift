@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var artwork: ArtworkStore
+    @Environment(\.appTheme) private var theme
     @State private var showPlayer = false
     @State private var demoPush = false
 
@@ -15,51 +17,13 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Button { shuffle("all") } label: {
-                        Label("Shuffle everything", systemImage: "shuffle")
-                    }
-                    Button { shuffle("music") } label: {
-                        Label("Shuffle music", systemImage: "music.note")
-                    }
-                    Button { shuffle("videos") } label: {
-                        Label("Shuffle music videos", systemImage: "film")
-                    }
-                }
-                Section("Browse") {
-                    NavigationLink {
-                        VideoListView()
-                    } label: {
-                        Label("Music videos", systemImage: "play.rectangle")
-                    }
-                    NavigationLink {
-                        PlaylistsView()
-                    } label: {
-                        Label("Playlists", systemImage: "music.note.list")
-                    }
-                    NavigationLink {
-                        FolderRootsView()
-                    } label: {
-                        Label("Folders", systemImage: "folder")
-                    }
-                    NavigationLink {
-                        SettingsView()
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                }
-                Section {
-                    Text(connection.connected ? "Server connected" : "Connecting to \(Config.remoteAddress)…")
-                        .foregroundStyle(.secondary)
-                    Text("Phone/PC remote: \(Config.remoteAddress)")
-                        .foregroundStyle(.secondary)
-                } footer: {
-                    Text(appVersion)
+            Group {
+                if theme.isClassic {
+                    classicMenu
+                } else {
+                    HomeView()
                 }
             }
-            .withNowPlaying()
-            .navigationTitle("ATV Player")
             .navigationDestination(isPresented: $demoPush) { DemoDestination() }
         }
         .onAppear {
@@ -78,10 +42,61 @@ struct ContentView: View {
             NowPlayingView()
                 .environmentObject(connection)
                 .environmentObject(engine)
+                .environmentObject(artwork)
+                .environment(\.appTheme, theme)
         }
         .onChange(of: engine.startCounter) {
             showPlayer = true
         }
+    }
+
+    /// The original main menu (Classic look).
+    private var classicMenu: some View {
+        List {
+            Section {
+                Button { shuffle("all") } label: {
+                    Label("Shuffle everything", systemImage: "shuffle")
+                }
+                Button { shuffle("music") } label: {
+                    Label("Shuffle music", systemImage: "music.note")
+                }
+                Button { shuffle("videos") } label: {
+                    Label("Shuffle music videos", systemImage: "film")
+                }
+            }
+            Section("Browse") {
+                NavigationLink {
+                    VideoListView()
+                } label: {
+                    Label("Music videos", systemImage: "play.rectangle")
+                }
+                NavigationLink {
+                    PlaylistsView()
+                } label: {
+                    Label("Playlists", systemImage: "music.note.list")
+                }
+                NavigationLink {
+                    FolderRootsView()
+                } label: {
+                    Label("Folders", systemImage: "folder")
+                }
+                NavigationLink {
+                    SettingsView()
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            }
+            Section {
+                Text(connection.connected ? "Server connected" : "Connecting to \(Config.remoteAddress)…")
+                    .foregroundStyle(.secondary)
+                Text("Phone/PC remote: \(Config.remoteAddress)")
+                    .foregroundStyle(.secondary)
+            } footer: {
+                Text(appVersion)
+            }
+        }
+        .withNowPlaying()
+        .navigationTitle("ATV Player")
     }
 
     private func shuffle(_ name: String) {
@@ -108,12 +123,13 @@ struct VideoListView: View {
                 Button {
                     connection.command("play_collection", ["collection": "videos", "start_id": item.id])
                 } label: {
-                    RowLabel(title: item.title, detail: item.artist ?? "", systemImage: "film")
+                    RowLabel(title: item.title, detail: item.artist ?? "", systemImage: "film", item: item)
                 }
             }
         }
         .denseList()
         .withNowPlaying()
+        .themedScreen()
         .navigationTitle("Music videos")
         .task { await load() }
     }
@@ -133,40 +149,43 @@ struct VideoListView: View {
 struct NowPlayingSidebar: View {
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var artwork: ArtworkStore
+    @Environment(\.appTheme) private var theme
+    @AppStorage(AppTheme.motionKey) private var motion = true
     var enabled = true
 
     var body: some View {
         if let item = engine.current {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Now playing").font(.system(size: 24, weight: .semibold)).opacity(0.6)
-                Button { engine.presentPlayer() } label: {
-                    VStack(alignment: .leading, spacing: 14) {
-                        AsyncImage(url: item.artURL) { image in
-                            image.resizable().scaledToFill()
-                        } placeholder: {
-                            ZStack {
-                                Color.white.opacity(0.08)
-                                Image(systemName: item.isVideo ? "film" : "music.note").font(.system(size: 80))
-                            }
-                        }
-                        .frame(width: 400, height: item.isVideo ? 225 : 400)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        Text(item.title).font(.system(size: 28, weight: .semibold)).lineLimit(2)
-                        if !item.subtitle.isEmpty {
-                            Text(item.subtitle).font(.system(size: 22)).opacity(0.7).lineLimit(1)
-                        }
-                        SidebarProgress(clock: engine.clock, playing: engine.isPlaying)
+                if theme.isClassic {
+                    Text("Now playing").font(.system(size: 24, weight: .semibold)).opacity(0.6)
+                } else {
+                    HStack(spacing: 12) {
+                        EqualizerBars(animating: engine.isPlaying && motion, color: theme.accent(artwork.palette),
+                                      width: 4, height: 18)
+                        Text(engine.isPlaying ? "NOW PLAYING" : "PAUSED")
+                            .font(theme.eyebrow(20)).tracking(4)
+                            .foregroundStyle(theme.accent(artwork.palette))
                     }
-                    .frame(width: 400, alignment: .leading)
-                    .padding(20)
                 }
-                .buttonStyle(.card)
-                .disabled(!enabled)
+                card(item)
+                    .disabled(!enabled)
                 if let upcoming = connection.state?.upcoming, !upcoming.isEmpty {
-                    Text("Up next").font(.system(size: 24, weight: .semibold)).opacity(0.6).padding(.top, 10)
+                    Text("Up next").font(theme.font(24, .semibold)).opacity(0.6).padding(.top, 10)
                     ForEach(upcoming.prefix(4)) { next in
-                        Label(next.title, systemImage: next.isVideo ? "film" : "music.note")
-                            .font(.system(size: 22)).lineLimit(1).opacity(0.85)
+                        if theme.isClassic {
+                            Label(next.title, systemImage: next.isVideo ? "film" : "music.note")
+                                .font(.system(size: 22)).lineLimit(1).opacity(0.85)
+                        } else {
+                            HStack(spacing: 14) {
+                                ItemThumb(item: next, corner: 6).frame(width: 44, height: 44)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(next.title).font(theme.font(21, .medium)).lineLimit(1)
+                                    Text(next.artist ?? "").font(theme.font(17)).opacity(0.55).lineLimit(1)
+                                }
+                            }
+                            .opacity(0.9)
+                        }
                     }
                 }
                 Text("⏯ Play/Pause pauses or resumes · select the card to open the player")
@@ -178,20 +197,97 @@ struct NowPlayingSidebar: View {
             .focusSection()
         }
     }
+
+    @ViewBuilder private func card(_ item: MediaItem) -> some View {
+        if theme.isClassic {
+            Button { engine.presentPlayer() } label: { classicCard(item) }
+                .buttonStyle(.card)
+        } else {
+            Button { engine.presentPlayer() } label: { themedCard(item) }
+                .buttonStyle(TileButtonStyle())
+        }
+    }
+
+    private func classicCard(_ item: MediaItem) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AsyncImage(url: item.artURL) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                ZStack {
+                    Color.white.opacity(0.08)
+                    Image(systemName: item.isVideo ? "film" : "music.note").font(.system(size: 80))
+                }
+            }
+            .frame(width: 400, height: item.isVideo ? 225 : 400)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            Text(item.title).font(.system(size: 28, weight: .semibold)).lineLimit(2)
+            if !item.subtitle.isEmpty {
+                Text(item.subtitle).font(.system(size: 22)).opacity(0.7).lineLimit(1)
+            }
+            SidebarProgress(clock: engine.clock, playing: engine.isPlaying)
+        }
+        .frame(width: 400, alignment: .leading)
+        .padding(20)
+    }
+
+    private func themedCard(_ item: MediaItem) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ZStack {
+                if theme == .vinyl && !item.isVideo {
+                    VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
+                                spinning: engine.isPlaying && motion, size: 340,
+                                labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.55).color)
+                        .offset(x: 60)
+                    CurrentArtwork(item: item, corner: 4)
+                        .frame(width: 300, height: 300)
+                        .shadow(color: .black.opacity(0.5), radius: 14, x: 8, y: 8)
+                        .offset(x: -50)
+                } else {
+                    CurrentArtwork(item: item, corner: theme.corner * 0.7, showsTitle: !item.isVideo)
+                        .frame(width: 400, height: item.isVideo ? 225 : 400)
+                        .grayscale(theme == .noir && !engine.isPlaying ? 1 : 0)
+                }
+            }
+            .frame(width: 400, height: item.isVideo ? 225 : (theme == .vinyl ? 340 : 400))
+            .id(item.id)
+            .transition(.blurFade(CGSize(width: 40, height: 0)))
+            Text(item.title).font(theme.display(30)).lineLimit(2)
+            if !item.subtitle.isEmpty {
+                Text(item.subtitle).font(theme.font(22)).opacity(0.7).lineLimit(1)
+            }
+            SidebarProgress(clock: engine.clock, playing: engine.isPlaying)
+        }
+        .frame(width: 400, alignment: .leading)
+        .padding(20)
+        .background(HeroBackground())
+        .clipShape(RoundedRectangle(cornerRadius: theme.corner, style: .continuous))
+        .foregroundStyle(theme.ink)
+        .animation(.spring(response: 0.6, dampingFraction: 0.85), value: item.id)
+    }
 }
 
 struct SidebarProgress: View {
     @ObservedObject var clock: PlaybackClock
     let playing: Bool
+    @Environment(\.appTheme) private var theme
+    @EnvironmentObject private var artwork: ArtworkStore
 
     var body: some View {
+        let value = clock.duration > 0 ? min(clock.position / clock.duration, 1) : 0
         VStack(alignment: .leading, spacing: 8) {
-            ProgressView(value: clock.duration > 0 ? min(clock.position / clock.duration, 1) : 0)
+            if theme.isClassic {
+                ProgressView(value: value)
+            } else {
+                ProgressLine(value: value, color: theme.accent(artwork.palette), height: theme == .noir ? 3 : 6,
+                             glow: theme == .aurora)
+                    .animation(.linear(duration: 0.5), value: clock.position)
+            }
             HStack {
                 Image(systemName: playing ? "play.fill" : "pause.fill")
                 Text("\(formatTime(clock.position)) / \(formatTime(clock.duration))")
             }
             .font(.system(size: 20))
+            .monospacedDigit()
             .opacity(0.75)
         }
     }
@@ -235,6 +331,7 @@ struct FolderRootsView: View {
         }
         .denseList()
         .withNowPlaying()
+        .themedScreen()
         .navigationTitle("Folders")
         .task {
             do {
@@ -306,7 +403,8 @@ struct FolderView: View {
                                     title: item.title,
                                     detail: [item.artist, item.lossless == true ? "lossless" : nil]
                                         .compactMap { $0 }.joined(separator: " · "),
-                                    systemImage: item.isVideo ? "film" : "music.note"
+                                    systemImage: item.isVideo ? "film" : "music.note",
+                                    item: item
                                 )
                             }
                         }
@@ -316,6 +414,7 @@ struct FolderView: View {
         }
         .denseList()
         .withNowPlaying()
+        .themedScreen()
         .navigationTitle(title)
         .task { await load() }
     }
@@ -339,18 +438,37 @@ struct FolderView: View {
     }
 }
 
-/// Row content for buttons/links: inherits the focus colours of the enclosing button.
+/// Row content for buttons/links: inherits the focus colours of the enclosing button. With `item` and a
+/// themed look, the symbol becomes the item's artwork (or the dancing bars while it plays).
 struct RowLabel: View {
     let title: String
     let detail: String
     let systemImage: String
+    var item: MediaItem? = nil
     @AppStorage(PlayerSettings.listTextSizeKey) private var raw = ListTextSize.compact.rawValue
+    @Environment(\.appTheme) private var theme
+    @EnvironmentObject private var engine: PlayerEngine
 
     var body: some View {
         let size = ListTextSize(rawValue: raw) ?? .compact
         HStack(spacing: 18) {
-            Image(systemName: systemImage)
-                .frame(width: 30)
+            if let item, !theme.isClassic {
+                let side = size.rowHeight - 10
+                ZStack {
+                    ItemThumb(item: item, corner: 6)
+                        .frame(width: item.isVideo ? side * 16 / 9 : side, height: side)
+                    if engine.current?.id == item.id {
+                        Color.black.opacity(0.45)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        EqualizerBars(animating: engine.isPlaying, color: .white, bars: 3, width: 3,
+                                      height: side * 0.42, spacing: 2)
+                    }
+                }
+                .frame(width: item.isVideo ? side * 16 / 9 : side, height: side)
+            } else {
+                Image(systemName: systemImage)
+                    .frame(width: 30)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(size.titleFont).lineLimit(1)
                 if !detail.isEmpty {

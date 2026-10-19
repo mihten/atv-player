@@ -29,6 +29,7 @@ struct PlaylistsView: View {
         }
         .denseList()
         .withNowPlaying()
+        .themedScreen()
         .navigationTitle("Playlists")
         .task(id: connection.playlistsVersion) { await load() }
     }
@@ -91,7 +92,8 @@ struct PlaylistView: View {
                                         title: entry.title,
                                         detail: [entry.artist, entry.lossless == true ? "lossless" : nil]
                                             .compactMap { $0 }.joined(separator: " · "),
-                                        systemImage: entry.isVideo ? "film" : "music.note"
+                                        systemImage: entry.isVideo ? "film" : "music.note",
+                                        item: entry.asMediaItem
                                     )
                                 }
                             }
@@ -102,6 +104,7 @@ struct PlaylistView: View {
         }
         .denseList()
         .withNowPlaying()
+        .themedScreen()
         .navigationTitle(detail?.name ?? title)
         .task(id: connection.playlistsVersion) { await load() }
     }

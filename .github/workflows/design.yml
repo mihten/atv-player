@@ -9,6 +9,9 @@ on:
       themes:
         description: "Themes to screenshot (space separated)"
         default: "aurora noir vinyl classic"
+      platforms:
+        description: "tv,phone / tv / phone / none"
+        default: "tv,phone"
 
 permissions:
   contents: write
@@ -23,7 +26,8 @@ jobs:
     timeout-minutes: 75
     env:
       BUILD_NUMBER: ${{ github.run_number }}
-      THEMES: ${{ github.event.inputs.themes || 'aurora noir vinyl classic' }}
+      THEMES: ${{ github.event.inputs.themes || 'aurora noir vinyl' }}
+      PLATFORMS: ${{ github.event.inputs.platforms || 'tv,phone' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +66,7 @@ jobs:
           test -d build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app
 
       - name: Demo library + throwaway media server
+        if: env.PLATFORMS != 'none'
         run: |
           command -v ffmpeg || brew install ffmpeg
           python3 -m venv /tmp/venv
@@ -76,12 +81,14 @@ jobs:
           /tmp/venv/bin/python tools/design_driver.py setup
 
       - name: Screenshots
+        if: env.PLATFORMS != 'none'
+        timeout-minutes: 50
         run: |
           export PATH="/tmp/venv/bin:$PATH"
           bash tools/design_shots.sh \
             build-sim/Build/Products/Debug-appletvsimulator/AtvPlayer.app \
             build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app \
-            shots $THEMES
+            shots "$PLATFORMS" $THEMES
           cp server.log shots/server.log
 
       - uses: actions/upload-artifact@v4

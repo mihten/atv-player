@@ -35,6 +35,8 @@ struct MediaItem: Codable, Identifiable, Hashable {
     let subOrd: Int?
     /// All subtitle tracks in file order (server 0.8.0+; nil from older servers).
     let subs: [SubtitleTrack]?
+    let track: Int?
+    let year: String?
 
     var isVideo: Bool { kind == "video" }
 

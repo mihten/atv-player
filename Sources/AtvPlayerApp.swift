@@ -5,6 +5,7 @@ struct AtvPlayerApp: App {
     @StateObject private var locator = ServerLocator()
     @StateObject private var connection = ServerConnection()
     @StateObject private var engine = PlayerEngine()
+    @StateObject private var artwork = ArtworkStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -16,9 +17,11 @@ struct AtvPlayerApp: App {
                     ServerSearchView()
                 }
             }
+            .themeRoot()
             .environmentObject(locator)
             .environmentObject(connection)
             .environmentObject(engine)
+            .environmentObject(artwork)
             .onAppear {
                 engine.connection = connection
                 connection.engine = engine
