@@ -9,23 +9,31 @@ struct PhoneRootView: View {
     /// Full-screen video. The cover is presented FROM INSIDE the player sheet (PhoneNowPlayingView), so
     /// leaving full screen simply uncovers the sheet with its controls: no dismiss-then-present dance.
     @State private var fullScreen = false
+    @State private var tab = PhoneDemo.initialTab
 
     /// iPhones have a compact vertical size class exactly in landscape (follows the rotation lock too).
     private var landscape: Bool { verticalSizeClass == .compact }
     private var hasVideo: Bool { engine.current?.isVideo == true }
 
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             LibraryTab()
                 .tabItem { Label("Library", systemImage: "music.note.house") }
-            NavigationStack { PhonePlaylistsView() }
+                .tag(0)
+            NavigationStack { PhonePlaylistsView().demoPush("playlist") }
                 .tabItem { Label("Playlists", systemImage: "music.note.list") }
+                .tag(1)
             QueueTab()
                 .tabItem { Label("Queue", systemImage: "list.number") }
-            NavigationStack { PhoneSettingsView() }
+                .tag(2)
+            NavigationStack { PhoneSettingsView().demoPush("eq") }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(3)
         }
         .environment(\.showPlayer, { showPlayer = true })
+        .onAppear {
+            if DemoRoute.is("player") { DemoRoute.whenLoaded(engine) { showPlayer = true } }
+        }
         .sheet(isPresented: $showPlayer) {
             PhoneNowPlayingView(fullScreen: $fullScreen)
         }
@@ -114,6 +122,8 @@ struct LibraryTab: View {
             }
             .searchable(text: $query, prompt: "Title, artist, album, folder")
             .navigationTitle("ATV Player")
+            .demoPush("videos")
+            .demoPush("folder")
             .withMiniPlayer()
             .task { await library.load() }
         }

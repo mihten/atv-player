@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
     @State private var showPlayer = false
+    @State private var demoPush = false
 
     private var appVersion: String {
         let info = Bundle.main.infoDictionary
@@ -59,6 +60,14 @@ struct ContentView: View {
             }
             .withNowPlaying()
             .navigationTitle("ATV Player")
+            .navigationDestination(isPresented: $demoPush) { DemoDestination() }
+        }
+        .onAppear {
+            if DemoRoute.is("player") {
+                DemoRoute.whenLoaded(engine) { showPlayer = true }
+            } else if DemoDestination.pushes {
+                demoPush = true
+            }
         }
         // Play/Pause in any menu pauses/resumes in place (user feedback: it must not open the player;
         // the Now Playing card does that).

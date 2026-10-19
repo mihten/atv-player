@@ -1,0 +1,118 @@
+name: Design builds + simulator screenshots
+
+on:
+  push:
+    branches: [design]
+    paths-ignore: ["**.md", "infra/**"]
+  workflow_dispatch:
+    inputs:
+      themes:
+        description: "Themes to screenshot (space separated)"
+        default: "aurora noir vinyl classic"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: design-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  design:
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+      THEMES: ${{ github.event.inputs.themes || 'aurora noir vinyl classic' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+          xcrun simctl list runtimes | grep -E 'tvOS|iOS' || true
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            Pods
+          key: pods-${{ hashFiles('Podfile') }}
+
+      - name: Generate Xcode project + pods
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          pod install
+
+      - name: Build simulator apps
+        run: |
+          for spec in "AtvPlayer appletvsimulator tvOS" "AtvPlayerPhone iphonesimulator iOS"; do
+            set -- $spec
+            xcodebuild build -workspace AtvPlayer.xcworkspace -scheme "$1" -configuration Debug \
+              -sdk "$2" -destination "generic/platform=$3 Simulator" -derivedDataPath build-sim \
+              CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
+              > "xcodebuild-sim-$1.log" 2>&1 || true
+            grep -E '\*\* BUILD|/(Sources|Shared|iOS)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' "xcodebuild-sim-$1.log" | head -60 || true
+          done
+          ls build-sim/Build/Products/
+          test -d build-sim/Build/Products/Debug-appletvsimulator/AtvPlayer.app
+          test -d build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app
+
+      - name: Demo library + throwaway media server
+        run: |
+          command -v ffmpeg || brew install ffmpeg
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q aiohttp mutagen pillow
+          /tmp/venv/bin/python tools/demo_library.py "$RUNNER_TEMP/demo"
+          mkdir -p "$RUNNER_TEMP/data" "$RUNNER_TEMP/cache"
+          ATV_ROOTS="{\"music\": \"$RUNNER_TEMP/demo/music\", \"videos\": \"$RUNNER_TEMP/demo/videos\"}" \
+          ATV_ROOT_NAMES='{"music": "Music", "videos": "Music videos"}' \
+          ATV_DATA="$RUNNER_TEMP/data" ATV_CACHE="$RUNNER_TEMP/cache" ATV_PORT=8080 \
+            nohup /tmp/venv/bin/python server/server.py > server.log 2>&1 &
+          sleep 3
+          /tmp/venv/bin/python tools/design_driver.py setup
+
+      - name: Screenshots
+        run: |
+          export PATH="/tmp/venv/bin:$PATH"
+          bash tools/design_shots.sh \
+            build-sim/Build/Products/Debug-appletvsimulator/AtvPlayer.app \
+            build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app \
+            shots $THEMES
+          cp server.log shots/server.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: design-shots-${{ env.BUILD_NUMBER }}
+          path: |
+            shots
+            server.log
+            xcodebuild-sim-*.log
+          retention-days: 14
+
+      - name: Device IPAs (only for commits with [release] in the message)
+        if: contains(github.event.head_commit.message, '[release]')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for spec in "AtvPlayer appletvos tvOS Release-appletvos AtvPlayer.ipa" "AtvPlayerPhone iphoneos iOS Release-iphoneos AtvPlayer-iOS.ipa"; do
+            set -- $spec
+            xcodebuild build -workspace AtvPlayer.xcworkspace -scheme "$1" -configuration Release \
+              -sdk "$2" -destination "generic/platform=$3" -derivedDataPath build \
+              CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+              > "xcodebuild-$1.log" 2>&1 || true
+            grep -E '\*\* BUILD|/(Sources|Shared|iOS)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' "xcodebuild-$1.log" | head -60 || true
+            rm -rf Payload && mkdir Payload
+            cp -R "build/Build/Products/$4/$1.app" Payload/
+            zip -qry "$5" Payload
+            shasum -a 256 "$5" | tee "$5.sha256"
+          done
+          TAG="design-$BUILD_NUMBER"
+          gh release create "$TAG" AtvPlayer.ipa AtvPlayer.ipa.sha256 AtvPlayer-iOS.ipa AtvPlayer-iOS.ipa.sha256 \
+            --title "ATV Player design preview $BUILD_NUMBER" --prerelease --latest=false \
+            --notes "Design preview from commit ${GITHUB_SHA::7} (branch design). Prerelease: not picked up by release-tracking auto-update."
