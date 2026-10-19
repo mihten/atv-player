@@ -92,7 +92,9 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let session = localStorage.getItem("atvSession") === "phone" ? "phone" : "tv";
+// mode: "auto" = follow whichever app (Apple TV / iPhone) is playing; "tv" / "phone" = pinned. session = the queue shown.
+let mode = ["tv", "phone"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
+let session = mode === "phone" ? "phone" : "tv", sessionList = [], followTimer = null;
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
 let playlists = [], openPl = null;  // openPl = playlist detail shown in the Playlists tab
 
@@ -116,7 +118,7 @@ function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=remote&session=${session}`);
   ws.onopen = () => { $("conn").textContent = "server connected"; };
   ws.onclose = () => { $("dot").className = "dot"; $("conn").textContent = "server disconnected, retrying…"; setTimeout(connect, 3000); };
-  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "state") onState(m.state); else if (m.type === "playlists") loadPlaylists(); };
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "state") onState(m.state); else if (m.type === "sessions") { sessionList = m.sessions; drawSelector(); follow(); } else if (m.type === "playlists") loadPlaylists(); };
 }
 
 async function loadLibrary() {
@@ -130,13 +132,10 @@ function onState(s) {
   st = s; clockOffset = s.server_time - Date.now() / 1000;
   $("dot").className = "dot" + (s.players ? " ok" : "");
   // Server 0.10.0: the Apple TV and the iPhone each have their own queue; this page controls one of them.
-  const name = s.session_name || "Apple TV";
   $("conn").textContent = s.players ? "app connected" : "app not open";
-  if (s.sessions && document.activeElement !== $("out")) {
-    $("out").innerHTML = s.sessions.map((x) => `<option value="${esc(x.session)}"${x.session === s.session ? " selected" : ""}>${esc(x.name)}${x.playing ? " ▶" : ""}</option>`).join("");
-  } else if (!s.sessions) {
-    $("out").innerHTML = `<option>${esc(name)}</option>`;
-  }
+  if (s.sessions) sessionList = s.sessions;
+  showShot(s.session || session);
+  drawSelector(); follow();
   $("scan").textContent = s.scanning ? "scanning library…" : (s.last_scan && s.last_scan.finished_at ? `${lib.length} items` : "");
   if (prevScan && !s.scanning) loadLibrary();
   const c = s.current;
@@ -149,6 +148,41 @@ function onState(s) {
   $("rep").classList.toggle("on", s.repeat_mode !== "off");
   $("rep").textContent = s.repeat_mode === "one" ? "🔂" : "🔁";
   if (tab === "queue") render();
+}
+
+/** Selector: Auto + one entry per app (▶ = playing). Auto shows which one it currently follows. */
+function drawSelector() {
+  if (document.activeElement === $("out")) return;
+  const label = (x) => `${x.name}${x.playing ? " ▶" : ""}`;
+  const cur = sessionList.find((x) => x.session === session);
+  $("out").innerHTML = `<option value="auto"${mode === "auto" ? " selected" : ""}>Auto${mode === "auto" && cur ? `: ${esc(label(cur))}` : ""}</option>` +
+    sessionList.map((x) => `<option value="${esc(x.session)}"${mode === x.session ? " selected" : ""}>${esc(label(x))}</option>`).join("");
+}
+
+/** Auto mode: stay on the shown app while it plays; if it is not playing and the other app is, switch to that one
+ *  (after 1.5 s without change, so the gap between two songs does not make the page jump). If neither plays, move
+ *  to the app that is connected when the shown one is not. */
+function follow() {
+  if (mode !== "auto" || followTimer) return;
+  followTimer = setTimeout(() => {
+    followTimer = null;
+    const cur = sessionList.find((x) => x.session === session);
+    if (!cur || cur.playing) return;
+    const playing = sessionList.find((x) => x.playing);
+    const online = sessionList.find((x) => x.players);
+    const target = playing || (!cur.players && online) || null;
+    if (target && target.session !== session) switchSession(target.session);
+  }, 1500);
+}
+
+/** 📷 takes a screenshot of the Apple TV screen: only meaningful on the Apple TV queue. */
+function showShot(which) { $("shot").style.display = which === "tv" ? "" : "none"; }
+
+function switchSession(next) {
+  session = next;
+  showShot(session);
+  send({ type: "select", session });
+  drawSelector();
 }
 
 function tick() {
@@ -328,8 +362,9 @@ function selectTab() { document.querySelectorAll("#tabs button").forEach((x) => 
 $("shuf").onclick = () => cmd("shuffle", { on: !(st && st.shuffle) });
 $("rep").onclick = () => cmd("repeat");
 $("out").onchange = (e) => {
-  session = e.target.value; localStorage.setItem("atvSession", session);
-  send({ type: "select", session }); $("out").blur();
+  mode = e.target.value; localStorage.setItem("atvSession", mode);
+  if (mode === "auto") { follow(); } else if (mode !== session) { switchSession(mode); }
+  $("out").blur(); drawSelector();
 };
 $("bar").onclick = (e) => { if (!st || !st.current) return; const r = $("bar").getBoundingClientRect(); const dur = st.duration || st.current.duration || 0; cmd("seek", { position: (e.clientX - r.left) / r.width * dur }); };
 $("rescan").onclick = async () => {

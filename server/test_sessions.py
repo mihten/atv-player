@@ -164,8 +164,20 @@ async def main(tmp):
                   "remote receives the iPhone's state updates")
             remote_tv = await connect(http, "role=remote&session=tv")
             await tv.send_json({"type": "status", "item": b, "playing": False, "position": 5.0, "duration": 60})
-            check(last_state(await drain(remote)) is None, "iPhone-queue remote is not spammed with TV status")
+            msgs = await drain(remote)
+            check(last_state(msgs) is None, "iPhone-queue remote gets no TV queue state")
+            seen = [m for m in msgs if m.get("type") == "sessions"]
+            check(seen and not seen[-1]["sessions"][0]["playing"] and seen[-1]["sessions"][1]["playing"],
+                  "... but a 'sessions' message saying the TV stopped and the iPhone plays")
+            # A remote on the TV queue learns when the iPhone starts playing (web "Auto" mode follows it).
             await drain(remote_tv)
+            await phone.send_json({"type": "status", "item": c, "playing": False, "position": 2.0, "duration": 60})
+            await phone.send_json({"type": "status", "item": c, "playing": True, "position": 3.0, "duration": 60})
+            msgs = await drain(remote_tv)
+            seen = [m for m in msgs if m.get("type") == "sessions"]
+            check(seen and seen[-1]["sessions"][1]["session"] == "phone" and seen[-1]["sessions"][1]["playing"],
+                  "TV-queue remote receives 'sessions' when the iPhone starts playing")
+            check(last_state(msgs) is None, "... without the iPhone's queue state")
 
             # Save the iPhone queue as a playlist.
             async with http.post(f"{BASE}/api/playlists", json={"name": "From phone", "queue": True,

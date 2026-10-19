@@ -61,7 +61,7 @@ struct MiniPlayer: View {
                 }
                 .frame(width: 44, height: 44)
                 Button { transport.next() } label: {
-                    Image(systemName: "forward.fill").font(.title3)
+                    Image(systemName: "forward.end.fill").font(.title3)
                 }
                 .frame(width: 44, height: 44)
             }
@@ -79,7 +79,7 @@ struct MiniPlayer: View {
 struct PhoneNowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
-    @State private var fullScreen = false
+    @Environment(\.showFullScreen) private var openFullScreen
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
 
@@ -90,11 +90,10 @@ struct PhoneNowPlayingView: View {
             if let item = transport.item {
                 if item.isVideo {
                     VideoSurface(engine: engine)
-                        .id(fullScreen)  // re-attach the video view after the full-screen cover closes
                         .aspectRatio(16 / 9, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(alignment: .bottomTrailing) {
-                            Button { fullScreen = true } label: {
+                            Button { openFullScreen() } label: {
                                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                                     .padding(10).background(.ultraThinMaterial, in: Circle())
                             }
@@ -118,9 +117,6 @@ struct PhoneNowPlayingView: View {
         }
         .padding(.horizontal, 24)
         .presentationDragIndicator(.visible)
-        .fullScreenCover(isPresented: $fullScreen) {
-            FullScreenVideo(transport: transport)
-        }
     }
 
     private func scrubber(_ transport: Transport) -> some View {
@@ -157,14 +153,14 @@ struct PhoneNowPlayingView: View {
                 Image(systemName: "shuffle").foregroundStyle(state?.shuffle == true ? Color.accentColor : .secondary)
             }
             Spacer()
-            Button { transport.previous() } label: { Image(systemName: "backward.fill").font(.title) }
+            Button { transport.previous() } label: { Image(systemName: "backward.end.fill").font(.title) }
             Spacer()
             Button { transport.toggle() } label: {
                 Image(systemName: transport.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 64))
             }
             Spacer()
-            Button { transport.next() } label: { Image(systemName: "forward.fill").font(.title) }
+            Button { transport.next() } label: { Image(systemName: "forward.end.fill").font(.title) }
             Spacer()
             Button { connection.command("repeat") } label: {
                 Image(systemName: repeatMode == "one" ? "repeat.1" : "repeat")
@@ -197,11 +193,11 @@ struct FullScreenVideo: View {
                     }
                     Spacer()
                     HStack(spacing: 50) {
-                        Button { transport.previous() } label: { Image(systemName: "backward.fill") }
+                        Button { transport.previous() } label: { Image(systemName: "backward.end.fill") }
                         Button { transport.toggle() } label: {
                             Image(systemName: transport.isPlaying ? "pause.fill" : "play.fill")
                         }
-                        Button { transport.next() } label: { Image(systemName: "forward.fill") }
+                        Button { transport.next() } label: { Image(systemName: "forward.end.fill") }
                     }
                     .font(.largeTitle)
                     .padding(.bottom, 30)
@@ -211,6 +207,8 @@ struct FullScreenVideo: View {
                 .buttonStyle(.plain)
             }
         }
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
         .contentShape(Rectangle())
         .onTapGesture { withAnimation { controls.toggle() } }
         .onChange(of: engine.current?.isVideo == true) { _, isVideo in

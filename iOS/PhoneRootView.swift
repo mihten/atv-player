@@ -4,7 +4,14 @@ import SwiftUI
 /// A mini player sits above the tab bar whenever something is in the queue.
 struct PhoneRootView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var connection: ServerConnection
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var showPlayer = false
+    @State private var showFullScreen = false
+
+    /// iPhones have a compact vertical size class exactly in landscape (follows the rotation lock too).
+    private var landscape: Bool { verticalSizeClass == .compact }
+    private var hasVideo: Bool { engine.current?.isVideo == true }
 
     var body: some View {
         TabView {
@@ -18,12 +25,47 @@ struct PhoneRootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .environment(\.showPlayer, { showPlayer = true })
+        .environment(\.showFullScreen, { openFullScreen() })
         .sheet(isPresented: $showPlayer) {
             PhoneNowPlayingView()
         }
-        // A video picked here starts on this iPhone: open the player so it can be seen.
+        .fullScreenCover(isPresented: $showFullScreen) {
+            FullScreenVideo(transport: Transport(connection: connection, engine: engine))
+        }
+        // A video picked here starts on this iPhone: straight to full screen when the phone is already
+        // in landscape, else the player sheet so it can be seen.
         .onChange(of: engine.startCounter) {
-            if engine.current?.isVideo == true { showPlayer = true }
+            guard hasVideo else { return }
+            if landscape { openFullScreen() } else { showPlayer = true }
+        }
+        // Rotate to landscape with a video loaded: full screen. Back to portrait: leave full screen and show the
+        // player with its controls (sheet) while a video is loaded.
+        // (Closing it with the X while in landscape stays closed until the next rotation or video.)
+        .onChange(of: verticalSizeClass) {
+            if landscape {
+                if hasVideo { openFullScreen() }
+            } else {
+                showFullScreen = false
+                if hasVideo {
+                    // the cover has to finish dismissing before a sheet can be presented
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        if hasVideo, !landscape, !showFullScreen { showPlayer = true }
+                    }
+                }
+            }
+        }
+    }
+
+    /// SwiftUI cannot present a cover while the sheet is up: close the sheet first.
+    private func openFullScreen() {
+        guard hasVideo, !showFullScreen else { return }
+        if showPlayer {
+            showPlayer = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if hasVideo { showFullScreen = true }
+            }
+        } else {
+            showFullScreen = true
         }
     }
 }
@@ -32,10 +74,19 @@ private struct ShowPlayerKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
 
+private struct ShowFullScreenKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
 extension EnvironmentValues {
     var showPlayer: () -> Void {
         get { self[ShowPlayerKey.self] }
         set { self[ShowPlayerKey.self] = newValue }
+    }
+
+    var showFullScreen: () -> Void {
+        get { self[ShowFullScreenKey.self] }
+        set { self[ShowFullScreenKey.self] = newValue }
     }
 }
 

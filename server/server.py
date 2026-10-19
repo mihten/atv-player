@@ -37,7 +37,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -290,6 +290,12 @@ async def broadcast_state(s):
     msg = {"type": "state", "state": s.to_dict()}
     for ws in s.players + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
         await send(ws, msg)
+    # Remotes watching ANOTHER queue only get who is connected/playing, so a web page in "Auto" mode
+    # can follow whichever app starts playing.
+    other = {"type": "sessions", "sessions": sessions_summary()}
+    for ws, kind in list(REMOTES.items()):
+        if kind != s.kind:
+            await send(ws, other)
 
 
 async def broadcast_all():
