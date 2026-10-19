@@ -33,8 +33,11 @@ on Ubuntu 22.04 with `cargo build --release -p plumesign`. Return to the upstrea
 
 `server/` runs on a LAN host: scans read-only library folders into SQLite (duplicates hidden,
 lossless preferred), streams original files with HTTP Range (`/media/<id>`), serves cover art /
-video frame grabs (`/art/<id>`) and owns one shared queue. The Apple TV app connects as
-`role=player`, the web remote at `/` as `role=remote`; all changes are pushed over WebSocket.
+video frame grabs (`/art/<id>`) and owns the play queues: one for the Apple TV app
+(`role=player&kind=tv`) and a separate one for the iPhone app (`kind=phone`), so both play
+independently. The web remote at `/` (`role=remote`) controls either queue; all changes are
+pushed over WebSocket. The server advertises itself over Bonjour (`_atvmedia._tcp`), so the
+apps need no configured address.
 
 Site-specific settings are not in this repo: copy `server/site.example/` to `server/site/` and
 put the deploy target / ATVLoadly address in `local.env` at the repo root (both git-ignored),

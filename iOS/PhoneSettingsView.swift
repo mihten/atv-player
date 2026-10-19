@@ -35,23 +35,6 @@ struct PhoneSettingsView: View {
     var body: some View {
         Form {
             Section {
-                if connection.outputs.count > 1 {
-                    Picker("Plays on", selection: Binding(
-                        get: { connection.activeOutput ?? "" },
-                        set: { connection.setOutput($0) }
-                    )) {
-                        ForEach(connection.outputs) { Text($0.label).tag($0.device) }
-                    }
-                } else {
-                    LabeledContent("Plays on", value: connection.outputs.first?.label ?? "—")
-                }
-            } header: {
-                Text("Output")
-            } footer: {
-                Text("One queue for the Apple TV and this iPhone. Switching moves playback at the same position. While the Apple TV plays, this app is its remote.")
-            }
-
-            Section {
                 TextField("Address (empty = automatic)", text: $serverAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()

@@ -51,7 +51,8 @@ jobs:
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             > xcodebuild-tvos.log 2>&1 || true
-          grep -E '(\*\* BUILD|: error:|: warning:.*(Sources|Shared)/)' xcodebuild-tvos.log | head -80 || true
+          # Xcode prints <path>:<line>:<col>: warning: ..., so match the path first.
+          grep -E '\*\* BUILD|/(Sources|Shared)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' xcodebuild-tvos.log | head -80 || true
           test -d build/Build/Products/Release-appletvos/AtvPlayer.app
 
       - name: Build iPhone app (unsigned, device)
@@ -62,7 +63,7 @@ jobs:
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             > xcodebuild-ios.log 2>&1 || true
-          grep -E '(\*\* BUILD|: error:|: warning:.*(iOS|Shared)/)' xcodebuild-ios.log | head -80 || true
+          grep -E '\*\* BUILD|/(iOS|Shared)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' xcodebuild-ios.log | head -80 || true
           test -d build/Build/Products/Release-iphoneos/AtvPlayerPhone.app
 
       - name: Package IPAs

@@ -49,11 +49,6 @@ struct ContentView: View {
                     }
                 }
                 Section {
-                    if let other = connection.otherOutput {
-                        Button { connection.setOutput(Config.deviceID) } label: {
-                            Label("Playing on \(other.name) · Play here", systemImage: "appletv")
-                        }
-                    }
                     Text(connection.connected ? "Server connected" : "Connecting to \(Config.remoteAddress)…")
                         .foregroundStyle(.secondary)
                     Text("Phone/PC remote: \(Config.remoteAddress)")

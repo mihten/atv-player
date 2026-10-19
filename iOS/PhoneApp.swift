@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// iPhone app: plays the same server queue as the Apple TV app. One of them is the output (plays);
-/// the other shows what plays and controls it (Settings / Now Playing → "Playing on").
+/// iPhone app: plays its OWN server queue (the Apple TV app has a separate one); library, playlists and
+/// the server are shared.
 @main
 struct PhoneApp: App {
     @StateObject private var locator = ServerLocator()

@@ -244,16 +244,6 @@ final class PlayerEngine: NSObject, ObservableObject {
             vlc.stop()
             setPlaying(false)
             updateNowPlaying()
-        case "release":
-            // Another device is the output now: stop and forget the item (menus hide Now Playing).
-            wantPlaying = false
-            startCheck?.cancel()
-            startTimeout?.cancel()
-            diagTask?.cancel()
-            vlc.stop()
-            setPlaying(false)
-            current = nil
-            updateNowPlaying()
         default: break
         }
     }
@@ -277,11 +267,6 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func play(source: String) {
-        if source != "remote", connection?.otherOutput != nil {
-            // Play pressed here while another device plays the queue: take it over at its position.
-            connection?.command("play", ["here": true])
-            return
-        }
         logRequest("play", source)
         wantPlaying = true
         pendingToggle = (Date(), source, true)

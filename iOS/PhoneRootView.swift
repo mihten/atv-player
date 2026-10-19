@@ -95,10 +95,8 @@ struct ConnectionStatusRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(connection.connected ? "Server connected" : "Connecting to \(Config.remoteAddress)…")
-            if let other = connection.otherOutput {
-                Text("Playing on \(other.name). Change it in Now Playing.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
+            Text("This iPhone has its own queue; the Apple TV's is separate.")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 }

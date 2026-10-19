@@ -1,34 +1,21 @@
 import SwiftUI
 
-/// Playback as seen from this iPhone: local (this iPhone is the output → the engine) or remote
-/// (another device plays → the server state, commands go over the connection).
+/// The iPhone plays its own queue (separate from the Apple TV's): every control drives the local engine;
+/// next/previous go through the server, which owns the queue.
 @MainActor
 struct Transport {
     let connection: ServerConnection
     let engine: PlayerEngine
 
-    var isLocal: Bool { connection.isThisDeviceOutput && engine.current != nil }
-    var item: MediaItem? { isLocal ? engine.current : connection.state?.current }
-    var isPlaying: Bool { isLocal ? engine.isPlaying : connection.state?.playing == true }
+    var item: MediaItem? { engine.current }
+    var isPlaying: Bool { engine.isPlaying }
+    var position: Double { engine.livePosition }
+    var duration: Double { engine.liveDuration }
 
-    var position: Double { isLocal ? engine.livePosition : connection.estimatedPosition() }
-
-    var duration: Double {
-        if isLocal { return engine.liveDuration }
-        return connection.state?.duration ?? item?.duration ?? 0
-    }
-
-    func toggle() {
-        if isLocal { engine.togglePlay(source: "phone") } else { connection.command("toggle") }
-    }
-
-    func next() { connection.command("next") }
-
-    func previous() { connection.command("prev", ["position": position]) }
-
-    func seek(to seconds: Double) {
-        if isLocal { engine.seek(to: seconds) } else { connection.command("seek", ["position": seconds]) }
-    }
+    func toggle() { engine.togglePlay(source: "phone") }
+    func next() { engine.next() }
+    func previous() { engine.previous() }
+    func seek(to seconds: Double) { engine.seek(to: seconds) }
 }
 
 struct Artwork: View {
@@ -51,7 +38,7 @@ struct Artwork: View {
     }
 }
 
-/// Bar above the tab bar: artwork, title, where it plays, play/pause, next. Tap = full player.
+/// Bar above the tab bar: artwork, title, play/pause, next. Tap = full player.
 struct MiniPlayer: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -64,7 +51,9 @@ struct MiniPlayer: View {
                 Artwork(item: item, size: 44)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(subtitle(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let artist = item.artist, !artist.isEmpty {
+                        Text(artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 0)
                 Button { transport.toggle() } label: {
@@ -84,46 +73,9 @@ struct MiniPlayer: View {
             .onTapGesture { showPlayer() }
         }
     }
-
-    private func subtitle(_ item: MediaItem) -> String {
-        let on = connection.otherOutput.map { "on \($0.name)" }
-        return [item.artist, on].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-    }
 }
 
-/// Picks the device that plays the queue (server 0.9.0 "output"). Playback moves at the same position.
-struct OutputMenu: View {
-    @EnvironmentObject var connection: ServerConnection
-
-    var body: some View {
-        let outputs = connection.outputs
-        let active = connection.activeOutput
-        Menu {
-            ForEach(outputs) { output in
-                Button {
-                    connection.setOutput(output.device)
-                } label: {
-                    if output.device == active {
-                        Label(output.label, systemImage: "checkmark")
-                    } else {
-                        Label(output.label, systemImage: output.symbol)
-                    }
-                }
-            }
-        } label: {
-            let current = outputs.first { $0.device == active }
-            Label(current.map { "Playing on \($0.label)" } ?? "Not playing on any device",
-                  systemImage: current?.symbol ?? "hifispeaker")
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.thinMaterial, in: Capsule())
-        }
-        .disabled(outputs.count < 2)
-    }
-}
-
-/// Full player (sheet): video or artwork, title, scrubber, transport, shuffle/repeat, output picker.
+/// Full player (sheet): video or artwork, title, scrubber, transport, shuffle/repeat.
 struct PhoneNowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -134,10 +86,9 @@ struct PhoneNowPlayingView: View {
     var body: some View {
         let transport = Transport(connection: connection, engine: engine)
         VStack(spacing: 22) {
-            OutputMenu().padding(.top, 24)
             Spacer(minLength: 0)
             if let item = transport.item {
-                if item.isVideo && transport.isLocal {
+                if item.isVideo {
                     VideoSurface(engine: engine)
                         .id(fullScreen)  // re-attach the video view after the full-screen cover closes
                         .aspectRatio(16 / 9, contentMode: .fit)
@@ -227,7 +178,6 @@ struct PhoneNowPlayingView: View {
 
 /// Landscape-friendly full-screen video; tap shows/hides the controls.
 struct FullScreenVideo: View {
-    @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
     @Environment(\.dismiss) private var dismiss
     let transport: Transport
@@ -264,7 +214,7 @@ struct FullScreenVideo: View {
         .contentShape(Rectangle())
         .onTapGesture { withAnimation { controls.toggle() } }
         .onChange(of: engine.current?.isVideo == true) { _, isVideo in
-            if !isVideo { dismiss() }  // the queue moved on to a song (or another device took over)
+            if !isVideo { dismiss() }  // the queue moved on to a song
         }
     }
 }

@@ -4,10 +4,10 @@
 - Library: scans the read-only roots (scanner.py) into SQLite, served as JSON.
 - Streaming: /media/<id> serves the original file with HTTP Range (VLC on the Apple TV plays it as is).
 - Artwork: /art/<id> embedded/folder cover for audio, a frame grab for video (cached).
-- Queue + remote control: one shared session. Player apps (Apple TV, iPhone) connect as
-  role=player with a device id; exactly one of them is the active OUTPUT and gets the load/control
-  messages (the others only see the state, like Spotify Connect). Web UI at / = role=remote.
-  All state changes are pushed over WebSocket; nothing polls.
+- Queue + remote control: one queue per player kind (Apple TV app = "tv", iPhone app = "phone"), so the
+  devices play independently. Player apps connect as role=player&kind=<kind>; the web UI at / is a
+  role=remote that controls one of the queues (TV by default). All state changes are pushed over
+  WebSocket; nothing polls.
 """
 import asyncio
 import json
@@ -37,7 +37,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -49,8 +49,8 @@ mimetypes.add_type("audio/mp4", ".m4a")
 LIB: dict[int, dict] = {}
 LAST_SCAN: dict = {}
 SCANNING = False
-PLAYERS: dict = {}  # ws -> {device, name, kind, since}; one device may have several sockets
-REMOTES: set = set()
+PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone")
+REMOTES: dict = {}  # ws -> session kind the web remote controls
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
@@ -117,19 +117,29 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
     return sorted(items, key=sort_key)
 
 
-# ---------------------------------------------------------------- session / queue
+# ---------------------------------------------------------------- sessions (one queue per device kind)
+# Each kind of player app has its OWN queue: "tv" (the Apple TV app; also any player that sends no kind,
+# i.e. apps older than 0.11) and "phone" (the iPhone app). They play independently, also at the same
+# time. Several players of one kind would share that kind's queue (this home has one of each).
+# The TV session keeps the original state.json; other kinds use state-<kind>.json. A web remote controls
+# one session at a time: ?session=<kind> on /ws or a {"type": "select", "session": <kind>} message.
 
 STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
+KINDS = ("tv", "phone")
+KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone"}
+SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position")
 
 
 class Session:
-    def __init__(self):
+    def __init__(self, kind):
+        self.kind = kind
+        self.file = STATE_FILE if kind == "tv" else DATA / f"state-{kind}.json"
         self.queue: list[int] = []
         self.original: list[int] = []
         self.index = -1
         self.shuffle = False
         # off | all | one. Default "all": playlists, folders and collections play endlessly
-        # (user feedback, 2026-10-19); the web remote's 🔁 button still cycles all → one → off.
+        # (user feedback, 2026-10-19); the 🔁 buttons still cycle all → one → off.
         self.repeat = "all"
         self.playing = False
         self.want_play = False
@@ -137,7 +147,10 @@ class Session:
         self.position_at = time.time()
         self.duration = 0.0
         self.errors = 0
-        self.output = None  # device id of the player that plays the queue
+
+    @property
+    def players(self):
+        return [ws for ws, kind in PLAYERS.items() if kind == self.kind]
 
     @property
     def current_id(self):
@@ -152,29 +165,30 @@ class Session:
         cur = self.current
         upcoming = [summary(LIB[i]) for i in self.queue[self.index + 1:self.index + 6] if i in LIB]
         return {
+            "session": self.kind, "session_name": KIND_NAMES[self.kind], "sessions": sessions_summary(),
             "queue": self.queue, "index": self.index, "shuffle": self.shuffle, "repeat_mode": self.repeat,
             "playing": self.playing, "position": self.position, "position_at": self.position_at,
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
-            "players": len(PLAYERS), "outputs": outputs(), "output": S.output if output_online() else None,
-            "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
+            "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
         }
 
     def save(self):
-        data = {k: getattr(self, k) for k in ("queue", "original", "index", "shuffle", "repeat", "position", "output")}
+        data = {k: getattr(self, k) for k in SAVED_KEYS}
         data["state_version"] = STATE_VERSION
-        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp = self.file.with_suffix(".tmp")
         tmp.write_text(json.dumps(data))
-        tmp.replace(STATE_FILE)
+        tmp.replace(self.file)
 
     def load(self):
         try:
-            data = json.loads(STATE_FILE.read_text())
+            data = json.loads(self.file.read_text())
         except (OSError, ValueError):
             return
-        version = data.pop("state_version", 1)
-        for k, v in data.items():
-            setattr(self, k, v)
+        version = data.get("state_version", 1)
+        for k in SAVED_KEYS:  # unknown keys (e.g. "output" from server 0.9.0) are ignored
+            if k in data:
+                setattr(self, k, data[k])
         if version < 2:  # saved before endless playback became the default: switch it on once
             self.repeat = "all"
         self.prune()
@@ -192,7 +206,20 @@ class Session:
             self.index = -1
 
 
-S = Session()
+SESSIONS = {kind: Session(kind) for kind in KINDS}
+
+
+def session_for(kind):
+    return SESSIONS.get(kind) or SESSIONS["tv"]
+
+
+def sessions_summary():
+    out = []
+    for kind, s in SESSIONS.items():
+        cur = s.current
+        out.append({"session": kind, "name": KIND_NAMES[kind], "players": len(s.players), "playing": s.playing,
+                    "title": cur["title"] if cur else None})
+    return out
 
 
 # ---------------------------------------------------------------- playlists
@@ -258,190 +285,129 @@ async def send(ws, msg):
         pass
 
 
-async def broadcast_state():
-    msg = {"type": "state", "state": S.to_dict()}
-    for ws in list(PLAYERS) + list(REMOTES):
+async def broadcast_state(s):
+    """State of session s to its players and to the remotes watching it."""
+    msg = {"type": "state", "state": s.to_dict()}
+    for ws in s.players + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
         await send(ws, msg)
 
 
-def load_message(autoplay, position=0.0, present=False):
-    """present: the user picked something to play (show the player on the TV). False for
-    auto-advance, next/previous, error skips and reconnect resyncs."""
-    cur = S.current
+async def broadcast_all():
+    """Every session (scan status, player connected/gone: the session list in every state changes)."""
+    for s in SESSIONS.values():
+        await broadcast_state(s)
+
+
+def load_message(s, autoplay, position=0.0, present=False):
+    """present: the user picked something to play (show the player). False for auto-advance,
+    next/previous, error skips and reconnect resyncs."""
+    cur = s.current
     return {"type": "load", "item": full(cur) if cur else None, "position": position, "autoplay": autoplay,
             "present": present}
 
 
-# ---------------------------------------------------------------- outputs (which player plays)
-
-def outputs():
-    """Connected player devices, oldest connection first."""
-    seen = {}
-    for info in sorted(PLAYERS.values(), key=lambda i: i["since"]):
-        seen.setdefault(info["device"], {"device": info["device"], "name": info["name"], "kind": info["kind"]})
-    return list(seen.values())
-
-
-def device_online(device):
-    return device is not None and any(i["device"] == device for i in PLAYERS.values())
-
-
-def output_online():
-    return device_online(S.output)
-
-
-def ensure_output(prefer=None):
-    """The active output is offline: use `prefer` (the player that sent the command) if it is
-    connected, else the most recently connected player. Nothing connected: keep the stored one."""
-    if output_online() or not PLAYERS:
-        return
-    if device_online(prefer):
-        S.output = prefer
-    else:
-        S.output = max(PLAYERS.values(), key=lambda i: i["since"])["device"]
-    log.info("output -> %s (previous output offline)", S.output)
-    S.save()
-
-
-async def to_players(msg):
-    """Playback messages go to the active output only."""
-    for ws, info in list(PLAYERS.items()):
-        if info["device"] == S.output:
-            await send(ws, msg)
-
-
-def live_position():
-    pos = S.position + (time.time() - S.position_at if S.playing else 0.0)
-    if S.duration:
-        pos = min(pos, max(S.duration - 1.0, 0.0))
-    return max(pos, 0.0)
-
-
-async def release_output():
-    """The current output stops and forgets the item ("stop" first: players older than server 0.9.0
-    do not know "release")."""
-    await to_players({"type": "control", "action": "stop"})
-    await to_players({"type": "control", "action": "release"})
-
-
-async def switch_output(target, play=None):
-    """Move playback to `target` at the current position. play None = keep playing/paused as now."""
-    if not device_online(target):
-        return
-    want = S.want_play if play is None else bool(play)
-    if target == S.output and output_online():
-        if want and not S.want_play:
-            await handle_cmd({"cmd": "play"})
-        return
-    position = live_position()
-    if output_online():
-        await release_output()
-    S.output = target
-    log.info("output -> %s at %.1f s, play=%s", target, position, want)
-    S.save()
-    if S.current:
-        await start_current(position=position, autoplay=want)
-    else:
-        await broadcast_state()
+async def to_players(s, msg):
+    for ws in s.players:
+        await send(ws, msg)
 
 
 def file_exists(it):
     return os.path.isfile(item_path(it))
 
 
-async def ensure_current_file():
+async def ensure_current_file(s):
     """Files get renamed/replaced on the NAS between scans; VLC then just stops (HTTP 404, no
     error event) and looks stuck on "paused". Rescan right away (a rename keeps the id), then
     drop queue entries whose file is still missing. Returns False if nothing is left to play."""
-    cur = S.current
+    cur = s.current
     if cur is None or file_exists(cur):
         return cur is not None
-    log.warning("file missing for item %s (%s/%s): rescanning", cur["id"], cur["root"], cur["relpath"])
-    was_last = S.index == len(S.queue) - 1
+    log.warning("[%s] file missing for item %s (%s/%s): rescanning", s.kind, cur["id"], cur["root"], cur["relpath"])
+    was_last = s.index == len(s.queue) - 1
     await run_scan(wait=True)
     if cur["id"] not in LIB and was_last:  # prune() stepped back onto the previous item
-        S.index = len(S.queue) - 1
-        S.save()
-        await stop_playback()
+        s.index = len(s.queue) - 1
+        s.save()
+        await stop_playback(s)
         return False
-    while S.current is not None and not file_exists(S.current):
-        gone = S.queue.pop(S.index)
-        S.original = [i for i in S.original if i != gone]
-        log.warning("still missing after rescan, removed from queue: %s", gone)
-        if S.index >= len(S.queue):
-            S.index = len(S.queue) - 1
-            S.save()
-            await stop_playback()
+    while s.current is not None and not file_exists(s.current):
+        gone = s.queue.pop(s.index)
+        s.original = [i for i in s.original if i != gone]
+        log.warning("[%s] still missing after rescan, removed from queue: %s", s.kind, gone)
+        if s.index >= len(s.queue):
+            s.index = len(s.queue) - 1
+            s.save()
+            await stop_playback(s)
             return False
-    S.save()
-    if S.current is None:
-        await stop_playback()
+    s.save()
+    if s.current is None:
+        await stop_playback(s)
         return False
     return True
 
 
-async def start_current(position=0.0, autoplay=True, present=False):
-    if not await ensure_current_file():
+async def start_current(s, position=0.0, autoplay=True, present=False):
+    if not await ensure_current_file(s):
         return
-    S.position, S.position_at = position, time.time()
-    S.duration = (S.current or {}).get("duration") or 0.0
-    S.want_play = autoplay
-    S.playing = False
-    S.save()
-    await to_players(load_message(autoplay, position, present))
-    await broadcast_state()
+    s.position, s.position_at = position, time.time()
+    s.duration = (s.current or {}).get("duration") or 0.0
+    s.want_play = autoplay
+    s.playing = False
+    s.save()
+    await to_players(s, load_message(s, autoplay, position, present))
+    await broadcast_state(s)
 
 
-async def stop_playback():
-    S.want_play = False
-    S.playing = False
-    await to_players({"type": "control", "action": "stop"})
-    await broadcast_state()
+async def stop_playback(s):
+    s.want_play = False
+    s.playing = False
+    await to_players(s, {"type": "control", "action": "stop"})
+    await broadcast_state(s)
 
 
-async def set_queue(ids, start_index=None, shuffle=False):
+async def set_queue(s, ids, start_index=None, shuffle=False):
     """start_index None = beginning (or a random first track when shuffling)."""
     ids = [i for i in ids if i in LIB]
     if not ids:
         return
     if start_index is not None:
         start_index = min(max(int(start_index), 0), len(ids) - 1)
-    S.original = list(ids)
+    s.original = list(ids)
     if shuffle:
         rest = [i for n, i in enumerate(ids) if n != start_index]
         random.shuffle(rest)
-        S.queue = ([ids[start_index]] if start_index is not None else []) + rest
-        S.index = 0
+        s.queue = ([ids[start_index]] if start_index is not None else []) + rest
+        s.index = 0
     else:
-        S.queue = list(ids)
-        S.index = start_index or 0
-    S.shuffle = shuffle
-    S.errors = 0
-    await start_current(present=True)
+        s.queue = list(ids)
+        s.index = start_index or 0
+    s.shuffle = shuffle
+    s.errors = 0
+    await start_current(s, present=True)
 
 
-async def advance(user):
-    if not S.queue:
+async def advance(s, user):
+    if not s.queue:
         return
-    if S.repeat == "one" and not user:
+    if s.repeat == "one" and not user:
         pass
-    elif S.index + 1 < len(S.queue):
-        S.index += 1
-    elif S.repeat == "all":
-        if S.shuffle:
-            random.shuffle(S.queue)
-        S.index = 0
+    elif s.index + 1 < len(s.queue):
+        s.index += 1
+    elif s.repeat == "all":
+        if s.shuffle:
+            random.shuffle(s.queue)
+        s.index = 0
     else:
-        S.index = len(S.queue) - 1
-        await stop_playback()
+        s.index = len(s.queue) - 1
+        await stop_playback(s)
         return
-    await start_current()
+    await start_current(s)
 
 
-async def handle_cmd(msg):
+async def handle_cmd(s, msg):
     cmd = msg.get("cmd")
     if cmd == "play_ids":
-        await set_queue(msg.get("ids") or [], msg.get("start_index"), bool(msg.get("shuffle")))
+        await set_queue(s, msg.get("ids") or [], msg.get("start_index"), bool(msg.get("shuffle")))
     elif cmd == "play_collection":
         name = msg.get("collection", "all")
         playlist = None
@@ -460,131 +426,108 @@ async def handle_cmd(msg):
                 start = sum(1 for i in stored[:start] if i in LIB)
         else:
             start = ids.index(msg["start_id"]) if msg.get("start_id") in ids else None
-        await set_queue(ids, start, bool(msg.get("shuffle")))
+        await set_queue(s, ids, start, bool(msg.get("shuffle")))
     elif cmd == "enqueue":
         ids = [i for i in (msg.get("ids") or []) if i in LIB]
         if not ids:
             return
-        if not S.queue:
-            await set_queue(ids)
+        if not s.queue:
+            await set_queue(s, ids)
             return
-        pos = S.index + 1 if msg.get("mode") == "next" else len(S.queue)
-        S.queue[pos:pos] = ids
-        S.original.extend(ids)
-        S.save()
-        await broadcast_state()
+        pos = s.index + 1 if msg.get("mode") == "next" else len(s.queue)
+        s.queue[pos:pos] = ids
+        s.original.extend(ids)
+        s.save()
+        await broadcast_state(s)
     elif cmd == "next":
-        await advance(user=True)
+        await advance(s, user=True)
     elif cmd == "prev":
-        position = float(msg.get("position", S.position) or 0)
-        if position > 5 or S.index <= 0:
-            await to_players({"type": "control", "action": "seek", "position": 0})
+        position = float(msg.get("position", s.position) or 0)
+        if position > 5 or s.index <= 0:
+            await to_players(s, {"type": "control", "action": "seek", "position": 0})
         else:
-            S.index -= 1
-            await start_current()
+            s.index -= 1
+            await start_current(s)
     elif cmd == "jump":
         idx = int(msg.get("index", -1))
-        if 0 <= idx < len(S.queue):
-            S.index = idx
-            await start_current(present=True)
+        if 0 <= idx < len(s.queue):
+            s.index = idx
+            await start_current(s, present=True)
     elif cmd in ("toggle", "play", "pause"):
-        if cmd == "play" or (cmd == "toggle" and not S.playing):
-            S.want_play = True
+        if cmd == "play" or (cmd == "toggle" and not s.playing):
+            s.want_play = True
         else:
-            S.want_play = False
-        await to_players({"type": "control", "action": cmd})
+            s.want_play = False
+        await to_players(s, {"type": "control", "action": cmd})
     elif cmd == "seek":
-        await to_players({"type": "control", "action": "seek", "position": float(msg.get("position", 0))})
+        await to_players(s, {"type": "control", "action": "seek", "position": float(msg.get("position", 0))})
     elif cmd == "shuffle":
-        on = bool(msg.get("on", not S.shuffle))
-        cur = S.current_id
-        if on and not S.shuffle:
-            rest = S.queue[S.index + 1:]
+        on = bool(msg.get("on", not s.shuffle))
+        cur = s.current_id
+        if on and not s.shuffle:
+            rest = s.queue[s.index + 1:]
             random.shuffle(rest)
-            S.queue = S.queue[:S.index + 1] + rest
-        elif not on and S.shuffle and S.original:
-            S.queue = list(S.original)
-            S.index = S.queue.index(cur) if cur in S.queue else 0
-        S.shuffle = on
-        S.save()
-        await broadcast_state()
+            s.queue = s.queue[:s.index + 1] + rest
+        elif not on and s.shuffle and s.original:
+            s.queue = list(s.original)
+            s.index = s.queue.index(cur) if cur in s.queue else 0
+        s.shuffle = on
+        s.save()
+        await broadcast_state(s)
     elif cmd == "repeat":
         mode = msg.get("mode")
         if mode not in ("off", "all", "one"):
-            mode = {"off": "all", "all": "one", "one": "off"}[S.repeat]
-        S.repeat = mode
-        S.save()
-        await broadcast_state()
+            mode = {"off": "all", "all": "one", "one": "off"}[s.repeat]
+        s.repeat = mode
+        s.save()
+        await broadcast_state(s)
     elif cmd == "remove":
         idx = int(msg.get("index", -1))
-        if 0 <= idx < len(S.queue) and idx != S.index:
-            del S.queue[idx]
-            if idx < S.index:
-                S.index -= 1
-            S.save()
-            await broadcast_state()
+        if 0 <= idx < len(s.queue) and idx != s.index:
+            del s.queue[idx]
+            if idx < s.index:
+                s.index -= 1
+            s.save()
+            await broadcast_state(s)
     elif cmd == "clear":
-        cur = S.current_id
-        S.queue = [cur] if cur is not None else []
-        S.original = list(S.queue)
-        S.index = 0 if S.queue else -1
-        S.save()
-        await broadcast_state()
+        cur = s.current_id
+        s.queue = [cur] if cur is not None else []
+        s.original = list(s.queue)
+        s.index = 0 if s.queue else -1
+        s.save()
+        await broadcast_state(s)
     elif cmd == "rescan":
         asyncio.create_task(run_scan())
-    elif cmd == "output":
-        play = msg.get("play")
-        await switch_output(msg.get("device"), None if play is None else bool(play))
 
 
-# Commands that start something: with "here": true from a player app they play on THAT device.
-STARTING = {"play_ids", "play_collection", "jump", "enqueue"}
-
-
-async def on_message(data, role, device=None):
+async def on_message(s, data, role):
     kind = data.get("type")
     if kind == "cmd":
-        cmd = data.get("cmd")
-        here = role == "player" and bool(data.get("here"))
-        ensure_output(prefer=device if role == "player" else None)
-        if here and device != S.output:
-            if cmd in ("play", "toggle"):  # e.g. Play on the TV while the iPhone plays: take it over
-                await switch_output(device, play=True)
-                return
-            if cmd in STARTING:
-                if output_online():
-                    await release_output()
-                S.output = device
-                log.info("output -> %s (%s here)", device, cmd)
-                S.save()
-        await handle_cmd(data)
-        return
-    if role == "player" and kind in ("status", "ended", "error") and device != S.output:
-        return  # an old output that has not stopped yet
-    if role == "player" and kind == "status":
-        if data.get("item") != S.current_id:
+        await handle_cmd(s, data)
+    elif role == "player" and kind == "status":
+        if data.get("item") != s.current_id:
             return
-        S.playing = bool(data.get("playing"))
-        S.position = float(data.get("position") or 0)
-        S.position_at = time.time()
+        s.playing = bool(data.get("playing"))
+        s.position = float(data.get("position") or 0)
+        s.position_at = time.time()
         if data.get("duration"):
-            S.duration = float(data["duration"])
-        if S.playing:
-            S.errors = 0
-        await broadcast_state()
+            s.duration = float(data["duration"])
+        if s.playing:
+            s.errors = 0
+        await broadcast_state(s)
     elif role == "player" and kind == "log":
-        log.info("player: %s", str(data.get("message"))[:300])
+        log.info("player[%s]: %s", s.kind, str(data.get("message"))[:300])
     elif role == "player" and kind == "ended":
-        if data.get("item") == S.current_id:
-            await advance(user=False)
+        if data.get("item") == s.current_id:
+            await advance(s, user=False)
     elif role == "player" and kind == "error":
-        if data.get("item") == S.current_id:
-            S.errors += 1
-            log.warning("player error on %s: %s", data.get("item"), data.get("message"))
-            if S.errors >= 3:
-                await stop_playback()
+        if data.get("item") == s.current_id:
+            s.errors += 1
+            log.warning("[%s] player error on %s: %s", s.kind, data.get("item"), data.get("message"))
+            if s.errors >= 3:
+                await stop_playback(s)
             else:
-                await advance(user=False)
+                await advance(s, user=False)
 
 
 # ---------------------------------------------------------------- HTTP handlers
@@ -594,48 +537,45 @@ async def ws_handler(request):
     role = "player" if q.get("role") == "player" else "remote"
     ws = web.WebSocketResponse(heartbeat=45)
     await ws.prepare(request)
-    device = None
     if role == "player":
-        # Players before 0.9.0 send no device id: one per address (the Apple TV app).
-        device = (q.get("device") or f"addr-{request.remote}")[:80]
-        PLAYERS[ws] = {"device": device, "name": (q.get("name") or "Apple TV")[:60],
-                       "kind": q.get("kind") if q.get("kind") in ("tv", "phone") else "tv", "since": time.time()}
+        kind = q.get("kind") if q.get("kind") in KINDS else "tv"  # apps before 0.11 send no kind: the TV
+        PLAYERS[ws] = kind
     else:
-        REMOTES.add(ws)
-    log.info("%s %s connected from %s", role, device or "", request.remote)
-    if role == "player" and not device_online_elsewhere(S.output, ws):
-        if S.output != device:
-            log.info("output -> %s (only player online)", device)
-        S.output = device
-    await send(ws, {"type": "state", "state": S.to_dict()})
+        kind = q.get("session") if q.get("session") in KINDS else "tv"
+        REMOTES[ws] = kind
+    s = SESSIONS[kind]
+    log.info("%s (%s) connected from %s", role, kind, request.remote)
+    await send(ws, {"type": "state", "state": s.to_dict()})
     if role == "player":
-        if device == S.output and S.current and await ensure_current_file():
-            await send(ws, load_message(S.want_play, S.position))
-        await broadcast_state()
+        if s.current and await ensure_current_file(s):
+            await send(ws, load_message(s, s.want_play, s.position))
+        await broadcast_all()
     try:
         async for msg in ws:
-            if msg.type == WSMsgType.TEXT:
-                try:
-                    data = json.loads(msg.data)
-                except ValueError:
-                    continue
-                await on_message(data, role, device)
+            if msg.type != WSMsgType.TEXT:
+                continue
+            try:
+                data = json.loads(msg.data)
+            except ValueError:
+                continue
+            if role == "remote" and data.get("type") == "select":  # web remote switches TV / iPhone queue
+                s = session_for(data.get("session"))
+                REMOTES[ws] = s.kind
+                await send(ws, {"type": "state", "state": s.to_dict()})
+                continue
+            await on_message(s, data, role)
     finally:
-        log.info("%s %s disconnected", role, device or "")
+        log.info("%s (%s) disconnected", role, s.kind)
         if role == "player":
             PLAYERS.pop(ws, None)
-            if device == S.output and not output_online():
-                S.playing = False
-                S.want_play = False
-                S.save()
-            await broadcast_state()
+            if not s.players:
+                s.playing = False
+                s.want_play = False
+                s.save()
+            await broadcast_all()
         else:
-            REMOTES.discard(ws)
+            REMOTES.pop(ws, None)
     return ws
-
-
-def device_online_elsewhere(device, ws):
-    return device is not None and any(i["device"] == device for w, i in PLAYERS.items() if w is not ws)
 
 
 async def index(_request):
@@ -714,8 +654,8 @@ async def api_item(request):
     return web.json_response(full(it))
 
 
-async def api_state(_request):
-    return web.json_response(S.to_dict())
+async def api_state(request):
+    return web.json_response(session_for(request.query.get("session")).to_dict())
 
 
 # Playlist API. Bodies are JSON. Item lists are library ids; unknown ids are rejected on add.
@@ -759,8 +699,8 @@ def _ids_from_source(body):
     {"playlist": id}. Folders follow the library order and skip hidden duplicates (like Play all)."""
     if "ids" in body:
         return _clean_ids(body["ids"])
-    if body.get("queue"):
-        return [i for i in S.queue if i in LIB]
+    if body.get("queue"):  # {"queue": true, "session": "tv"|"phone"}: the queue the web remote shows
+        return [i for i in session_for(body.get("session")).queue if i in LIB]
     if isinstance(body.get("folder"), dict):
         f = body["folder"]
         if f.get("root") not in ROOTS:
@@ -988,7 +928,7 @@ async def run_scan(force=False, wait=False):
         return
     async with SCAN_LOCK:
         SCANNING = True
-        await broadcast_state()
+        await broadcast_all()
         try:
             stats = await asyncio.get_running_loop().run_in_executor(None, scanner.scan, DB, ROOTS, force)
             log.info("scan done: %s", stats)
@@ -996,13 +936,14 @@ async def run_scan(force=False, wait=False):
                 for stale in (CACHE / "art").glob(f"{item_id}.*"):
                     stale.unlink(missing_ok=True)
             load_library()
-            S.prune()
-            S.save()
+            for s in SESSIONS.values():
+                s.prune()
+                s.save()
         except Exception:
             log.exception("scan failed")
         finally:
             SCANNING = False
-            await broadcast_state()
+            await broadcast_all()
 
 
 def advertised_ip():
@@ -1051,7 +992,8 @@ async def on_startup(app):
     DATA.mkdir(parents=True, exist_ok=True)
     (CACHE / "art").mkdir(parents=True, exist_ok=True)
     load_library()
-    S.load()
+    for s in SESSIONS.values():
+        s.load()
     load_playlists()
     asyncio.create_task(run_scan())
     await advertise(app)

@@ -55,7 +55,7 @@
 </head>
 <body>
 <header>
-  <div class="status"><span><span id="dot" class="dot"></span><span id="conn">connecting…</span> <select id="out" hidden title="Which device plays the queue"></select></span><span><span id="scan"></span> <button id="rescan" class="small" title="Look for new, changed and removed files on the NAS">⟳ Rescan</button></span></div>
+  <div class="status"><span><span id="dot" class="dot"></span><select id="out" title="Which queue this page controls: the Apple TV's or the iPhone's"></select> <span id="conn">connecting…</span></span><span><span id="scan"></span> <button id="rescan" class="small" title="Look for new, changed and removed files on the NAS">⟳ Rescan</button></span></div>
   <div class="np">
     <img id="art" alt="">
     <div class="meta">
@@ -92,6 +92,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+let session = localStorage.getItem("atvSession") === "phone" ? "phone" : "tv";
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
 let playlists = [], openPl = null;  // openPl = playlist detail shown in the Playlists tab
 
@@ -112,7 +113,7 @@ async function loadPlaylists() {
 }
 
 function connect() {
-  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=remote`);
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=remote&session=${session}`);
   ws.onopen = () => { $("conn").textContent = "server connected"; };
   ws.onclose = () => { $("dot").className = "dot"; $("conn").textContent = "server disconnected, retrying…"; setTimeout(connect, 3000); };
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "state") onState(m.state); else if (m.type === "playlists") loadPlaylists(); };
@@ -128,14 +129,13 @@ function onState(s) {
   const prevScan = st && st.scanning;
   st = s; clockOffset = s.server_time - Date.now() / 1000;
   $("dot").className = "dot" + (s.players ? " ok" : "");
-  // Server 0.9.0: several players (Apple TV, iPhone), one of them plays ("output").
-  const outs = s.outputs || [];
-  const active = outs.find((o) => o.device === s.output);
-  $("conn").textContent = outs.length >= 2 ? (active ? "Playing on" : "Play on")
-    : active ? `Playing on ${active.name}` : (s.players ? "Player connected" : "Apple TV app not open");
-  $("out").hidden = outs.length < 2;
-  if (outs.length >= 2 && document.activeElement !== $("out")) {
-    $("out").innerHTML = outs.map((o) => `<option value="${esc(o.device)}"${o.device === s.output ? " selected" : ""}>${esc(o.name)}</option>`).join("");
+  // Server 0.10.0: the Apple TV and the iPhone each have their own queue; this page controls one of them.
+  const name = s.session_name || "Apple TV";
+  $("conn").textContent = s.players ? "app connected" : "app not open";
+  if (s.sessions && document.activeElement !== $("out")) {
+    $("out").innerHTML = s.sessions.map((x) => `<option value="${esc(x.session)}"${x.session === s.session ? " selected" : ""}>${esc(x.name)}${x.playing ? " ▶" : ""}</option>`).join("");
+  } else if (!s.sessions) {
+    $("out").innerHTML = `<option>${esc(name)}</option>`;
   }
   $("scan").textContent = s.scanning ? "scanning library…" : (s.last_scan && s.last_scan.finished_at ? `${lib.length} items` : "");
   if (prevScan && !s.scanning) loadLibrary();
@@ -308,7 +308,7 @@ document.addEventListener("click", (e) => {
     const ids = lib.filter((i) => `${i.title} ${i.artist || ""} ${i.album || ""} ${i.folder}`.toLowerCase().includes(q)).slice(0, 300).map((i) => i.id);
     addToPlaylist({ ids }, `${ids.length} search results`);
   }
-  else if (act === "saveQueue") newPlaylist({ queue: true }).then((p) => { if (p) { tab = "playlists"; openPl = p; selectTab(); loadPlaylists(); } });
+  else if (act === "saveQueue") newPlaylist({ queue: true, session }).then((p) => { if (p) { tab = "playlists"; openPl = p; selectTab(); loadPlaylists(); } });
   else if (act === "newPl") newPlaylist().then((p) => { if (p) { openPl = p; loadPlaylists(); } });
   else if (act === "openPl") api("GET", `/api/playlists/${b.dataset.pl}`).then((p) => { openPl = p; render(); window.scrollTo(0, 0); });
   else if (act === "closePl") { openPl = null; render(); }
@@ -327,7 +327,10 @@ document.addEventListener("click", (e) => {
 function selectTab() { document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("sel", x.dataset.tab === tab)); render(); }
 $("shuf").onclick = () => cmd("shuffle", { on: !(st && st.shuffle) });
 $("rep").onclick = () => cmd("repeat");
-$("out").onchange = (e) => cmd("output", { device: e.target.value });
+$("out").onchange = (e) => {
+  session = e.target.value; localStorage.setItem("atvSession", session);
+  send({ type: "select", session }); $("out").blur();
+};
 $("bar").onclick = (e) => { if (!st || !st.current) return; const r = $("bar").getBoundingClientRect(); const dur = st.duration || st.current.duration || 0; cmd("seek", { position: (e.clientX - r.left) / r.width * dur }); };
 $("rescan").onclick = async () => {
   const b = $("rescan"); if (b.disabled) return;

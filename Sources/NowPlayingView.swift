@@ -54,10 +54,6 @@ struct NowPlayingView: View {
         }
         .onTapGesture { flash() }
         .onExitCommand { dismiss() }
-        // Another device took over the queue (iPhone "play here"): back to the menu.
-        .onChange(of: engine.current == nil) { _, released in
-            if released { dismiss() }
-        }
     }
 
     private func flash() {

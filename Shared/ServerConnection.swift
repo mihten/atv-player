@@ -1,8 +1,8 @@
 import Foundation
 
-/// WebSocket link to the media server (role=player). The server owns the queue and tells exactly one
-/// player (the active output) what to play; this side plays what it is told and reports state changes.
-/// No polling: messages flow only on events, plus WebSocket keepalive pings from the server.
+/// WebSocket link to the media server (role=player, kind=tv|phone). The server owns this device's queue
+/// (the Apple TV and the iPhone each have their own); this side plays what it is told and reports state
+/// changes. No polling: messages flow only on events, plus WebSocket keepalive pings from the server.
 @MainActor
 final class ServerConnection: ObservableObject {
     @Published private(set) var connected = false
@@ -16,34 +16,6 @@ final class ServerConnection: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var retryDelay: Double = 1
     private var failures = 0
-    /// Local time the last state arrived, to extrapolate the position of another output.
-    private var stateReceivedAt = Date()
-
-    /// Commands that start playback somewhere. From the Apple TV they always mean "play here";
-    /// from the iPhone only while it is the output (or no output is online): otherwise the iPhone is a
-    /// remote for the output that plays.
-    private static let startingCommands: Set<String> = ["play_ids", "play_collection", "jump", "enqueue", "play", "toggle"]
-
-    var outputs: [OutputInfo] { state?.outputs ?? [] }
-
-    /// Device id of the player that plays the queue, nil if none is online (or an old server).
-    var activeOutput: String? { state?.output }
-
-    var isThisDeviceOutput: Bool { activeOutput == Config.deviceID }
-
-    /// Another device is the output (this one is only a remote right now).
-    var otherOutput: OutputInfo? {
-        guard let id = activeOutput, id != Config.deviceID else { return nil }
-        return outputs.first { $0.device == id }
-    }
-
-    var playHere: Bool {
-        #if os(tvOS)
-        return true
-        #else
-        return activeOutput == nil || activeOutput == Config.deviceID
-        #endif
-    }
 
     func start() {
         if task == nil { connect() }
@@ -76,8 +48,6 @@ final class ServerConnection: ObservableObject {
         components.path = "/ws"
         components.queryItems = [
             URLQueryItem(name: "role", value: "player"),
-            URLQueryItem(name: "device", value: Config.deviceID),
-            URLQueryItem(name: "name", value: Config.deviceName),
             URLQueryItem(name: "kind", value: Config.deviceKind),
         ]
         let newTask = URLSession.shared.webSocketTask(with: components.url!)
@@ -125,10 +95,7 @@ final class ServerConnection: ObservableObject {
         guard let message = try? JSONDecoder.server().decode(ServerMessage.self, from: data) else { return }
         switch message.type {
         case "state":
-            if let newState = message.state {
-                state = newState
-                stateReceivedAt = Date()
-            }
+            if let newState = message.state { state = newState }
         case "load":
             if let item = message.item {
                 engine?.load(item, position: message.position ?? 0, autoplay: message.autoplay ?? true,
@@ -143,18 +110,6 @@ final class ServerConnection: ObservableObject {
         }
     }
 
-    /// Position of the queue's current item as the server last reported it, moved on by the time since.
-    func estimatedPosition(at date: Date = Date()) -> Double {
-        guard let state else { return 0 }
-        var position = state.position ?? 0
-        if state.playing == true {
-            let lag = max(0, (state.serverTime ?? 0) - (state.positionAt ?? state.serverTime ?? 0))
-            position += lag + date.timeIntervalSince(stateReceivedAt)
-        }
-        if let duration = state.duration, duration > 0 { position = min(position, duration) }
-        return max(0, position)
-    }
-
     func send(_ object: [String: Any]) {
         guard let task,
               let data = try? JSONSerialization.data(withJSONObject: object),
@@ -166,14 +121,6 @@ final class ServerConnection: ObservableObject {
         var message = arguments
         message["type"] = "cmd"
         message["cmd"] = name
-        if Self.startingCommands.contains(name), playHere, message["here"] == nil {
-            message["here"] = true
-        }
         send(message)
-    }
-
-    /// Move playback to another device (or here), at the current position.
-    func setOutput(_ device: String) {
-        command("output", ["device": device])
     }
 }

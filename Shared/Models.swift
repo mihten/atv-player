@@ -9,21 +9,11 @@ enum Config {
         "http://\(serverURL.host ?? ""):\(serverURL.port ?? 80)"
     }
 
-    /// Stable id of this device for the server (which player is the output).
-    static let deviceID: String = {
-        let key = "deviceID"
-        if let id = UserDefaults.standard.string(forKey: key) { return id }
-        let id = UUID().uuidString.lowercased()
-        UserDefaults.standard.set(id, forKey: key)
-        return id
-    }()
-
+    /// Which queue on the server this app plays: the Apple TV and the iPhone each have their own.
     #if os(tvOS)
     static let deviceKind = "tv"
-    static let deviceName = "Apple TV"
     #else
     static let deviceKind = "phone"
-    static let deviceName = "iPhone"
     #endif
 }
 
@@ -71,26 +61,10 @@ struct SessionState: Codable {
     let repeatMode: String?
     let playing: Bool?
     let position: Double?
-    let positionAt: Double?
-    let serverTime: Double?
     let duration: Double?
     let current: MediaItem?
     let upcoming: [MediaItem]?
     let players: Int?
-    /// Connected player devices and the one that plays the queue (server 0.9.0+; nil before).
-    let outputs: [OutputInfo]?
-    let output: String?
-}
-
-struct OutputInfo: Codable, Identifiable, Hashable {
-    let device: String
-    let name: String
-    let kind: String
-
-    var id: String { device }
-    var isThisDevice: Bool { device == Config.deviceID }
-    var label: String { isThisDevice ? "This \(name)" : name }
-    var symbol: String { kind == "phone" ? "iphone" : "appletv" }
 }
 
 /// Every server push uses this one shape; unused fields are nil.
