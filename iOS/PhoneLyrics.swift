@@ -194,7 +194,7 @@ struct PlainLyrics: View {
                 Color.clear.frame(height: 60)
             }
             .foregroundStyle(theme.ink.opacity(0.92))
-            .padding(.top, 12)
+            .padding(.top, 30)  // below the top fade, so the caption stays readable
         }
         .mask(edgeFade)
     }
