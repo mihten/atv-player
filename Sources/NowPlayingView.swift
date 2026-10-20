@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Full-screen player. Siri Remote: down = next, up = previous, left/right = jump back/forward
-/// (Settings), play/pause = toggle, click = show info, Back = return to the menu.
+/// (Settings), play/pause = toggle, click = lyrics on/off (and show the info), Back = return to the menu.
 struct NowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -13,12 +13,17 @@ struct NowPlayingView: View {
     @State private var hideTask: Task<Void, Never>?
     /// Direction of the last skip: themed screens slide the next song in from that side.
     @State private var forward = true
+    /// Lyrics instead of cover / video; remembered on this device, switched with the remote's click button.
+    @AppStorage("lyricsMode") private var lyricsMode = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let item = engine.current {
-                if item.isVideo {
+                if lyricsMode {
+                    TVLyricsScreen(item: item, forward: forward, hints: overlay)
+                        .ignoresSafeArea()
+                } else if item.isVideo {
                     VideoSurface(engine: engine).ignoresSafeArea()
                 } else if theme.isClassic {
                     AudioScreen(item: item)
@@ -29,7 +34,9 @@ struct NowPlayingView: View {
             } else {
                 Text("Nothing playing").foregroundStyle(.secondary)
             }
-            if theme.isClassic {
+            if lyricsMode {
+                EmptyView()  // the lyrics screen has its own title and progress
+            } else if theme.isClassic {
                 if overlay || engine.current?.isVideo != true {
                     VStack {
                         Spacer()
@@ -51,8 +58,12 @@ struct NowPlayingView: View {
         .focused($focused)
         .onAppear {
             focused = true
+            if DemoRoute.argument("lyricsMode") != nil { lyricsMode = true }  // CI screenshots only
+            syncLyrics()
             flash()
         }
+        .onDisappear { engine.setLyricsCover(false) }
+        .onChange(of: lyricsMode) { syncLyrics() }
         .onMoveCommand { direction in
             switch direction {
             case .down:
@@ -71,12 +82,25 @@ struct NowPlayingView: View {
             engine.togglePlay(source: "player-screen")
             flash()
         }
-        .onTapGesture { flash() }
+        .onTapGesture {  // click on the Siri Remote
+            lyricsMode.toggle()
+            flash()
+        }
         .onExitCommand { dismiss() }
         .onChange(of: engine.current?.id) {
             // auto-advance after a "previous" goes forward again
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { forward = true }
+            syncLyrics()
         }
+    }
+
+    /// With lyrics on, a video's picture track is switched off (nothing is decoded for a picture nobody sees; the
+    /// sound keeps playing); the lyrics of this and the next item are fetched.
+    private func syncLyrics() {
+        engine.setLyricsCover(lyricsMode)
+        guard lyricsMode else { return }
+        LyricsStore.shared.prefetch(engine.current)
+        LyricsStore.shared.prefetch(connection.state?.upcoming?.first)
     }
 
     private func flash() {
@@ -115,7 +139,7 @@ struct InfoBar: View {
                 if connection.state?.shuffle == true {
                     Label("Shuffle", systemImage: "shuffle")
                 }
-                Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s")
+                Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● lyrics")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)

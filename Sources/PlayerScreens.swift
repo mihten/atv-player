@@ -359,7 +359,7 @@ struct RemoteHints: View {
     var body: some View {
         VStack {
             if !topPlacement { Spacer() }
-            Text("▼ next     ▲ previous     ◀ −\(Int(PlayerSettings.seekBack)) s     ▶ +\(Int(PlayerSettings.seekForward)) s     ⏯ pause")
+            Text("▼ next     ▲ previous     ◀ −\(Int(PlayerSettings.seekBack)) s     ▶ +\(Int(PlayerSettings.seekForward)) s     ⏯ pause     ● lyrics")
                 .font(theme.font(22, .medium))
                 .padding(.horizontal, 26)
                 .padding(.vertical, 12)
@@ -401,7 +401,7 @@ struct ThemedInfoBar: View {
                             Text("Next: \(next.title)").lineLimit(1)
                         }
                         Spacer()
-                        Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s")
+                        Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● lyrics")
                     }
                     .font(theme.font(20))
                     .opacity(0.55)

@@ -125,6 +125,19 @@ if [[ $PLATFORMS == *tv* ]]; then
     shot "$TV" "tv-$theme-video"
     t 30 "${DRV[@]}" play tv music "Harbor Lights"
     sleep 2
+    # Lyrics screen (Apple TV Now Playing, remote click): synced song, music video, plain text, song without lyrics
+    LAUNCH_EXTRA="-lyricsMode YES"
+    launch "$TV" "$TV_ID" "$theme" player
+    play tv
+    for entry in "music|Harbor Lights|lyrics-synced" "videos|Undertow|lyrics-video" "music|Orchard|lyrics-plain" "music|Driftwood|lyrics-info"; do
+      IFS='|' read -r kind title name <<<"$entry"
+      t 30 "${DRV[@]}" play tv "$kind" "$title"
+      sleep 12
+      shot "$TV" "tv-$theme-$name"
+    done
+    LAUNCH_EXTRA=""
+    t 30 "${DRV[@]}" play tv music "Harbor Lights"
+    sleep 2
   done
   t 120 xcrun simctl shutdown "$TV"
 fi

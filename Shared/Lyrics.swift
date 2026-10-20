@@ -1,7 +1,40 @@
 import SwiftUI
 
-// Lyrics view of the iPhone player (Now Playing → the speech-bubble button). Only lyrics embedded in the file are
-// shown: a music video's subtitle track, or a song's lyrics tag. The server reads them (GET /api/lyrics/<id>).
+// Lyrics view of the players (iPhone: the speech-bubble button on Now Playing; Apple TV: the remote's click button).
+// Only lyrics embedded in the file are shown: a music video's subtitle track, or a song's lyrics tag. The server
+// reads them (GET /api/lyrics/<id>). The same views serve both apps; `LyricsMetrics` holds the per-device sizes.
+
+struct LyricsMetrics {
+    var line: CGFloat        // synced lines
+    var gap: CGFloat         // between synced lines
+    var plain: CGFloat       // unsynced text
+    var info: CGFloat        // info card values
+    var caption: CGFloat     // small spaced-out captions
+    var top: CGFloat         // empty space before the first synced line
+    var bottom: CGFloat      // and after the last
+    var anchorY: CGFloat     // where the current line sits (0 top … 1 bottom)
+    var followsPlayback: Bool  // unsynced text scrolls with the song's progress (no touch to scroll on a TV)
+
+    static let phone = LyricsMetrics(line: 27, gap: 18, plain: 20, info: 20, caption: 10, top: 70, bottom: 180,
+                                     anchorY: 0.36, followsPlayback: false)
+    static let tv = LyricsMetrics(line: 54, gap: 34, plain: 38, info: 38, caption: 20, top: 140, bottom: 420,
+                                  anchorY: 0.38, followsPlayback: true)
+}
+
+private struct LyricsMetricsKey: EnvironmentKey {
+    #if os(tvOS)
+    static let defaultValue = LyricsMetrics.tv
+    #else
+    static let defaultValue = LyricsMetrics.phone
+    #endif
+}
+
+extension EnvironmentValues {
+    var lyricsMetrics: LyricsMetrics {
+        get { self[LyricsMetricsKey.self] }
+        set { self[LyricsMetricsKey.self] = newValue }
+    }
+}
 
 struct LyricCue: Decodable, Hashable {
     let s: Double?   // start, seconds (nil = plain text)
@@ -117,6 +150,7 @@ struct SyncedLyrics: View {
     let track: LyricsTrack
     @EnvironmentObject var engine: PlayerEngine
     @Environment(\.appTheme) private var theme
+    @Environment(\.lyricsMetrics) private var m
     @State private var index = -1
     @State private var lit = false
     @State private var touched = Date.distantPast
@@ -124,12 +158,12 @@ struct SyncedLyrics: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    Color.clear.frame(height: 70)
+                VStack(alignment: .leading, spacing: m.gap) {
+                    Color.clear.frame(height: m.top)
                     ForEach(track.cues.indices, id: \.self) { i in
                         let active = i == index && lit
                         Text(track.cues[i].t)
-                            .font(theme.display(27))
+                            .font(theme.display(m.line))
                             .foregroundStyle(theme.ink)
                             .opacity(active ? 1 : 0.3)
                             .scaleEffect(active ? 1 : 0.93, anchor: .leading)
@@ -138,10 +172,17 @@ struct SyncedLyrics: View {
                             .animation(.easeOut(duration: 0.3), value: active)
                             .id(i)
                     }
-                    Color.clear.frame(height: 180)
+                    Color.clear.frame(height: m.bottom)
                 }
             }
+            #if os(iOS)
             .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { _ in touched = Date() })
+            #else
+            // A TV has no touch: the remote keeps skip / seek, so this view must never take focus or scroll.
+            .scrollDisabled(true)
+            .focusable(false)
+            .allowsHitTesting(false)
+            #endif
             .onReceive(Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()) { _ in
                 update(proxy, animated: true)
             }
@@ -162,39 +203,62 @@ struct SyncedLyrics: View {
         index = found
         guard found >= 0, Date().timeIntervalSince(touched) > 3 else { return }
         if animated {
-            withAnimation(.easeInOut(duration: 0.5)) { proxy.scrollTo(found, anchor: UnitPoint(x: 0.5, y: 0.36)) }
+            withAnimation(.easeInOut(duration: 0.5)) { proxy.scrollTo(found, anchor: UnitPoint(x: 0.5, y: m.anchorY)) }
         } else {
-            proxy.scrollTo(found, anchor: UnitPoint(x: 0.5, y: 0.36))
+            proxy.scrollTo(found, anchor: UnitPoint(x: 0.5, y: m.anchorY))
         }
     }
 }
 
-/// Lyrics without time stamps: the whole text, scrollable.
+/// Lyrics without time stamps: the whole text. On the iPhone you scroll it; on the Apple TV it follows the
+/// song's progress (a rough guide: the text has no times).
 struct PlainLyrics: View {
     let track: LyricsTrack
+    @EnvironmentObject var engine: PlayerEngine
     @Environment(\.appTheme) private var theme
+    @Environment(\.lyricsMetrics) private var m
+    @State private var followed = 0
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("LYRICS · NOT SYNCED")
-                    .font(.system(size: 10, weight: .heavy)).tracking(3)
-                    .opacity(0.45)
-                    .padding(.bottom, 6)
-                ForEach(track.cues.indices, id: \.self) { i in
-                    if track.cues[i].t.isEmpty {
-                        Color.clear.frame(height: 14)
-                    } else {
-                        Text(track.cues[i].t)
-                            .font(theme.font(20, .medium))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: m.plain * 0.4) {
+                    Text("LYRICS · NOT SYNCED")
+                        .font(.system(size: m.caption, weight: .heavy)).tracking(3)
+                        .opacity(0.45)
+                        .padding(.bottom, 6)
+                        .id(-1)
+                    ForEach(track.cues.indices, id: \.self) { i in
+                        if track.cues[i].t.isEmpty {
+                            Color.clear.frame(height: m.plain * 0.7)
+                        } else {
+                            Text(track.cues[i].t)
+                                .font(theme.font(m.plain, .medium))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .id(i)
+                        }
                     }
+                    Color.clear.frame(height: m.followsPlayback ? m.bottom : 60)
                 }
-                Color.clear.frame(height: 60)
+                .foregroundStyle(theme.ink.opacity(0.92))
+                .padding(.top, 30)  // below the top fade, so the caption stays readable
             }
-            .foregroundStyle(theme.ink.opacity(0.92))
-            .padding(.top, 30)  // below the top fade, so the caption stays readable
+            #if os(tvOS)
+            .scrollDisabled(true)
+            .focusable(false)
+            .allowsHitTesting(false)
+            #endif
+            .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+                guard m.followsPlayback, engine.liveDuration > 1 else { return }
+                let progress = min(1, max(0, engine.livePosition / engine.liveDuration))
+                let target = min(track.cues.count - 1, Int(progress * Double(track.cues.count)))
+                guard target != followed else { return }
+                followed = target
+                withAnimation(.easeInOut(duration: 1.2)) {
+                    proxy.scrollTo(target <= 0 ? -1 : target, anchor: UnitPoint(x: 0.5, y: 0.12))
+                }
+            }
         }
         .mask(edgeFade)
     }
@@ -204,6 +268,7 @@ struct PlainLyrics: View {
 struct SongInfoCard: View {
     let item: MediaItem
     @Environment(\.appTheme) private var theme
+    @Environment(\.lyricsMetrics) private var m
 
     private var rows: [(String, String)] {
         var rows: [(String, String)] = [("Title", item.title)]
@@ -223,18 +288,18 @@ struct SongInfoCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: m.info * 0.7) {
             Text("NO LYRICS IN THIS FILE")
-                .font(.system(size: 10, weight: .heavy)).tracking(3)
+                .font(.system(size: m.caption, weight: .heavy)).tracking(3)
                 .opacity(0.45)
                 .padding(.bottom, 4)
             ForEach(rows, id: \.0) { row in
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.0.uppercased())
-                        .font(.system(size: 10, weight: .bold)).tracking(2)
+                        .font(.system(size: m.caption, weight: .bold)).tracking(2)
                         .opacity(0.45)
                     Text(row.1)
-                        .font(theme.font(20, .medium))
+                        .font(theme.font(m.info, .medium))
                         .lineLimit(3)
                 }
             }
@@ -242,6 +307,6 @@ struct SongInfoCard: View {
         }
         .foregroundStyle(theme.ink)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.top, 12)
+        .padding(.top, 30)
     }
 }
