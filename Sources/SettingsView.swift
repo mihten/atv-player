@@ -85,8 +85,10 @@ struct SettingsView: View {
         NavigationLink {
             destination()
         } label: {
-            HStack {
-                Label(title, systemImage: symbol)
+            HStack(spacing: 24) {
+                Image(systemName: symbol)
+                    .frame(width: 48)
+                Text(title)
                 Spacer()
                 Text(value).foregroundStyle(.secondary).lineLimit(1)
             }
