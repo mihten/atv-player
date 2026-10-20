@@ -27,13 +27,14 @@ struct AuroraPlayer: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var artwork: ArtworkStore
     @AppStorage(AppTheme.motionKey) private var motion = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
 
     var body: some View {
         let theme = AppTheme.aurora
         let accent = theme.accent(artwork.palette)
         ZStack {
-            AuroraBackground(palette: artwork.palette, animate: motion, intensity: 1)
+            AuroraBackground(palette: artwork.palette, animate: motion && !reduceMotion, intensity: 1)
             HStack(spacing: 100) {
                 CurrentArtwork(item: item, corner: 30)
                     .frame(width: 640, height: 640)

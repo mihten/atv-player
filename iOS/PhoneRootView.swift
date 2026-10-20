@@ -37,6 +37,7 @@ struct PhoneRootView: View {
         .environment(\.playerNamespace, playerNS)
         .onAppear {
             if DemoRoute.is("player") { DemoRoute.whenLoaded(engine) { showPlayer = true } }
+            if DemoRoute.is("open-player") { DemoRoute.whenLoaded(engine, after: 5) { showPlayer = true } }
         }
         .sheet(isPresented: $showPlayer) {
             PhoneNowPlayingView(fullScreen: $fullScreen)

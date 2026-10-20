@@ -8,13 +8,15 @@ struct ThemeBackdrop: View {
     @Environment(\.appTheme) private var theme
     @EnvironmentObject private var artwork: ArtworkStore
     @AppStorage(AppTheme.motionKey) private var motion = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var intensity: Double = 0.8
     var animate = true
 
     var body: some View {
         Group {
             switch theme {
-            case .aurora: AuroraBackground(palette: artwork.palette, animate: motion && animate, intensity: intensity)
+            case .aurora: AuroraBackground(palette: artwork.palette, animate: motion && animate && !reduceMotion,
+                                           intensity: intensity)
             case .noir: NoirBackground(palette: artwork.palette, intensity: intensity)
             case .vinyl: VinylBackground(palette: artwork.palette, intensity: intensity)
             case .classic: Color.clear

@@ -29,6 +29,8 @@ struct ContentView: View {
         .onAppear {
             if DemoRoute.is("player") {
                 DemoRoute.whenLoaded(engine) { showPlayer = true }
+            } else if DemoRoute.is("open-player") {
+                DemoRoute.whenLoaded(engine, after: 5) { showPlayer = true }
             } else if DemoDestination.pushes {
                 demoPush = true
             }
@@ -296,13 +298,20 @@ struct SidebarProgress: View {
 /// Puts the Now Playing sidebar on the right of a menu screen while something is loaded.
 struct WithNowPlaying: ViewModifier {
     @EnvironmentObject var engine: PlayerEngine
+    /// The card is not focusable for the first moments, so tvOS puts the initial focus on the list
+    /// (same pattern as Settings, proven on the TV); then ◀ reaches the card.
+    @State private var cardReady = false
 
     func body(content: Content) -> some View {
         HStack(alignment: .top, spacing: 50) {
             content
             if engine.current != nil {
-                NowPlayingSidebar().padding(.trailing, 40)
+                NowPlayingSidebar(enabled: cardReady).padding(.trailing, 40)
             }
+        }
+        .task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            cardReady = true
         }
     }
 }

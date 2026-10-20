@@ -40,10 +40,10 @@ def main():
         shots.setdefault(platform, {}).setdefault(screen, {})[theme] = name
     videos = {}
     for f in sorted(src.glob("*.mp4")):
-        m = re.match(r"(tv|phone)-([a-z]+)-transitions\.mp4$", f.name)
+        m = re.match(r"(tv|phone)-([a-z]+)-(transitions|open)\.mp4$", f.name)
         if m and f.stat().st_size > 10_000:
             shutil.copy(f, out / f.name)
-            videos.setdefault(m.group(1), {})[m.group(2)] = f.name
+            videos.setdefault(m.group(1), {}).setdefault(m.group(3), {})[m.group(2)] = f.name
     themes_seen = sorted({t for p in shots.values() for s in p.values() for t in s}, key=lambda t: ORDER.index(t) if t in ORDER else 9)
 
     parts = [f"""<!doctype html><html><head><meta charset="utf-8"><title>{html.escape(title)}</title>
@@ -71,10 +71,13 @@ a{{color:#8cf}}
                 cell = f"<a href='{name}'><img loading='lazy' src='{name}'></a>" if name else "<i>—</i>"
                 parts.append(f"<div class='cell'><b>{theme.capitalize()}</b>{cell}</div>")
             parts.append("</div>")
-        if platform in videos:
-            parts.append("<h3>Transitions (next, next, previous, pause, play)</h3><div class='row'>")
+        for kind, label in (("open", "Opening the player"), ("transitions", "Next, next, previous, pause, play")):
+            clips = videos.get(platform, {}).get(kind)
+            if not clips:
+                continue
+            parts.append(f"<h3>Video: {label}</h3><div class='row'>")
             for theme in themes_seen:
-                name = videos[platform].get(theme)
+                name = clips.get(theme)
                 cell = f"<video src='{name}' controls muted loop playsinline preload='metadata'></video>" if name else "<i>—</i>"
                 parts.append(f"<div class='cell'><b>{theme.capitalize()}</b>{cell}</div>")
             parts.append("</div>")
@@ -82,7 +85,7 @@ a{{color:#8cf}}
     parts.append("</body></html>")
     (out / "index.html").write_text("\n".join(parts))
     print(f"{out / 'index.html'}: {sum(len(s) for p in shots.values() for s in p.values())} screenshots, "
-          f"{sum(len(v) for v in videos.values())} videos")
+          f"{sum(len(c) for v in videos.values() for c in v.values())} videos")
 
 
 if __name__ == "__main__":

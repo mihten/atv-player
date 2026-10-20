@@ -19,6 +19,6 @@ struct DemoDestination: View {
     /// Routes that push a screen on top of the main menu.
     static var pushes: Bool {
         guard let screen = DemoRoute.screen else { return false }
-        return !["home", "player"].contains(screen)
+        return !["home", "player", "open-player"].contains(screen)
     }
 }

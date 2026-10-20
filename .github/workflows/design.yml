@@ -120,9 +120,10 @@ jobs:
             set -- $spec
             xcodebuild build -workspace AtvPlayer.xcworkspace -scheme "$1" -configuration Release \
               -sdk "$2" -destination "generic/platform=$3" -derivedDataPath build \
-              CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+              CURRENT_PROJECT_VERSION="$((1000 + BUILD_NUMBER))" \
               CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
               > "xcodebuild-$1.log" 2>&1 || true
+            grep -q 'BUILD SUCCEEDED' "xcodebuild-$1.log"
             grep -E '\*\* BUILD|/(Sources|Shared|iOS)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' "xcodebuild-$1.log" | head -60 || true
             rm -rf Payload && mkdir Payload
             cp -R "build/Build/Products/$4/$1.app" Payload/

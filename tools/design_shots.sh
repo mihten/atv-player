@@ -76,6 +76,12 @@ play() {  # $1 = session: the server loads the queue paused after a relaunch
   t 30 "${DRV[@]}" cmd "$1" play
 }
 
+open_player() {  # $1 = device, $2 = bundle id, $3 = theme, $4 = session: home screen, the player opens after ~5 s
+  launch "$1" "$2" "$3" open-player
+  play "$4"
+  sleep 12
+}
+
 tv_transitions() {
   t 30 "${DRV[@]}" cmd tv next; sleep 5
   t 30 "${DRV[@]}" cmd tv next; sleep 5
@@ -105,6 +111,7 @@ if [[ $PLATFORMS == *tv* ]]; then
       sleep 7
       shot "$TV" "tv-$theme-$route"
     done
+    record "$TV" "tv-$theme-open" open_player "$TV" "$TV_ID" "$theme" tv
     launch "$TV" "$TV_ID" "$theme" player
     play tv
     sleep 8
@@ -137,6 +144,7 @@ if [[ $PLATFORMS == *phone* ]]; then
       sleep 6
       shot "$PHONE" "phone-$theme-$route"
     done
+    record "$PHONE" "phone-$theme-open" open_player "$PHONE" "$PHONE_ID" "$theme" phone
     launch "$PHONE" "$PHONE_ID" "$theme" player
     play phone
     sleep 7
