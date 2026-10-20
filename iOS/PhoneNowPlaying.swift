@@ -271,7 +271,7 @@ struct PhoneNowPlayingView: View {
     }
 
     private var videoSurface: some View {
-        VideoSurface(engine: engine)
+        VideoSurface(engine: engine, active: !fullScreen)  // the cover above owns the picture while it is up
             .id(fullScreen)  // re-attach the video view here after the full-screen cover closes
             .aspectRatio(16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: theme == .noir ? 2 : 12))
@@ -546,7 +546,20 @@ struct FullScreenVideo: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            VideoSurface(engine: engine).ignoresSafeArea()
+            VideoSurface(engine: engine).ignoresSafeArea().allowsHitTesting(false)
+            // Own tap layer between the picture and the controls: show/hide the controls.
+            Color.clear
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    engine.diag("full screen: tap, controls were \(controls ? "shown" : "hidden")")
+                    if controls {
+                        hideTask?.cancel()
+                        withAnimation { controls = false }
+                    } else {
+                        showControls()
+                    }
+                }
             if controls {
                 VStack {
                     HStack {
@@ -575,18 +588,20 @@ struct FullScreenVideo: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .contentShape(Rectangle())
-        // Tap: show the controls (they hide again after 3 s); tap while shown hides them at once.
-        .onTapGesture {
-            if controls {
-                hideTask?.cancel()
-                withAnimation { controls = false }
-            } else {
-                showControls()
-            }
+        // Tap (layer above): show the controls (they hide again after 3 s); tap while shown hides them at once.
+        .onAppear {
+            engine.diag("full screen: opened")
+            showControls()
         }
-        .onAppear { showControls() }
-        .onDisappear { hideTask?.cancel() }
+        .onDisappear {
+            engine.diag("full screen: closed")
+            hideTask?.cancel()
+        }
+        // A new video (next / auto-advance) starts with the controls visible for 3 s.
+        .onChange(of: engine.current?.id) {
+            engine.diag("full screen: item changed")
+            showControls()
+        }
         .onChange(of: engine.current?.isVideo == true) { _, isVideo in
             if !isVideo { dismiss() }  // the queue moved on to a song
         }

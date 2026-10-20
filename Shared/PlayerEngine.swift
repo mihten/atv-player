@@ -110,6 +110,11 @@ final class PlayerEngine: NSObject, ObservableObject {
                    item.lufs.map { String(format: "%.1f", $0) } ?? "?", item.tpeak.map { String(format: "%.1f", $0) } ?? "?"))
     }
 
+    /// UI diagnostics into the server log (e.g. full-screen events), with the app state.
+    func diag(_ message: String) {
+        log("\(message); \(envNote)")
+    }
+
     /// First connection of this launch: tell the server log how the previous run ended.
     func reportLaunch() {
         log("\(launchNote); \(envNote)")
