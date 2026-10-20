@@ -3,7 +3,8 @@ import SwiftUI
 /// Apple TV Now Playing with lyrics: the cover / video is replaced by the lyrics (Siri Remote click switches it on
 /// and off). Title, progress and up-next stay on the left; the lyrics fill the right half. It is ONE screen for every
 /// song and video, so skipping never flips back to the regular player and then to lyrics again: only the text
-/// cross-fades (an info card when the file has no lyrics).
+/// cross-fades (an info card when the file has no lyrics). The lyrics views take no focus and do not scroll by
+/// themselves: ▲▼◀▶ and ⏯ keep working through NowPlayingView.
 struct TVLyricsScreen: View {
     let item: MediaItem
     let forward: Bool
