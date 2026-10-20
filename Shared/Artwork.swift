@@ -160,7 +160,7 @@ final class ArtworkStore: ObservableObject {
         let url = item.artURL, id = item.id
         Task {
             var result: (UIImage?, Palette) = (nil, .forItem(id))
-            if let (data, response) = try? await URLSession.shared.data(from: url),
+            if let (data, response) = try? await Net.data(from: url),
                (response as? HTTPURLResponse)?.statusCode == 200,
                let decoded = UIImage(data: data) {
                 let palette = await Task.detached(priority: .userInitiated) {

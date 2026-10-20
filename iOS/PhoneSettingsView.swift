@@ -25,6 +25,12 @@ struct PhoneSettingsView: View {
     @AppStorage(SoundSettings.widenKey) private var widen = 0
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
     @AppStorage(AppTheme.motionKey) private var motion = true
+    @AppStorage(RemoteSettings.urlKey) private var remoteURL = ""
+    @AppStorage(RemoteSettings.userKey) private var remoteUser = ""
+    @AppStorage(RemoteSettings.modeKey) private var remoteMode = "audio"
+    @State private var remotePassword = RemoteSettings.password
+    @State private var remoteTest = ""
+    @State private var testing = false
 
     private var appliedKey: String {
         "\(subsOn)|\(subLang)|\(size)|\(font)|\(color)|\(bold)|\(outline)|\(background)|\(margin)|\(eqPreset)|\(widen)"
@@ -33,6 +39,13 @@ struct PhoneSettingsView: View {
     private var appVersion: String {
         let info = Bundle.main.infoDictionary
         return "Version \(info?["CFBundleShortVersionString"] as? String ?? "?") (build \(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    /// Saves the password (Keychain) and applies address/login; reconnects when the internet address is in use.
+    private func applyRemote() {
+        RemoteSettings.setPassword(remotePassword)
+        locator.remoteSettingsChanged()
+        if locator.isRemote { connection.restart() }
     }
 
     var body: some View {
@@ -72,6 +85,47 @@ struct PhoneSettingsView: View {
                 Text("Server")
             } footer: {
                 Text("Leave empty to find the server automatically on the Wi-Fi (Bonjour). Type an address (e.g. 10.0.0.5 or 10.0.0.5:8080) only if it is not found.")
+            }
+            .themedRow()
+
+            Section {
+                TextField("Internet address (e.g. music.example.org)", text: $remoteURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .submitLabel(.next)
+                TextField("User name", text: $remoteUser)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.next)
+                SecureField("Password", text: $remotePassword)
+                    .submitLabel(.done)
+                    .onSubmit { applyRemote() }
+                Picker("Music videos when away", selection: $remoteMode) {
+                    Text("Audio only").tag("audio")
+                    Text("Audio + video").tag("video")
+                }
+                Button {
+                    applyRemote()
+                    testing = true
+                    Task {
+                        remoteTest = await RemoteSettings.test()
+                        testing = false
+                    }
+                } label: {
+                    HStack {
+                        Text(testing ? "Testing…" : "Test connection")
+                        if testing { ProgressView() }
+                    }
+                }
+                if !remoteTest.isEmpty {
+                    Text(remoteTest).font(.footnote).foregroundStyle(.secondary)
+                }
+                LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
+            } header: {
+                Text("Away from home")
+            } footer: {
+                Text("Used when the home server does not answer (mobile data, other Wi-Fi). The app goes back to the home network by itself. Audio only plays a music video as sound and uses far less data; Audio + video streams the whole video file, which can be very large. Leave the address empty to turn this off.")
             }
             .themedRow()
 
@@ -156,6 +210,8 @@ struct PhoneSettingsView: View {
         .phoneThemed()
         .navigationTitle("Settings")
         .withMiniPlayer()
+        .onDisappear { applyRemote() }
+        .onChange(of: remoteMode) { engine.streamChanged() }
         .onChange(of: appliedKey) {
             engine.applySettings()
         }

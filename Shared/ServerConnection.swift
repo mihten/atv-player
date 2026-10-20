@@ -50,7 +50,7 @@ final class ServerConnection: ObservableObject {
             URLQueryItem(name: "role", value: "player"),
             URLQueryItem(name: "kind", value: Config.deviceKind),
         ]
-        let newTask = URLSession.shared.webSocketTask(with: components.url!)
+        let newTask = URLSession.shared.webSocketTask(with: Net.request(components.url!))
         task = newTask
         newTask.resume()
         listen(newTask)

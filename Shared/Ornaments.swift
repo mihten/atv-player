@@ -9,13 +9,7 @@ struct ArtworkImage: View {
     var tint: Color = Color(white: 0.3)
 
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
-            if case .success(let image) = phase {
-                image.resizable().scaledToFill().transition(.opacity)
-            } else {
-                placeholder
-            }
-        }
+        RemoteImage(url: url) { placeholder }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 

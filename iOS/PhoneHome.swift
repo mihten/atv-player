@@ -211,17 +211,17 @@ struct PhoneHome: View {
     }
 
     private func loadVideos() async {
-        guard let (data, _) = try? await URLSession.shared.data(from: .api("api/collection/videos")),
+        guard let (data, _) = try? await Net.data(from: .api("api/collection/videos")),
               let list = try? JSONDecoder.server().decode(ItemList.self, from: data) else { return }
         videos = list.items
     }
 
     private func loadPlaylists() async {
-        guard let (data, _) = try? await URLSession.shared.data(from: .api("api/playlists")),
+        guard let (data, _) = try? await Net.data(from: .api("api/playlists")),
               let list = try? JSONDecoder.server().decode(PlaylistList.self, from: data) else { return }
         playlists = list.playlists
         for playlist in list.playlists.prefix(30) {
-            guard let (d, _) = try? await URLSession.shared.data(from: .api("api/playlists/\(playlist.id)")),
+            guard let (d, _) = try? await Net.data(from: .api("api/playlists/\(playlist.id)")),
                   let detail = try? JSONDecoder.server().decode(PlaylistDetail.self, from: d) else { continue }
             covers[playlist.id] = detail.items.filter { !$0.isMissing }.prefix(4).map(\.asMediaItem)
         }

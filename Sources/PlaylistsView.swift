@@ -36,7 +36,7 @@ struct PlaylistsView: View {
 
     private func load() async {
         do {
-            let (data, _) = try await URLSession.shared.data(from: .api("api/playlists"))
+            let (data, _) = try await Net.data(from: .api("api/playlists"))
             playlists = try JSONDecoder.server().decode(PlaylistList.self, from: data).playlists
             errorText = nil
         } catch {
@@ -118,7 +118,7 @@ struct PlaylistView: View {
 
     private func load() async {
         do {
-            let (data, response) = try await URLSession.shared.data(from: .api("api/playlists/\(playlistID)"))
+            let (data, response) = try await Net.data(from: .api("api/playlists/\(playlistID)"))
             if (response as? HTTPURLResponse)?.statusCode == 404 {
                 gone = true
                 detail = nil

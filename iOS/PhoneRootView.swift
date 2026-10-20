@@ -284,7 +284,7 @@ struct PhoneVideoListView: View {
         .withMiniPlayer()
         .task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: .api("api/collection/videos"))
+                let (data, _) = try await Net.data(from: .api("api/collection/videos"))
                 items = try JSONDecoder.server().decode(ItemList.self, from: data).items
             } catch {
                 errorText = error.localizedDescription
@@ -314,7 +314,7 @@ struct PhoneFolderRootsView: View {
         .withMiniPlayer()
         .task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: .api("api/browse"))
+                let (data, _) = try await Net.data(from: .api("api/browse"))
                 roots = try JSONDecoder.server().decode(RootList.self, from: data).roots
             } catch {
                 errorText = error.localizedDescription
@@ -381,7 +381,7 @@ struct PhoneFolderView: View {
         .withMiniPlayer()
         .task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: .api("api/browse", ["root": root, "folder": folder]))
+                let (data, _) = try await Net.data(from: .api("api/browse", ["root": root, "folder": folder]))
                 result = try JSONDecoder.server().decode(BrowseResult.self, from: data)
             } catch {
                 errorText = error.localizedDescription
@@ -444,13 +444,13 @@ struct PhonePlaylistsView: View {
 
     private func load() async {
         do {
-            let (data, _) = try await URLSession.shared.data(from: .api("api/playlists"))
+            let (data, _) = try await Net.data(from: .api("api/playlists"))
             let list = try JSONDecoder.server().decode(PlaylistList.self, from: data).playlists
             playlists = list
             errorText = nil
             guard !theme.isClassic else { return }
             for playlist in list.prefix(40) {
-                if let (d, _) = try? await URLSession.shared.data(from: .api("api/playlists/\(playlist.id)")),
+                if let (d, _) = try? await Net.data(from: .api("api/playlists/\(playlist.id)")),
                    let detail = try? JSONDecoder.server().decode(PlaylistDetail.self, from: d) {
                     covers[playlist.id] = detail.items.filter { !$0.isMissing }.prefix(4).map(\.asMediaItem)
                 }
@@ -529,7 +529,7 @@ struct PhonePlaylistView: View {
 
     private func load() async {
         do {
-            let (data, response) = try await URLSession.shared.data(from: .api("api/playlists/\(playlistID)"))
+            let (data, response) = try await Net.data(from: .api("api/playlists/\(playlistID)"))
             if (response as? HTTPURLResponse)?.statusCode == 404 {
                 gone = true
                 detail = nil

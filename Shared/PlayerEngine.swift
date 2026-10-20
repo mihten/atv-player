@@ -149,9 +149,16 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     // MARK: - Commands from the server
 
+    /// Settings: audio only / audio + video over the remote link changed, or the link switched between home
+    /// and remote: reopen what is loaded, same position.
+    func streamChanged() {
+        guard let item = current else { return }
+        load(item, position: position, autoplay: wantPlaying, present: false, force: true)
+    }
+
     func load(_ item: MediaItem, position startAt: Double, autoplay: Bool, present: Bool = false,
-              retry: Bool = false) {
-        if !autoplay, current?.id == item.id, vlc.media != nil {
+              retry: Bool = false, force: Bool = false) {
+        if !autoplay, !force, current?.id == item.id, vlc.media != nil {
             return  // resume sync after a reconnect: keep whatever is playing now
         }
         current = item
@@ -589,7 +596,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         let id = item.id
         let url = item.artURL
         Task {
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
+            guard let (data, response) = try? await Net.data(from: url),
                   (response as? HTTPURLResponse)?.statusCode == 200,
                   let image = UIImage(data: data),
                   self.current?.id == id else { return }

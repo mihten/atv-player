@@ -37,6 +37,7 @@ struct PhoneApp: App {
                 guard url != nil else { return }
                 connection.restart()
                 library.reset()
+                engine.streamChanged()
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
@@ -44,6 +45,7 @@ struct PhoneApp: App {
                 case .active:
                     engine.appDidBecomeActive()
                     if locator.url != nil { connection.resume() }
+                    locator.checkReachable()
                 default: break
                 }
             }
@@ -64,7 +66,7 @@ final class LibraryStore: ObservableObject {
         loading = true
         defer { loading = false }
         do {
-            let (data, _) = try await URLSession.shared.data(from: .api("api/library"))
+            let (data, _) = try await Net.data(from: .api("api/library"))
             let list = try JSONDecoder.server().decode(ItemList.self, from: data).items
             items = list
             byID = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

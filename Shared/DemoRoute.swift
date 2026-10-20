@@ -12,6 +12,11 @@ enum DemoRoute {  // v0.13.0 design preview
 
     static func `is`(_ name: String) -> Bool { screen == name }
 
+    /// Any launch argument value (CI only).
+    static func argument(_ name: String) -> String? {
+        UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[name] as? String
+    }
+
     /// Run `action` once the app has something loaded (the server sends the queue on connect).
     @MainActor
     static func whenLoaded(_ engine: PlayerEngine, after seconds: Double = 2.5, _ action: @escaping () -> Void) {

@@ -4,6 +4,12 @@ enum Config {
     /// Media server, set by ServerLocator (Settings address or Bonjour) before anything talks to it.
     /// Plain HTTP on the LAN (ATS exception in Info.plist).
     nonisolated(unsafe) static var serverURL = URL(string: "http://server.invalid")!
+    /// True while the internet address (Settings → Away from home) is in use instead of the home network.
+    nonisolated(unsafe) static var isRemote = false
+    /// Login for the remote address (HTTP Basic, checked by the reverse proxy).
+    nonisolated(unsafe) static var credentials: (user: String, password: String)? = nil
+    /// Away from home with "audio only": music videos are streamed as audio and shown like songs.
+    static var streamAudioOnly: Bool { isRemote && RemoteSettings.audioOnly }
 
     static var remoteAddress: String {
         "http://\(serverURL.host ?? ""):\(serverURL.port ?? 80)"
@@ -38,14 +44,26 @@ struct MediaItem: Codable, Identifiable, Hashable {
     let track: Int?
     let year: String?
 
-    var isVideo: Bool { kind == "video" }
+    /// A video that is shown and played as a video (not when only its audio is streamed).
+    var isVideo: Bool { kind == "video" && !Config.streamAudioOnly }
 
     var subtitle: String {
         [artist, album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     var artURL: URL { Config.serverURL.appendingPathComponent("art/\(id)") }
-    var mediaURL: URL { Config.serverURL.appendingPathComponent("media/\(id)") }
+    /// The stream. Remote: the login goes in the URL (VLC sends it), and music videos can be audio only.
+    var mediaURL: URL {
+        var components = URLComponents(url: Config.serverURL.appendingPathComponent("media/\(id)"), resolvingAgainstBaseURL: false)!
+        if Config.isRemote, let login = Config.credentials {
+            components.user = login.user
+            components.password = login.password
+        }
+        if kind == "video" && Config.streamAudioOnly {
+            components.queryItems = [URLQueryItem(name: "audio", value: "1")]
+        }
+        return components.url!
+    }
 }
 
 struct SubtitleTrack: Codable, Hashable {

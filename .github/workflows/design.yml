@@ -12,6 +12,9 @@ on:
       platforms:
         description: "tv,phone / tv / phone / none"
         default: "tv,phone"
+      remote_test:
+        description: "Also run the remote-access check (iPhone app through a basic-auth proxy)"
+        default: "false"
 
 permissions:
   contents: write
@@ -27,6 +30,7 @@ jobs:
     env:
       BUILD_NUMBER: ${{ github.run_number }}
       THEMES: ${{ github.event.inputs.themes || 'aurora noir vinyl' }}
+      REMOTE_TEST: ${{ github.event.inputs.remote_test || 'false' }}
       PLATFORMS: ${{ github.event.inputs.platforms || (contains(github.event.head_commit.message, '[release]') && 'none' || 'tv,phone') }}
     steps:
       - uses: actions/checkout@v4
@@ -69,14 +73,14 @@ jobs:
           test -f build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app/AtvPlayerPhone
 
       - name: Cache demo library
-        if: env.PLATFORMS != 'none'
+        if: env.PLATFORMS != 'none' || env.REMOTE_TEST == 'true'
         uses: actions/cache@v4
         with:
           path: ~/demo-library
           key: demo-library-${{ hashFiles('tools/demo_library.py') }}
 
       - name: Demo library + throwaway media server
-        if: env.PLATFORMS != 'none'
+        if: env.PLATFORMS != 'none' || env.REMOTE_TEST == 'true'
         run: |
           command -v ffmpeg || brew install ffmpeg
           python3 -m venv /tmp/venv
@@ -101,12 +105,23 @@ jobs:
             shots "$PLATFORMS" $THEMES
           cp server.log shots/server.log
 
+      - name: Remote-access check (iPhone app -> basic-auth proxy -> media server)
+        if: env.REMOTE_TEST == 'true'
+        timeout-minutes: 15
+        run: |
+          export PATH="/tmp/venv/bin:$PATH"
+          command -v caddy || brew install caddy
+          bash tools/remote_check.sh build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app shots-remote 2>&1 | tee remote-check.log
+          test ${PIPESTATUS[0]} -eq 0
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: design-shots-${{ env.BUILD_NUMBER }}
           path: |
             shots
+            shots-remote
+            remote-check.log
             server.log
             xcodebuild-sim-*.log
           retention-days: 14

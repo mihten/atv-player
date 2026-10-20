@@ -33,11 +33,12 @@ if not os.environ.get("ATV_ROOTS"):
 ROOTS = json.loads(os.environ["ATV_ROOTS"])
 DATA = Path(os.environ.get("ATV_DATA", "/var/lib/atv-media"))
 CACHE = Path(os.environ.get("ATV_CACHE", "/var/cache/atv-media"))
+AUDIO_DIR = CACHE / "audio"
 DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.10.1"
+VERSION = "0.11.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -45,6 +46,7 @@ mimetypes.add_type("video/x-matroska", ".mkv")
 mimetypes.add_type("audio/flac", ".flac")
 mimetypes.add_type("audio/x-wavpack", ".wv")
 mimetypes.add_type("audio/mp4", ".m4a")
+mimetypes.add_type("audio/x-matroska", ".mka")
 
 LIB: dict[int, dict] = {}
 LAST_SCAN: dict = {}
@@ -862,6 +864,26 @@ def item_path(it):
     return os.path.join(ROOTS[it["root"]], it["relpath"])
 
 
+AUDIO_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def make_audio_only(it, out):
+    """Copy the audio tracks of a music video into a .mka (no re-encoding, a few seconds). The remote
+    (mobile data) setting "audio only" streams this instead of the 4K video. Track order is kept, so the
+    app's audio ordinal still points at the right track."""
+    tmp = out.with_name(f"{out.stem}.{os.getpid()}.{time.monotonic_ns()}.tmp.mka")
+    res = subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", item_path(it), "-map", "0:a", "-c:a", "copy", "-f", "matroska", str(tmp)],
+        capture_output=True, timeout=900,
+    )
+    if res.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        log.warning("audio-only copy of %s failed: %s", it["id"], res.stderr.decode("utf-8", "replace")[-200:])
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(out)
+    return True
+
+
 async def media(request):
     it = LIB.get(int(request.match_info["id"]))
     if not it:
@@ -871,6 +893,16 @@ async def media(request):
         log.warning("media %s: file missing (%s), rescanning", it["id"], it["relpath"])
         asyncio.create_task(run_scan())
         raise web.HTTPNotFound()
+    if request.query.get("audio") == "1" and it["kind"] == "video":
+        out = AUDIO_DIR / f"{it['id']}.mka"
+        fresh = lambda: out.exists() and out.stat().st_mtime >= it["mtime"]  # noqa: E731
+        if not fresh():
+            async with AUDIO_LOCKS.setdefault(it["id"], asyncio.Lock()):  # concurrent requests: copy once
+                if not fresh():
+                    await asyncio.get_running_loop().run_in_executor(None, make_audio_only, it, out)
+        if fresh():
+            return web.FileResponse(out, chunk_size=512 * 1024, headers={"Content-Type": "audio/x-matroska"})
+        # copy failed: fall through and serve the original file
     ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
     return web.FileResponse(path, chunk_size=512 * 1024, headers={"Content-Type": ctype})
 
@@ -939,7 +971,7 @@ async def run_scan(force=False, wait=False):
             stats = await asyncio.get_running_loop().run_in_executor(None, scanner.scan, DB, ROOTS, force)
             log.info("scan done: %s", stats)
             for item_id in stats.get("renamed_ids", []):  # art is cached by id; the file changed
-                for stale in (CACHE / "art").glob(f"{item_id}.*"):
+                for stale in (*(CACHE / "art").glob(f"{item_id}.*"), *AUDIO_DIR.glob(f"{item_id}.*")):
                     stale.unlink(missing_ok=True)
             load_library()
             for s in SESSIONS.values():
@@ -997,6 +1029,7 @@ async def on_cleanup(app):
 async def on_startup(app):
     DATA.mkdir(parents=True, exist_ok=True)
     (CACHE / "art").mkdir(parents=True, exist_ok=True)
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     load_library()
     for s in SESSIONS.values():
         s.load()

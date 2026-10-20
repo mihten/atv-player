@@ -23,9 +23,7 @@ struct Artwork: View {
     var size: CGFloat
 
     var body: some View {
-        AsyncImage(url: item.art == true ? item.artURL : nil) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
+        RemoteImage(url: item.art == true ? item.artURL : nil) {
             ZStack {
                 Color.secondary.opacity(0.15)
                 Image(systemName: item.isVideo ? "film" : "music.note")

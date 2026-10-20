@@ -139,7 +139,7 @@ struct VideoListView: View {
     private func load() async {
         do {
             let url = Config.serverURL.appendingPathComponent("api/collection/videos")
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await Net.data(from: url)
             items = try JSONDecoder.server().decode(ItemList.self, from: data).items
         } catch {
             errorText = error.localizedDescription
@@ -344,7 +344,7 @@ struct FolderRootsView: View {
         .navigationTitle("Folders")
         .task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: .api("api/browse"))
+                let (data, _) = try await Net.data(from: .api("api/browse"))
                 roots = try JSONDecoder.server().decode(RootList.self, from: data).roots
             } catch {
                 errorText = error.localizedDescription
@@ -439,7 +439,7 @@ struct FolderView: View {
     private func load() async {
         do {
             let url = URL.api("api/browse", ["root": root, "folder": folder])
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await Net.data(from: url)
             result = try JSONDecoder.server().decode(BrowseResult.self, from: data)
         } catch {
             errorText = error.localizedDescription
