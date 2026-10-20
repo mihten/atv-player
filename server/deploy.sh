@@ -12,7 +12,7 @@ set -e
 id atvmedia >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin atvmedia
 python3 -c "import zeroconf" 2>/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-zeroconf >/dev/null
 EOF
-tar -czf - server.py scanner.py atv_shot.py static systemd site | ssh "$ATV_HOST" '
+tar -czf - server.py scanner.py loudness.py atv_shot.py static systemd site | ssh "$ATV_HOST" '
 set -e
 install -d -m 755 /opt/atv-media
 tar -xzf - -C /opt/atv-media

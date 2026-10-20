@@ -49,7 +49,7 @@ def measure(path, audio_ord=None):
 def pending(con):
     return con.execute(
         "SELECT id, root, relpath, audio_ord FROM items WHERE lufs IS NULL AND loud_fail = 0 "
-        "ORDER BY kind DESC, id").fetchall()  # videos first: they are the ones with big level differences
+        "ORDER BY hidden, kind DESC, id").fetchall()  # visible first, videos first: they have the big level differences
 
 
 def counts(db_path):
