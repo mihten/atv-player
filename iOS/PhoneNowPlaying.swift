@@ -215,6 +215,9 @@ struct PhoneNowPlayingView: View {
     @State private var taps = 0
     @State private var prevTaps = 0
     @State private var nextTaps = 0
+    /// Lyrics instead of cover / video. Stays on across songs (a song without lyrics shows its info card), is
+    /// remembered, and has no setting: it is only the button next to shuffle.
+    @AppStorage("lyricsMode") private var lyricsMode = false
 
     var body: some View {
         let transport = Transport(connection: connection, engine: engine)
@@ -231,7 +234,14 @@ struct PhoneNowPlayingView: View {
         .fullScreenCover(isPresented: $fullScreen) {
             FullScreenVideo(transport: transport)
         }
-        .onAppear { shown = min(transport.position, max(transport.duration, 1)) }
+        .onAppear {
+            shown = min(transport.position, max(transport.duration, 1))
+            if DemoRoute.argument("lyricsMode") != nil { lyricsMode = true }  // CI screenshots only
+            syncLyrics()
+        }
+        .onChange(of: lyricsMode) { syncLyrics() }
+        .onChange(of: fullScreen) { syncLyrics() }
+        .onChange(of: engine.current?.id) { syncLyrics() }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             // safety: an "editing ended" that never arrived must not freeze the slider
             if scrubbing, Date().timeIntervalSince(scrubStarted) > 20 { scrubbing = false }
@@ -243,13 +253,24 @@ struct PhoneNowPlayingView: View {
         }
     }
 
+    /// The lyrics view replaces the picture: switch a video's picture track off while it is up (not in the
+    /// landscape full-screen cover, which shows the picture), and fetch the lyrics of this and the next item.
+    private func syncLyrics() {
+        engine.setLyricsCover(lyricsMode && !fullScreen)
+        guard lyricsMode else { return }
+        LyricsStore.shared.prefetch(engine.current)
+        LyricsStore.shared.prefetch(connection.state?.upcoming?.first)
+    }
+
     // MARK: Classic
 
     private func classicBody(_ transport: Transport) -> some View {
         VStack(spacing: 22) {
             Spacer(minLength: 0)
             if let item = transport.item {
-                if item.isVideo {
+                if lyricsMode {
+                    LyricsPanel(item: item, store: LyricsStore.shared).layoutPriority(1)
+                } else if item.isVideo {
                     videoSurface
                 } else {
                     Artwork(item: item, size: 300)
@@ -262,6 +283,11 @@ struct PhoneNowPlayingView: View {
                 }
                 scrubber(transport)
                 classicControls(transport)
+                Button { lyricsMode.toggle() } label: {
+                    Label("Lyrics", systemImage: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
+                        .foregroundStyle(lyricsMode ? Color.accentColor : .secondary)
+                }
+                .font(.footnote)
             } else {
                 Text("Nothing playing").foregroundStyle(.secondary)
             }
@@ -358,9 +384,14 @@ struct PhoneNowPlayingView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 6)
                 if let item = transport.item {
-                    hero(item, side: side)
-                        .frame(height: item.isVideo ? nil : side)
-                    Spacer(minLength: 18)
+                    if lyricsMode {
+                        LyricsPanel(item: item, store: LyricsStore.shared).layoutPriority(1)
+                        Spacer(minLength: 12)
+                    } else {
+                        hero(item, side: side)
+                            .frame(height: item.isVideo ? nil : side)
+                        Spacer(minLength: 18)
+                    }
                     titleBlock(item, accent: accent)
                     ThemedScrubber(value: $shown, duration: max(transport.duration, 1), accent: accent,
                                    onBegin: beginScrub, onEnd: { endScrub(transport, at: $0) })
@@ -509,6 +540,11 @@ struct PhoneNowPlayingView: View {
             Button { connection.command("shuffle") } label: {
                 Image(systemName: "shuffle")
                     .foregroundStyle(state?.shuffle == true ? accent : theme.ink.opacity(0.45))
+                    .frame(width: 40, height: 36)
+            }
+            Button { lyricsMode.toggle() } label: {
+                Image(systemName: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
+                    .foregroundStyle(lyricsMode ? accent : theme.ink.opacity(0.45))
                     .frame(width: 40, height: 36)
             }
             Spacer(minLength: 0)

@@ -25,6 +25,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 import loudness
+import lyrics
 import scanner
 
 # Site config comes from the environment (systemd EnvironmentFile, see server/site.example/).
@@ -39,7 +40,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -57,7 +58,7 @@ REMOTES: dict = {}  # ws -> session kind the web remote controls
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
-                "codec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak")
+                "codec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak", "lyr")
 FULL_KEYS = SUMMARY_KEYS + ("audio_track", "audio_ord", "sub_track", "sub_ord", "channels", "bitrate")
 
 
@@ -983,6 +984,50 @@ async def run_loudness():
     LOUDNESS_TASK = asyncio.create_task(job())
 
 
+LYRICS_TASK = None
+
+
+def _lyrics_result(item_id, lvl):
+    it = LIB.get(item_id)
+    if it is not None:
+        it["lyr"] = lvl
+
+
+async def run_lyrics():
+    """Read the embedded lyrics of files that have not been looked at yet (fast: tags + one ffmpeg per video)."""
+    global LYRICS_TASK
+    if LYRICS_TASK is not None and not LYRICS_TASK.done():
+        return
+
+    async def job():
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, lyrics.run, DB, ROOTS, _lyrics_result)
+        except Exception:
+            log.exception("lyrics job failed")
+    LYRICS_TASK = asyncio.create_task(job())
+
+
+async def api_lyrics(request):
+    """Embedded lyrics of one item: {"id", "lyr": 0|1|2, "tracks": [{ord, lang, title, is_default, forced,
+    synced, cues: [{s, e, t}]}]}. Extracted on demand when the background job has not reached the file yet."""
+    item_id = int(request.match_info["id"])
+    found = await asyncio.get_running_loop().run_in_executor(None, lyrics.get_or_extract, DB, ROOTS, item_id)
+    if found is None:
+        raise web.HTTPNotFound(text="no such item")
+    lvl, data = found
+    _lyrics_result(item_id, lvl)
+    resp = web.json_response({"id": item_id, "lyr": lvl, "tracks": data["tracks"]})
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.enable_compression()
+    return resp
+
+
+async def api_lyrics_status(request):
+    counts = await asyncio.get_running_loop().run_in_executor(None, lyrics.counts, DB)
+    counts["running"] = LYRICS_TASK is not None and not LYRICS_TASK.done()
+    return web.json_response(counts)
+
+
 async def api_loudness(request):
     counts = await asyncio.get_running_loop().run_in_executor(None, loudness.counts, DB)
     counts["running"] = LOUDNESS_TASK is not None and not LOUDNESS_TASK.done()
@@ -1013,6 +1058,7 @@ async def run_scan(force=False, wait=False):
         finally:
             SCANNING = False
             await broadcast_all()
+    await run_lyrics()
     await run_loudness()
 
 
@@ -1053,6 +1099,7 @@ async def advertise(app):
 
 async def on_cleanup(app):
     loudness.STOP.set()
+    lyrics.STOP.set()
     if "zeroconf" in app:
         zc, info = app["zeroconf"]
         await zc.async_unregister_service(info)
@@ -1091,6 +1138,8 @@ def make_app():
     app.router.add_delete("/api/playlists/{id:\\d+}", api_playlist_delete)
     app.router.add_post("/api/rescan", api_rescan)
     app.router.add_get("/api/loudness", api_loudness)
+    app.router.add_get("/api/lyrics", api_lyrics_status)
+    app.router.add_get("/api/lyrics/{id:\\d+}", api_lyrics)
     app.router.add_post("/api/screenshot", api_screenshot)
     app.router.add_get("/shots/{name}", shot_file)
     app.router.add_get("/media/{id:\\d+}", media)

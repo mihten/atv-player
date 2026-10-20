@@ -46,6 +46,8 @@ struct MediaItem: Codable, Identifiable, Hashable {
     /// Measured loudness (LUFS) and true peak (dBFS) from the server (0.12.0+, nil until measured).
     var lufs: Double? = nil
     var tpeak: Double? = nil
+    /// Embedded lyrics (server 0.13.0+): nil = not looked at yet, 0 = none, 1 = plain text, 2 = synced.
+    var lyr: Int? = nil
 
     /// A video that is shown and played as a video (not when only its audio is streamed).
     var isVideo: Bool { kind == "video" && !Config.streamAudioOnly }

@@ -50,7 +50,8 @@ boot() {  # $1 = udid
 
 launch() {  # $1 = device, $2 = bundle id, $3 = theme, $4 = route
   t 90 xcrun simctl terminate "$1" "$2" 2>/dev/null
-  t 90 xcrun simctl launch "$1" "$2" -serverAddress 127.0.0.1:8080 -appTheme "$3" -demoRoute "$4" >/dev/null
+  # LAUNCH_EXTRA: more launch arguments (e.g. "-lyricsMode YES"), set by the caller
+  t 90 xcrun simctl launch "$1" "$2" -serverAddress 127.0.0.1:8080 -appTheme "$3" -demoRoute "$4" ${LAUNCH_EXTRA:-} >/dev/null
 }
 
 shot() {  # $1 = device, $2 = file name
@@ -154,6 +155,19 @@ if [[ $PLATFORMS == *phone* ]]; then
     t 30 "${DRV[@]}" play phone videos "Undertow"
     sleep 6
     shot "$PHONE" "phone-$theme-video"
+    t 30 "${DRV[@]}" play phone music "Low Tide"
+    sleep 2
+    # Lyrics view (iPhone Now Playing): synced song, music video, plain text, song without lyrics (info card)
+    LAUNCH_EXTRA="-lyricsMode YES"
+    launch "$PHONE" "$PHONE_ID" "$theme" player
+    play phone
+    for entry in "music|Low Tide|lyrics-synced" "videos|Undertow|lyrics-video" "music|Orchard|lyrics-plain" "music|Driftwood|lyrics-info"; do
+      IFS='|' read -r kind title name <<<"$entry"
+      t 30 "${DRV[@]}" play phone "$kind" "$title"
+      sleep 11
+      shot "$PHONE" "phone-$theme-$name"
+    done
+    LAUNCH_EXTRA=""
     t 30 "${DRV[@]}" play phone music "Low Tide"
     sleep 2
   done

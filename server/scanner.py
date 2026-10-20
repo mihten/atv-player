@@ -57,12 +57,14 @@ CREATE TABLE IF NOT EXISTS items (
   lufs REAL,
   tpeak REAL,
   loud_fail INTEGER NOT NULL DEFAULT 0,
+  lyr INTEGER,
   hidden INTEGER NOT NULL DEFAULT 0,
   dup_of INTEGER,
   added REAL NOT NULL,
   UNIQUE(root, relpath)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS lyrics (item_id INTEGER PRIMARY KEY, data TEXT NOT NULL);
 """
 
 COLUMNS = (
@@ -84,6 +86,9 @@ def connect(db_path):
         con.execute("ALTER TABLE items ADD COLUMN lufs REAL")
         con.execute("ALTER TABLE items ADD COLUMN tpeak REAL")
         con.execute("ALTER TABLE items ADD COLUMN loud_fail INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+    if "lyr" not in cols:  # added 2026-10-20 (embedded lyrics; filled by lyrics.py). NULL = not looked at yet
+        con.execute("ALTER TABLE items ADD COLUMN lyr INTEGER")
         con.commit()
     return con
 
@@ -400,8 +405,9 @@ def scan(db_path, roots, force=False):
                 con.execute(sql, [rec[c] for c in COLUMNS])
                 if old:
                     # the file changed: its measured loudness is stale
-                    con.execute("UPDATE items SET lufs = NULL, tpeak = NULL, loud_fail = 0 "
+                    con.execute("UPDATE items SET lufs = NULL, tpeak = NULL, loud_fail = 0, lyr = NULL "
                                 "WHERE root = ? AND relpath = ?", key)
+                    con.execute("DELETE FROM lyrics WHERE item_id = (SELECT id FROM items WHERE root = ? AND relpath = ?)", key)
                     updated += 1
                 else:
                     added += 1
@@ -436,6 +442,7 @@ def scan(db_path, roots, force=False):
             high_water = row["id"]
     top = con.execute("SELECT MAX(id) AS m FROM items").fetchone()["m"] or 0
     con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('max_id', ?)", (str(max(high_water, top)),))
+    con.execute("DELETE FROM lyrics WHERE item_id NOT IN (SELECT id FROM items)")
     hidden = dedupe(con)
     stats = {"added": added, "updated": updated, "removed": removed, "renamed": len(renamed),
              "renamed_ids": sorted(renamed), "failed": failed, "offline_roots": offline,

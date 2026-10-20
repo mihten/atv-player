@@ -66,6 +66,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// The app is not in the foreground; the video track of a playing music video is switched off.
     private var inBackground = false
     private var videoHidden = false
+    /// iPhone lyrics view: the lyrics replace the picture, so a video's picture track is switched off
+    /// (the sound keeps playing and nothing is decoded for a picture nobody sees).
+    private var lyricsCover = false
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -206,6 +209,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
         current = item
         applyLevel(for: item)
+        videoHidden = false  // new media starts with its picture track on
         tracksApplied = false
         endedSent = false
         isPlaying = false  // the next VLC event reports the real state for the new item
@@ -432,7 +436,19 @@ final class PlayerEngine: NSObject, ObservableObject {
     func appDidBecomeActive() {
         inBackground = false
         UserDefaults.standard.set("foreground", forKey: Self.lastStateKey)
-        showVideo()
+        if !lyricsCover { showVideo() }
+    }
+
+    /// The lyrics view is on screen instead of the picture (or not any more).
+    func setLyricsCover(_ on: Bool) {
+        guard on != lyricsCover else { return }
+        lyricsCover = on
+        guard current?.isVideo == true else { return }
+        if on {
+            hideVideo()
+        } else if !(inBackground && PlayerSettings.keepVideoAudioInBackground) {
+            showVideo()
+        }
     }
 
     private func hideVideo() {
@@ -440,7 +456,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         videoHidden = true
         vlc.currentVideoTrackIndex = -1
         updateNowPlaying()
-        log("background: video track off, audio keeps playing; \(envNote)")
+        log("video track off (\(lyricsCover ? "lyrics view" : "background")), audio keeps playing; \(envNote)")
     }
 
     private func showVideo() {
@@ -587,7 +603,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         let subtitles = trackIDs(vlc.videoSubTitlesIndexes)
         if item.isVideo && audio.isEmpty { return }  // streams not known yet, retry on the next event
         tracksApplied = true
-        if inBackground, item.isVideo, PlayerSettings.keepVideoAudioInBackground {
+        if item.isVideo, lyricsCover || (inBackground && PlayerSettings.keepVideoAudioInBackground) {
             videoHidden = false  // new media: its video track is on again, switch it off
             hideVideo()
         }

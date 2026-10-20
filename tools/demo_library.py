@@ -41,6 +41,10 @@ VIDEOS = [
     ("The Quiet Arcade - Pixel Heart (Official Video)", 60, "life"),
 ]
 
+# Songs with embedded lyrics (tag LYRICS): "synced" = LRC with time stamps and an [offset:], "plain" = text only.
+# Every other song has none, so the app's "no lyrics" info card can be screenshotted too.
+SONG_LYRICS = {"Harbor Lights": "synced", "Low Tide": "synced", "Orchard": "plain"}
+
 LYRICS = ["Lights on the water", "We were drifting slow", "Count the waves with me",
           "Until the morning glow", "Hold the line, hold on", "Every signal fades"]
 
@@ -152,12 +156,25 @@ def make_music(out):
         for i, (title, secs) in enumerate(tracks, 1):
             n += 1
             dest = folder / f"{i:02d} {title.replace('?', '')}.flac"
+            extra = []
+            kind = SONG_LYRICS.get(title)
+            if kind == "synced":
+                lines = ["[ti:%s]" % title, "[ar:%s]" % artist, "[offset:500]"]
+                for j in range(28):
+                    t = 3.5 + j * 5.0
+                    lines.append("[%02d:%05.2f]%s" % (int(t) // 60, t - 60 * (int(t) // 60), LYRICS[(j + n) % len(LYRICS)]))
+                    if j % 4 == 3:  # an empty line = the previous line ends here (instrumental gap)
+                        lines.append("[%02d:%05.2f]" % (int(t + 4) // 60, t + 4 - 60 * (int(t + 4) // 60)))
+                extra = ["-metadata", "lyrics=" + "\r\n".join(lines)]
+            elif kind == "plain":
+                verse = "\r\n".join(LYRICS[:3]) + "\r\n\r\n" + "\r\n".join(LYRICS[3:])
+                extra = ["-metadata", "lyrics=" + verse + "\r\n\r\n" + verse]
             run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-t", str(secs), "-i", tone(n),
                  "-i", str(art), "-map", "0:a", "-map", "1:v", "-c:a", "flac", "-compression_level", "8",
                  "-c:v", "mjpeg", "-disposition:v", "attached_pic",
                  "-metadata", f"title={title}", "-metadata", f"artist={artist}",
                  "-metadata", f"album={album}", "-metadata", f"date={year}",
-                 "-metadata", f"track={i}", str(dest)])
+                 "-metadata", f"track={i}", *extra, str(dest)])
         art.unlink()  # the art lives in the files (embedded), as in a real library
     return n
 
