@@ -57,7 +57,6 @@ struct ThemedScreen: ViewModifier {
         } else {
             content
                 .fontDesign(theme.fontDesign)
-                .scrollContentBackground(.hidden)
                 .background {
                     // frozen while a music video plays (VLC needs the CPU for AV1)
                     ThemeBackdrop(intensity: intensity, animate: !(engine.current?.isVideo == true && engine.isPlaying))

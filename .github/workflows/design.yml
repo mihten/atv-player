@@ -59,11 +59,14 @@ jobs:
               -sdk "$2" -destination "generic/platform=$3 Simulator" -derivedDataPath build-sim \
               CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
               > "xcodebuild-sim-$1.log" 2>&1 || true
-            grep -E '\*\* BUILD|/(Sources|Shared|iOS)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' "xcodebuild-sim-$1.log" | head -60 || true
+            grep -E '\*\* BUILD|/(Sources|Shared|iOS)/[^:]+\.swift:[0-9]+:[0-9]+: (warning|error)|: error:' "xcodebuild-sim-$1.log" | sort -u | head -80 || true
           done
           ls build-sim/Build/Products/
-          test -d build-sim/Build/Products/Debug-appletvsimulator/AtvPlayer.app
-          test -d build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app
+          # a failed compile can still leave an .app folder behind: require the executable + BUILD SUCCEEDED
+          grep -q 'BUILD SUCCEEDED' xcodebuild-sim-AtvPlayer.log
+          grep -q 'BUILD SUCCEEDED' xcodebuild-sim-AtvPlayerPhone.log
+          test -f build-sim/Build/Products/Debug-appletvsimulator/AtvPlayer.app/AtvPlayer
+          test -f build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app/AtvPlayerPhone
 
       - name: Cache demo library
         if: env.PLATFORMS != 'none'
