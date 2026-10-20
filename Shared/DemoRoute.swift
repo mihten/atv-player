@@ -3,7 +3,7 @@ import Foundation
 /// Screenshot automation only (CI simulator runs, tools/design_shots.sh): the launch argument
 /// `-demoRoute <screen>` opens that screen right away. Launch arguments live in UserDefaults' volatile
 /// argument domain, so nothing is stored and a normal launch on a device never has a route.
-enum DemoRoute {
+enum DemoRoute {  // v0.13.0 design preview
     static let key = "demoRoute"
 
     static var screen: String? {
