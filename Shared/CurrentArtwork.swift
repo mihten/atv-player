@@ -9,10 +9,12 @@ struct CurrentArtwork: View {
 
     var body: some View {
         ZStack {
-            if artwork.itemID == item.id, let image = artwork.image {
+            if let image = (artwork.itemID == item.id ? artwork.image : nil) ?? artwork.cachedImage(item.id) {
                 Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
             } else {
-                ArtPlaceholder(item: item, palette: artwork.itemID == item.id ? artwork.palette : .forItem(item.id),
+                ArtPlaceholder(item: item,
+                               palette: artwork.itemID == item.id ? artwork.palette
+                                   : (artwork.cachedPalette(item.id) ?? .forItem(item.id)),
                                showsTitle: showsTitle)
             }
         }

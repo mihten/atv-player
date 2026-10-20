@@ -102,7 +102,7 @@ struct ThemedMiniPlayer: View {
             HStack(spacing: 12) {
                 Group {
                     if theme == .vinyl && !item.isVideo {
-                        VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
+                        VinylRecord(image: artwork.art(for: item.id),
                                     spinning: engine.isPlaying && motion, size: 46,
                                     labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.55).color)
                     } else {
@@ -398,8 +398,11 @@ struct PhoneNowPlayingView: View {
         } else {
             switch theme {
             case .vinyl:
-                Turntable(item: item, side: side * 0.72)
-                    .frame(width: side * 0.72 * 1.55, height: side * 0.72)
+                // sleeve + record half out of it = 1.55 × the sleeve, which must fit the hero width
+                let sleeve = side / 1.55
+                Turntable(item: item, side: sleeve)
+                    .frame(width: sleeve * 1.55, height: sleeve)
+                    .frame(maxWidth: .infinity)
                     .id(item.id)
                     .transition(.slide(forward: forward, distance: 90))
             case .noir:

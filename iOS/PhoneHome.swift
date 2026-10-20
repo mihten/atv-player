@@ -53,7 +53,7 @@ struct PhoneHome: View {
         return HStack(spacing: 14) {
             Group {
                 if theme == .vinyl && !item.isVideo {
-                    VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
+                    VinylRecord(image: artwork.art(for: item.id),
                                 spinning: engine.isPlaying && motion, size: 92,
                                 labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.55).color)
                 } else {
@@ -279,10 +279,9 @@ struct PhoneTile: View {
             ZStack(alignment: .bottomLeading) {
                 background
                 Image(systemName: symbol)
-                    .font(.system(size: theme == .aurora ? 64 : 24, weight: .bold))
+                    .font(.system(size: theme == .aurora ? 64 : 26, weight: .bold))
                     .foregroundStyle(theme == .aurora ? Color.white.opacity(0.22) : theme.accent(artwork.palette))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity,
-                           alignment: theme == .aurora ? .topTrailing : .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(theme == .aurora ? 8 : 14)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(theme.font(17, .bold))

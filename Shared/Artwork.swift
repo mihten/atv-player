@@ -172,6 +172,12 @@ final class ArtworkStore: ObservableObject {
         }
     }
 
+    /// Art/palette of any recently shown item (a song that is animating out keeps its own cover).
+    func cachedImage(_ id: Int) -> UIImage? { cache[id]?.0 }
+    /// The image for an item: the current one once loaded, else whatever the cache has.
+    func art(for id: Int) -> UIImage? { itemID == id ? (image ?? cachedImage(id)) : cachedImage(id) }
+    func cachedPalette(_ id: Int) -> Palette? { cache[id]?.1 }
+
     private func store(_ id: Int, _ img: UIImage?, _ pal: Palette) {
         cache[id] = (img, pal)
         order.append(id)

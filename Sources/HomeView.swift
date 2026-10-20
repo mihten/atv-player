@@ -83,7 +83,7 @@ struct HomeView: View {
             Button { engine.presentPlayer() } label: {
                 HeroCard(item: item)
             }
-            .buttonStyle(TileButtonStyle(corner: theme.corner + 6))
+            .buttonStyle(TileButtonStyle(corner: theme.corner + 6, lift: 1.025))
         } else {
             Button { shuffle("all") } label: {
                 HStack(spacing: 40) {
@@ -102,7 +102,7 @@ struct HomeView: View {
                 .background(HeroBackground())
                 .clipShape(RoundedRectangle(cornerRadius: theme.corner + 6, style: .continuous))
             }
-            .buttonStyle(TileButtonStyle(corner: theme.corner + 6))
+            .buttonStyle(TileButtonStyle(corner: theme.corner + 6, lift: 1.025))
         }
     }
 
@@ -247,14 +247,31 @@ struct HeroCard: View {
                 }
                 HeroProgress(clock: engine.clock, accent: accent, glow: theme == .aurora)
                     .padding(.top, 8)
-                if let upcoming = connection.state?.upcoming, !upcoming.isEmpty {
-                    Text("Up next  ·  " + upcoming.prefix(2).map(\.title).joined(separator: "  ·  "))
-                        .font(theme.font(22))
-                        .opacity(0.55)
-                        .lineLimit(1)
+            }
+            .frame(maxWidth: 700, alignment: .leading)
+            Spacer(minLength: 0)
+            if let upcoming = connection.state?.upcoming, !upcoming.isEmpty {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(theme == .vinyl ? "Up next" : "UP NEXT")
+                        .font(theme.eyebrow(20)).tracking(theme == .vinyl ? 0 : 4)
+                        .opacity(0.6)
+                    ForEach(upcoming.prefix(3)) { next in
+                        HStack(spacing: 16) {
+                            ItemThumb(item: next, corner: theme == .noir ? 2 : 8)
+                                .frame(width: next.isVideo ? 96 : 54, height: 54)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(next.title).font(theme.font(22, .semibold)).lineLimit(1)
+                                Text(next.artist ?? "").font(theme.font(18)).opacity(0.6).lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                .frame(width: 400, alignment: .leading)
+                .padding(.leading, 20)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(theme.ink.opacity(0.12)).frame(width: 1.5)
                 }
             }
-            Spacer(minLength: 0)
         }
         .padding(34)
         .frame(width: 1760, alignment: .leading)
@@ -276,7 +293,7 @@ struct HeroCard: View {
                 .transition(.slide(forward: true, distance: 60))
         } else if theme == .vinyl {
             ZStack(alignment: .leading) {
-                VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
+                VinylRecord(image: artwork.art(for: item.id),
                             spinning: engine.isPlaying && motion, size: side - 16,
                             labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.6).color)
                     .offset(x: side * 0.42)
@@ -309,7 +326,7 @@ struct HeroProgress: View {
         VStack(alignment: .leading, spacing: 10) {
             ProgressLine(value: clock.duration > 0 ? clock.position / clock.duration : 0, color: accent,
                          height: theme == .noir ? 3 : 7, glow: glow)
-                .frame(width: 760)
+                .frame(width: 640)
                 .animation(.linear(duration: 0.5), value: clock.position)
             HStack {
                 Text(formatTime(clock.position))
@@ -319,7 +336,7 @@ struct HeroProgress: View {
             .font(.system(size: 22, weight: .medium, design: theme == .noir ? .monospaced : theme.fontDesign))
             .monospacedDigit()
             .opacity(0.6)
-            .frame(width: 760)
+            .frame(width: 640)
         }
     }
 }

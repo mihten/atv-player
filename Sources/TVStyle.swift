@@ -5,9 +5,11 @@ import SwiftUI
 struct TileButtonStyle: ButtonStyle {
     var corner: CGFloat? = nil
     var glow: Color? = nil
+    /// Focus scale; full-width cards use a small one so they stay inside the screen.
+    var lift: CGFloat = 1.08
 
     func makeBody(configuration: Configuration) -> some View {
-        TileBody(configuration: configuration, corner: corner, glow: glow)
+        TileBody(configuration: configuration, corner: corner, glow: glow, lift: lift)
     }
 }
 
@@ -15,6 +17,7 @@ private struct TileBody: View {
     let configuration: ButtonStyleConfiguration
     let corner: CGFloat?
     let glow: Color?
+    let lift: CGFloat
     @Environment(\.isFocused) private var focused
     @Environment(\.appTheme) private var theme
     @EnvironmentObject private var artwork: ArtworkStore
@@ -36,7 +39,7 @@ private struct TileBody: View {
                         .strokeBorder(.white.opacity(focused ? 0.55 : 0), lineWidth: 2)
                 }
             }
-            .scaleEffect(configuration.isPressed ? 0.97 : (focused ? (theme == .noir ? 1.04 : 1.08) : 1))
+            .scaleEffect(configuration.isPressed ? 0.97 : (focused ? (theme == .noir ? 1 + (lift - 1) / 2 : lift) : 1))
             .shadow(color: focused ? (theme == .noir ? .black : accent.opacity(0.55)) : .black.opacity(0.35),
                     radius: focused ? 36 : 12, y: focused ? 22 : 8)
             .brightness(focused ? 0.04 : (theme == .noir ? -0.08 : 0))

@@ -42,7 +42,7 @@ struct Turntable: View {
 
     var body: some View {
         ZStack(alignment: .leading) {
-            VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
+            VinylRecord(image: artwork.art(for: item.id),
                         spinning: engine.isPlaying && motion && out, size: side - 20,
                         labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.55).color)
                 .offset(x: out ? side * 0.5 : 10)

@@ -112,7 +112,7 @@ if [[ $PLATFORMS == *tv* ]]; then
     record "$TV" "tv-$theme-transitions" tv_transitions
     shot "$TV" "tv-$theme-player-later"
     t 30 "${DRV[@]}" play tv videos "Afterglow"
-    sleep 5
+    sleep 3
     shot "$TV" "tv-$theme-video"
     t 30 "${DRV[@]}" play tv music "Harbor Lights"
     sleep 2

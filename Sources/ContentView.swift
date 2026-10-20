@@ -172,16 +172,17 @@ struct NowPlayingSidebar: View {
                     .disabled(!enabled)
                 if let upcoming = connection.state?.upcoming, !upcoming.isEmpty {
                     Text("Up next").font(theme.font(24, .semibold)).opacity(0.6).padding(.top, 10)
-                    ForEach(upcoming.prefix(4)) { next in
+                    // themed rows are taller (thumbnails): three of them, so Settings still fits the screen
+                    ForEach(upcoming.prefix(theme.isClassic ? 4 : 3)) { next in
                         if theme.isClassic {
                             Label(next.title, systemImage: next.isVideo ? "film" : "music.note")
                                 .font(.system(size: 22)).lineLimit(1).opacity(0.85)
                         } else {
                             HStack(spacing: 14) {
-                                ItemThumb(item: next, corner: 6).frame(width: 44, height: 44)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(next.title).font(theme.font(21, .medium)).lineLimit(1)
-                                    Text(next.artist ?? "").font(theme.font(17)).opacity(0.55).lineLimit(1)
+                                ItemThumb(item: next, corner: 6).frame(width: 36, height: 36)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(next.title).font(theme.font(20, .medium)).lineLimit(1)
+                                    Text(next.artist ?? "").font(theme.font(16)).opacity(0.55).lineLimit(1)
                                 }
                             }
                             .opacity(0.9)
@@ -232,33 +233,32 @@ struct NowPlayingSidebar: View {
 
     private func themedCard(_ item: MediaItem) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            ZStack {
+            ZStack(alignment: .leading) {
                 if theme == .vinyl && !item.isVideo {
-                    VinylRecord(image: artwork.itemID == item.id ? artwork.image : nil,
-                                spinning: engine.isPlaying && motion, size: 340,
+                    VinylRecord(image: artwork.art(for: item.id),
+                                spinning: engine.isPlaying && motion, size: 270,
                                 labelTint: Palette.forItem(item.id).vibrant.with(brightness: 0.55).color)
-                        .offset(x: 60)
+                        .offset(x: 110)
                     CurrentArtwork(item: item, corner: 4)
-                        .frame(width: 300, height: 300)
+                        .frame(width: 280, height: 280)
                         .shadow(color: .black.opacity(0.5), radius: 14, x: 8, y: 8)
-                        .offset(x: -50)
                 } else {
                     CurrentArtwork(item: item, corner: theme.corner * 0.7, showsTitle: !item.isVideo)
-                        .frame(width: 400, height: item.isVideo ? 225 : 400)
+                        .frame(width: item.isVideo ? 400 : 320, height: item.isVideo ? 225 : 320)
                         .grayscale(theme == .noir && !engine.isPlaying ? 1 : 0)
                 }
             }
-            .frame(width: 400, height: item.isVideo ? 225 : (theme == .vinyl ? 340 : 400))
+            .frame(width: 400, height: item.isVideo ? 225 : (theme == .vinyl ? 280 : 320), alignment: .leading)
             .id(item.id)
             .transition(.blurFade(CGSize(width: 40, height: 0)))
-            Text(item.title).font(theme.display(30)).lineLimit(2)
+            Text(item.title).font(theme.display(28)).lineLimit(2)
             if !item.subtitle.isEmpty {
-                Text(item.subtitle).font(theme.font(22)).opacity(0.7).lineLimit(1)
+                Text(item.subtitle).font(theme.font(21)).opacity(0.7).lineLimit(1)
             }
             SidebarProgress(clock: engine.clock, playing: engine.isPlaying)
         }
         .frame(width: 400, alignment: .leading)
-        .padding(20)
+        .padding(18)
         .background(HeroBackground())
         .clipShape(RoundedRectangle(cornerRadius: theme.corner, style: .continuous))
         .foregroundStyle(theme.ink)

@@ -93,6 +93,16 @@ struct NoirPlayer: View {
         let accent = theme.accent(artwork.palette)
         ZStack(alignment: .topLeading) {
             NoirBackground(palette: artwork.palette, intensity: 1)
+            // editorial touch: the track number, huge and faint, top left
+            if let track = item.track, track > 0 {
+                Text(String(format: "%02d", track))
+                    .font(.system(size: 400, weight: .black).width(.condensed))
+                    .foregroundStyle(.white.opacity(0.055))
+                    .padding(.leading, 84)
+                    .offset(y: -60)
+                    .id("n\(item.id)")
+                    .transition(.rise)
+            }
             HStack {
                 Spacer()
                 CurrentArtwork(item: item, corner: 2, showsTitle: false)

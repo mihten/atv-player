@@ -142,7 +142,7 @@ struct ThemeCard: View {
     var body: some View {
         VStack(spacing: 8) {
             preview
-                .frame(width: 92, height: 138)
+                .frame(width: 72, height: 108)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -172,16 +172,16 @@ struct ThemeCard: View {
                 VStack(spacing: 6) {
                     RoundedRectangle(cornerRadius: 8).fill(LinearGradient(colors: [p.vibrant.color, p.tones[0].color],
                                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 56, height: 56)
+                        .frame(width: 44, height: 44)
                         .shadow(color: p.vibrant.color.opacity(0.7), radius: 10)
-                    Capsule().fill(.white.opacity(0.9)).frame(width: 50, height: 5)
-                    Capsule().fill(p.vibrant.color).frame(width: 60, height: 3)
+                    Capsule().fill(.white.opacity(0.9)).frame(width: 40, height: 4)
+                    Capsule().fill(p.vibrant.color).frame(width: 48, height: 3)
                 }
             }
         case .noir:
             ZStack(alignment: .bottomLeading) {
                 Color.black
-                Text("Aa").font(.system(size: 40, weight: .heavy).width(.condensed)).foregroundStyle(.white)
+                Text("Aa").font(.system(size: 34, weight: .heavy).width(.condensed)).foregroundStyle(.white)
                     .padding(10)
                 Rectangle().fill(Color(red: 1, green: 0.3, blue: 0.4)).frame(height: 2).padding(.horizontal, 10)
                     .padding(.bottom, 8)
@@ -189,14 +189,14 @@ struct ThemeCard: View {
         case .vinyl:
             ZStack {
                 VinylBackground(palette: p)
-                VinylRecord(image: nil, spinning: false, size: 70, labelTint: Color(red: 0.85, green: 0.5, blue: 0.2))
+                VinylRecord(image: nil, spinning: false, size: 58, labelTint: Color(red: 0.85, green: 0.5, blue: 0.2))
             }
         case .classic:
             ZStack(alignment: .top) {
                 Color(white: 0.11)
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(0..<6, id: \.self) { _ in
-                        Capsule().fill(Color.white.opacity(0.3)).frame(width: 60, height: 5)
+                        Capsule().fill(Color.white.opacity(0.3)).frame(width: 46, height: 4)
                     }
                 }
                 .padding(.top, 16)

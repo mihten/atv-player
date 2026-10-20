@@ -39,7 +39,7 @@ struct PhoneSettingsView: View {
         Form {
             Section {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         ForEach(AppTheme.allCases) { look in
                             ThemeCard(theme: look, selected: themeRaw == look.rawValue)
                                 .onTapGesture { themeRaw = look.rawValue }
