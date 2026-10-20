@@ -542,6 +542,12 @@ struct FullScreenVideo: View {
     let transport: Transport
     @State private var controls = true
     @State private var hideTask: Task<Void, Never>?
+    // Progress slider (same approach as the player sheet: a stable Slider bound to `shown`, a timer moves
+    // it only while nobody drags, and it keeps the new value for 1.5 s after a seek).
+    @State private var scrubbing = false
+    @State private var scrubStarted = Date.distantPast
+    @State private var shown: Double = 0
+    @State private var holdUntil = Date.distantPast
 
     var body: some View {
         ZStack {
@@ -569,6 +575,7 @@ struct FullScreenVideo: View {
                         Spacer()
                     }
                     Spacer()
+                    progressBar
                     HStack(spacing: 50) {
                         Button { transport.previous(); showControls() } label: { Image(systemName: "backward.end.fill") }
                         Button { transport.toggle(); showControls() } label: {
@@ -578,7 +585,7 @@ struct FullScreenVideo: View {
                         Button { transport.next(); showControls() } label: { Image(systemName: "forward.end.fill") }
                     }
                     .font(.largeTitle)
-                    .padding(.bottom, 30)
+                    .padding(.bottom, 14)
                 }
                 .padding()
                 .foregroundStyle(.white)
@@ -591,7 +598,13 @@ struct FullScreenVideo: View {
         // Tap (layer above): show the controls (they hide again after 3 s); tap while shown hides them at once.
         .onAppear {
             engine.diag("full screen: opened")
+            shown = min(transport.position, max(transport.duration, 1))
             showControls()
+        }
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            if scrubbing, Date().timeIntervalSince(scrubStarted) > 20 { scrubbing = false }  // lost "editing ended"
+            guard !scrubbing, Date() >= holdUntil else { return }
+            shown = min(transport.position, max(transport.duration, 1))
         }
         .onDisappear {
             engine.diag("full screen: closed")
@@ -607,9 +620,39 @@ struct FullScreenVideo: View {
         }
     }
 
+    /// Slider with elapsed / remaining time. The controls stay up while the finger is on it.
+    private var progressBar: some View {
+        let duration = max(transport.duration, 1)
+        return VStack(spacing: 2) {
+            Slider(value: $shown, in: 0...duration, onEditingChanged: { editing in
+                if editing {
+                    scrubbing = true
+                    scrubStarted = Date()
+                    hideTask?.cancel()
+                } else {
+                    transport.seek(to: shown)
+                    holdUntil = Date().addingTimeInterval(1.5)
+                    scrubbing = false
+                    showControls()
+                }
+            })
+            .tint(.white)
+            HStack {
+                Text(formatTime(shown))
+                Spacer()
+                Text("-" + formatTime(max(0, duration - shown)))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.75))
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 10)
+    }
+
     private func showControls() {
         withAnimation { controls = true }
         hideTask?.cancel()
+        guard !scrubbing else { return }  // no auto-hide under a dragging finger
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { withAnimation { controls = false } }
