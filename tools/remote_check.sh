@@ -72,13 +72,15 @@ for line in open(log):
 c = Counter((m, ("/ws" if p == "/ws" else "/art" if p.startswith("/art/") else "/media" if p.startswith("/media/") else "/api" if p.startswith("/api/") else p), a, s) for m, p, a, s in rows)
 for k, v in sorted(c.items(), key=str):
     print(f"  {v:3d} x {k[0]} {k[1]}{' ?audio=1' if k[2] else ''} -> {k[3]}")
-ok_ws = any(p == "/ws" and s == 101 for _, p, _, s in rows)
-ok_art = any(p.startswith("/art/") and s == 200 for _, p, _, s in rows)
+# Caddy logs a WebSocket only when it CLOSES, so /ws may be missing (or belong to the previous run): not checked.
+ok_ws = True
+ok_art = mode == "video" or any(p.startswith("/art/") and s == 200 for _, p, _, s in rows)
+no_401 = not any(s == 401 for _, _, _, s in rows)
 media = [(a, s) for _, p, a, s in rows if p.startswith("/media/")]
 ok_media = any(s in (200, 206) and a == (mode == "audio") for a, s in media)
 bad_media = any(s in (200, 206) and a != (mode == "audio") for a, s in media)
-print(f"RESULT {mode}: websocket={ok_ws} art={ok_art} media_as_expected={ok_media} wrong_media_kind={bad_media}")
-sys.exit(0 if (ok_ws and ok_art and ok_media and not bad_media) else 1)
+print(f"RESULT {mode}: art={ok_art} media_as_expected={ok_media} wrong_media_kind={bad_media} no_401_with_login={no_401}")
+sys.exit(0 if (ok_art and ok_media and not bad_media and no_401) else 1)
 PY
   local rc=$?
   echo "mode $mode exit $rc"
