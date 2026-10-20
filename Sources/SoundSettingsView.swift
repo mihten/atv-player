@@ -6,9 +6,21 @@ struct SoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @AppStorage(SoundSettings.presetKey) private var preset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
+    @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
 
     var body: some View {
         List {
+            Section {
+                Picker("Loudness", selection: $loudness) {
+                    ForEach(SoundSettings.Loudness.allCases, id: \.rawValue) { mode in
+                        Text(mode.name).tag(mode.rawValue)
+                    }
+                }
+            } header: {
+                Text("Loudness")
+            } footer: {
+                Text("Raise quiet tracks lifts songs and videos that were recorded much quieter than normal music (about −14 LUFS), as far as they can go without clipping (at most +8 dB). Level all tracks also lowers loud ones, so everything plays at a similar volume. The server measures each file once; files it has not measured yet play unchanged.")
+            }
             Section {
                 Picker("Equalizer", selection: $preset) {
                     Text("Off").tag("off")
@@ -44,7 +56,7 @@ struct SoundSettingsView: View {
             } header: {
                 Text("Stereo widener")
             } footer: {
-                Text("Only affects ATV Player. Meant for the soundbar/speakers: it widens the stereo image there, but on headphones it sounds hollow. With the equalizer and widener off, the sound is not processed at all. Keep the soundbar on Standard / flat. A song or video that is playing restarts at the same position when these change.")
+                Text("Only affects ATV Player. Meant for the soundbar/speakers: it widens the stereo image there, but on headphones it sounds hollow. With the equalizer, widener and loudness off, the sound is not processed at all. Keep the soundbar on Standard / flat. A song or video that is playing restarts at the same position when these change.")
             }
         }
         .pickerStyle(.navigationLink)
@@ -53,7 +65,7 @@ struct SoundSettingsView: View {
         .frame(maxWidth: .infinity)
         .themedScreen(intensity: 0.55)
         .navigationTitle("Sound")
-        .onChange(of: "\(preset)|\(widen)") {
+        .onChange(of: "\(preset)|\(widen)|\(loudness)") {
             engine.applySettings()
         }
     }

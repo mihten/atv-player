@@ -10,6 +10,7 @@ enum SoundSettings {
     static let presetKey = "eqPreset"      // "off" | "custom" | "p:<VLC preset index>"
     static let customKey = "eqCustom"      // "preamp;b0,b1,…,b9" in dB
     static let widenKey = "stereoWiden"    // 0 off, 1 light, 2 normal, 3 strong
+    static let loudnessKey = "loudnessMode" // "off" | "raise" | "level"
 
     private static var defaults: UserDefaults { .standard }
 
@@ -23,6 +24,55 @@ enum SoundSettings {
     static var widen: Int { defaults.integer(forKey: widenKey) }
 
     static var presets: [VLCAudioEqualizer.Preset] { VLCAudioEqualizer.presets }
+
+    // MARK: Loudness leveling
+
+    /// Per-track gain from the server's loudness measurement. Applied through the equalizer's preamp:
+    /// VLC 3's equalizer outputs preamp × (0.25 × input + Σ band terms), and a band at 0 dB adds nothing,
+    /// so a flat equalizer is a pure gain of (preamp − 12) dB; no filtering happens (equalizer.c).
+    enum Loudness: String, CaseIterable {
+        case off, raise, level
+
+        var name: String {
+            switch self {
+            case .off: "Off"
+            case .raise: "Raise quiet tracks"
+            case .level: "Level all tracks"
+            }
+        }
+    }
+
+    static var loudness: Loudness { Loudness(rawValue: defaults.string(forKey: loudnessKey) ?? "") ?? .raise }
+
+    /// What normal music is mastered to (streaming services use −14 LUFS).
+    static let loudnessTarget: Float = -14
+    /// The raw VLC preamp is capped at +20 dB (libvlc clamps it), i.e. +8 dB above "equalizer off".
+    static let maxBoost: Float = 8
+    static let maxCut: Float = 12
+
+    /// Gain in dB for this item: lifts it towards the target, never past its true peak (minus 0.5 dB and
+    /// the preamp the user already added), so nothing clips because of it. `level` also lowers loud tracks.
+    static func levelGain(for item: MediaItem?) -> Float {
+        guard let item, let lufs = item.lufs else { return 0 }
+        let mode = loudness
+        guard mode != .off else { return 0 }
+        var gain = loudnessTarget - Float(lufs)
+        gain = min(maxBoost, max(mode == .level ? -maxCut : 0, gain))
+        if gain > 0 {
+            let headroom = item.tpeak.map { -Float($0) - 0.5 } ?? 0
+            gain = min(gain, max(0, headroom - max(0, userPreamp)))
+        }
+        return (gain * 2).rounded() / 2  // half-dB steps: fewer preamp changes between similar tracks
+    }
+
+    /// The preamp the user chose, in app scale (0 = same loudness as the equalizer off).
+    private static var userPreamp: Float {
+        switch preset {
+        case "off": return 0
+        case "custom": return customValues().0
+        default: return presetValues(preset)?.0 ?? 0
+        }
+    }
 
     /// App presets (tag "a:<id>"): raw VLC preamp + 10 band gains (60 Hz … 16 kHz).
     struct AppPreset {
@@ -104,33 +154,39 @@ enum SoundSettings {
         return (eq.preAmplification - vlcPreampOffset, eq.bands.map(\.amplification))
     }
 
-    static func makeEqualizer() -> VLCAudioEqualizer? {
+    /// `extraGain` (dB) is the loudness leveling gain. With the equalizer off and no extra gain there is
+    /// no equalizer at all (unprocessed); with extra gain it is a flat one (a pure gain, see above).
+    static func makeEqualizer(extraGain: Float = 0) -> VLCAudioEqualizer? {
+        let eq: VLCAudioEqualizer
         switch preset {
         case "off":
-            return nil
+            guard extraGain != 0 else { return nil }
+            eq = VLCAudioEqualizer()
+            eq.preAmplification = vlcPreampOffset
         case _ where preset.hasPrefix("a:"):
             guard let app = appPreset(preset) else { return nil }
-            let eq = VLCAudioEqualizer()
+            eq = VLCAudioEqualizer()
             eq.preAmplification = app.vlcPreamp
             for (band, value) in zip(eq.bands, app.bands) { band.amplification = value }
-            return eq
         case "custom":
             let (pre, values) = customValues()
-            let eq = VLCAudioEqualizer()
+            eq = VLCAudioEqualizer()
             eq.preAmplification = min(20, pre + vlcPreampOffset)
             for (band, value) in zip(eq.bands, values) { band.amplification = value }
-            return eq
         default:
             let index = UInt32(preset.dropFirst(2)) ?? 0
             guard let p = presets.first(where: { $0.index == index }) else { return nil }
-            return VLCAudioEqualizer(preset: p)
+            eq = VLCAudioEqualizer(preset: p)
         }
+        eq.preAmplification = min(20, max(-20, eq.preAmplification + extraGain))
+        return eq
     }
 
     /// Audio filter chain to force on the player when the widener is on (nil = leave VLC's own).
-    static func filterChain() -> String? {
+    /// `withEqualizer`: the player has an equalizer (preset or loudness gain), which must stay in the chain.
+    static func filterChain(withEqualizer: Bool) -> String? {
         guard widen > 0 else { return nil }
-        return (preset == "off" ? "" : "equalizer:") + "stereo_widen"
+        return (withEqualizer ? "equalizer:" : "") + "stereo_widen"
     }
 
     /// stereo_widen parameters per strength (VLC defaults = Normal).
@@ -152,17 +208,16 @@ enum SoundSettings {
 
     /// Changes in this key mean the player must be rebuilt.
     static var configKey: String {
-        "\(preset)|\(preset == "custom" ? defaults.string(forKey: customKey) ?? "" : "")|\(widen)"
+        "\(preset)|\(preset == "custom" ? defaults.string(forKey: customKey) ?? "" : "")|\(widen)|\(loudness.rawValue)"
     }
 
     static var summary: String {
-        let eq = presetName(preset)
-        let widener = ["", "light", "normal", "strong"][min(max(widen, 0), 3)]
-        switch (preset == "off", widen == 0) {
-        case (true, true): return "Off (unprocessed)"
-        case (false, true): return "EQ \(eq)"
-        case (true, false): return "Widener \(widener)"
-        default: return "EQ \(eq) + widener \(widener)"
-        }
+        var parts: [String] = []
+        if preset != "off" { parts.append("EQ \(presetName(preset))") }
+        if widen > 0 { parts.append("widener " + ["", "light", "normal", "strong"][min(max(widen, 0), 3)]) }
+        if loudness != .off { parts.append(loudness == .raise ? "loudness" : "leveling") }
+        guard !parts.isEmpty else { return "Off (unprocessed)" }
+        parts[0] = parts[0].prefix(1).uppercased() + String(parts[0].dropFirst())
+        return parts.joined(separator: " + ")
     }
 }

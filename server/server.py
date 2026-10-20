@@ -24,6 +24,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+import loudness
 import scanner
 
 # Site config comes from the environment (systemd EnvironmentFile, see server/site.example/).
@@ -38,7 +39,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -56,7 +57,7 @@ REMOTES: dict = {}  # ws -> session kind the web remote controls
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
-                "codec", "track", "disc", "year", "width", "height", "hidden")
+                "codec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak")
 FULL_KEYS = SUMMARY_KEYS + ("audio_track", "audio_ord", "sub_track", "sub_ord", "channels", "bitrate")
 
 
@@ -958,6 +959,36 @@ async def art(request):
 SCAN_LOCK = asyncio.Lock()
 
 
+LOUDNESS_TASK = None
+
+
+def _loudness_result(item_id, lufs, tpeak):
+    it = LIB.get(item_id)
+    if it is not None:
+        it["lufs"], it["tpeak"] = lufs, tpeak
+
+
+async def run_loudness():
+    """Measure loudness of files that have no value yet, in the background (low priority). The apps
+    get the values with the next queue/library push."""
+    global LOUDNESS_TASK
+    if LOUDNESS_TASK is not None and not LOUDNESS_TASK.done():
+        return
+    async def job():
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, loudness.run, DB, ROOTS, _loudness_result)
+        except Exception:
+            log.exception("loudness job failed")
+    LOUDNESS_TASK = asyncio.create_task(job())
+
+
+async def api_loudness(request):
+    counts = await asyncio.get_running_loop().run_in_executor(None, loudness.counts, DB)
+    counts["running"] = LOUDNESS_TASK is not None and not LOUDNESS_TASK.done()
+    return web.json_response(counts)
+
+
 async def run_scan(force=False, wait=False):
     """wait=False: skip if a scan is already running. wait=True: wait for it, then scan again
     (unchanged files are skipped, a rescan takes well under a second)."""
@@ -982,6 +1013,7 @@ async def run_scan(force=False, wait=False):
         finally:
             SCANNING = False
             await broadcast_all()
+    await run_loudness()
 
 
 def advertised_ip():
@@ -1020,6 +1052,7 @@ async def advertise(app):
 
 
 async def on_cleanup(app):
+    loudness.STOP.set()
     if "zeroconf" in app:
         zc, info = app["zeroconf"]
         await zc.async_unregister_service(info)
@@ -1057,6 +1090,7 @@ def make_app():
     app.router.add_post("/api/playlists/{id:\\d+}/items", api_playlist_add)
     app.router.add_delete("/api/playlists/{id:\\d+}", api_playlist_delete)
     app.router.add_post("/api/rescan", api_rescan)
+    app.router.add_get("/api/loudness", api_loudness)
     app.router.add_post("/api/screenshot", api_screenshot)
     app.router.add_get("/shots/{name}", shot_file)
     app.router.add_get("/media/{id:\\d+}", media)

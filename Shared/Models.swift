@@ -43,6 +43,9 @@ struct MediaItem: Codable, Identifiable, Hashable {
     let subs: [SubtitleTrack]?
     let track: Int?
     let year: String?
+    /// Measured loudness (LUFS) and true peak (dBFS) from the server (0.12.0+, nil until measured).
+    var lufs: Double? = nil
+    var tpeak: Double? = nil
 
     /// A video that is shown and played as a video (not when only its audio is streamed).
     var isVideo: Bool { kind == "video" && !Config.streamAudioOnly }

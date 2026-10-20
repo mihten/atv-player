@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import MediaPlayer
+import os
 #if os(tvOS)
 import TVVLCKit
 #else
@@ -51,6 +52,8 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var wantPlaying = false
     private var appliedSound: String
     private var audioReport = ""
+    /// Loudness leveling gain (dB) currently applied through the equalizer preamp.
+    private var levelGain: Float = 0
     /// Start watchdog: VLC can sit in "stopped" without any error event (file gone on the server →
     /// HTTP 404, or a dead player instance). A load counts as started at its first time event.
     private var startedPlaying = false
@@ -75,21 +78,56 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     /// Equalizer + widener on a fresh player, before its first playback creates the audio output.
     private func configureAudio() {
-        if let eq = SoundSettings.makeEqualizer() {
+        levelGain = SoundSettings.levelGain(for: current)
+        let eq = SoundSettings.makeEqualizer(extraGain: levelGain)
+        if let eq {
             vlc.equalizer = eq
         }
-        if let chain = SoundSettings.filterChain() {
-            audioReport = "audio filters '\(chain)': \(VLCInternals.setAudioFilter(vlc, chain))"
+        let gainNote = levelGain != 0 ? String(format: ", loudness %+.1f dB", levelGain) : ""
+        if let chain = SoundSettings.filterChain(withEqualizer: eq != nil) {
+            audioReport = "audio filters '\(chain)': \(VLCInternals.setAudioFilter(vlc, chain))\(gainNote)"
         } else {
-            audioReport = "audio: \(SoundSettings.summary)"
+            audioReport = "audio: \(SoundSettings.summary)\(gainNote)"
         }
+    }
+
+    /// Per-track loudness gain for the item that is about to load. Without the widener the equalizer's
+    /// preamp is changed on the running player (that is what VLC's own equalizer sliders do); with the
+    /// widener the filter chain depends on whether an equalizer exists, so the player is rebuilt (the same
+    /// path as a settings change). Called before the new media is set.
+    private func applyLevel(for item: MediaItem) {
+        let gain = SoundSettings.levelGain(for: item)
+        guard gain != levelGain else { return }
+        let before = levelGain
+        if SoundSettings.widen > 0 {
+            rebuildPlayer("loudness")  // configureAudio picks up the gain of `current`
+        } else {
+            levelGain = gain
+            vlc.equalizer = SoundSettings.makeEqualizer(extraGain: gain)
+            audioReport = "audio: \(SoundSettings.summary), loudness \(String(format: "%+.1f", gain)) dB"
+        }
+        log(String(format: "loudness gain %+.1f -> %+.1f dB for '%@' (%@ LUFS, peak %@ dBFS)", before, gain, item.title,
+                   item.lufs.map { String(format: "%.1f", $0) } ?? "?", item.tpeak.map { String(format: "%.1f", $0) } ?? "?"))
+    }
+
+    /// First connection of this launch: tell the server log how the previous run ended.
+    func reportLaunch() {
+        log("\(launchNote); \(envNote)")
     }
 
     func presentPlayer() {
         startCounter += 1
     }
 
+    /// "foreground" / "background": where the app was when the previous run ended. iOS gives no exit
+    /// notice, so the next launch reports it: ended in the foreground = crash (or swiped away there);
+    /// in the background = killed by iOS (memory) or swiped away from the app switcher.
+    private static let lastStateKey = "lastRunState"
+    private var launchNote = ""
+
     override init() {
+        launchNote = "app started; previous run ended in the \(UserDefaults.standard.string(forKey: Self.lastStateKey) ?? "unknown state")"
+        UserDefaults.standard.set("foreground", forKey: Self.lastStateKey)
         SoundSettings.migrate()
         let options = PlayerSettings.vlcOptions() + SoundSettings.widenerOptions()
         vlcOptions = options
@@ -138,7 +176,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             guard let self, !Task.isCancelled, self.current?.id == item.id else { return }
             self.connection?.send([
                 "type": "log",
-                "message": "\(self.audioReport); progress check '\(item.title)': timeEvents=\(self.timeEvents) vlcTime \(startTime)->\(self.vlc.time.intValue) ms clock=\(Int(self.clock.position)) s state=\(VLCMediaPlayerStateToString(self.vlc.state)) playing=\(self.isPlaying)",
+                "message": "\(self.audioReport); progress check '\(item.title)': timeEvents=\(self.timeEvents) vlcTime \(startTime)->\(self.vlc.time.intValue) ms clock=\(Int(self.clock.position)) s state=\(VLCMediaPlayerStateToString(self.vlc.state)) playing=\(self.isPlaying); \(self.mediaNote)",
             ])
         }
     }
@@ -162,6 +200,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             return  // resume sync after a reconnect: keep whatever is playing now
         }
         current = item
+        applyLevel(for: item)
         tracksApplied = false
         endedSent = false
         isPlaying = false  // the next VLC event reports the real state for the new item
@@ -305,8 +344,29 @@ final class PlayerEngine: NSObject, ObservableObject {
     private func logRequest(_ action: String, _ source: String) {
         connection?.send([
             "type": "log",
-            "message": "\(action) requested via \(source): vlc state \(VLCMediaPlayerStateToString(vlc.state)), wantPlaying \(wantPlaying)",
+            "message": "\(action) requested via \(source): vlc state \(VLCMediaPlayerStateToString(vlc.state)), wantPlaying \(wantPlaying); \(envNote)",
         ])
+    }
+
+    /// Where the app is and how much memory it may still use: tells a system pause (lock screen, headset,
+    /// background video) from a user press, and a memory kill from a crash, in the server log.
+    private var envNote: String {
+        let state: String
+        switch UIApplication.shared.applicationState {
+        case .active: state = "active"
+        case .inactive: state = "inactive"
+        default: state = "background"
+        }
+        let route = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: "+")
+        return "app \(state), output \(route.isEmpty ? "none" : route), free memory \(os_proc_available_memory() / 1_048_576) MB"
+    }
+
+    /// What VLC currently has: picture, tracks. Logged with the 6 s progress check of every item.
+    private var mediaNote: String {
+        let video = current?.isVideo == true
+            ? "video out \(vlc.hasVideoOut) size \(Int(vlc.videoSize.width))x\(Int(vlc.videoSize.height)) track \(vlc.currentVideoTrackIndex)"
+            : "audio only"
+        return "\(video), audio track \(vlc.currentAudioTrackIndex) of \(vlc.numberOfAudioTracks), \(envNote)"
     }
 
     /// Position/length straight from VLC, for the info bar's own refresh.
@@ -350,6 +410,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// does not render video in the background and VLC would stall), else it pauses.
     func appDidEnterBackground() {
         inBackground = true
+        UserDefaults.standard.set("background", forKey: Self.lastStateKey)
         guard wantPlaying else { return }
         if current?.isVideo == true {
             if PlayerSettings.keepVideoAudioInBackground {
@@ -365,6 +426,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// Back in the app: bring the picture back.
     func appDidBecomeActive() {
         inBackground = false
+        UserDefaults.standard.set("foreground", forKey: Self.lastStateKey)
         showVideo()
     }
 
@@ -372,7 +434,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         guard !videoHidden else { return }
         videoHidden = true
         vlc.currentVideoTrackIndex = -1
-        log("background: video track off, audio keeps playing")
+        updateNowPlaying()
+        log("background: video track off, audio keeps playing; \(envNote)")
     }
 
     private func showVideo() {
@@ -381,7 +444,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         if let track = trackIDs(vlc.videoTrackIndexes).first {
             vlc.currentVideoTrackIndex = track
         }
-        log("foreground: video track back on")
+        updateNowPlaying()
+        log("foreground: video track back on; \(envNote)")
     }
 
     /// Re-read Settings. Subtitle style options need a new VLC instance; playback resumes at the same position.
@@ -581,7 +645,8 @@ final class PlayerEngine: NSObject, ObservableObject {
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-            MPNowPlayingInfoPropertyMediaType: (item.isVideo ? MPNowPlayingInfoMediaType.video : .audio).rawValue,
+            // While only the sound plays in the background it is audio: iOS can pause "video" playing in the background.
+            MPNowPlayingInfoPropertyMediaType: (item.isVideo && !videoHidden ? MPNowPlayingInfoMediaType.video : .audio).rawValue,
         ]
         if let artist = item.artist { info[MPMediaItemPropertyArtist] = artist }
         if let album = item.album { info[MPMediaItemPropertyAlbumTitle] = album }

@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
+    @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
 
     /// The Now Playing card is disabled (= not focusable, proven on the TV in build 11) while the
@@ -96,7 +97,7 @@ struct SettingsView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = widen  // refresh when either changes
+        _ = eqPreset; _ = widen; _ = loudness  // refresh when any changes
         return SoundSettings.summary
     }
 

@@ -6,6 +6,8 @@ import Foundation
 @MainActor
 final class ServerConnection: ObservableObject {
     @Published private(set) var connected = false
+    /// The start-up note (how the previous run ended) goes to the server log once per launch.
+    private var launchReported = false
     @Published private(set) var state: SessionState?
     /// Bumped when the server says playlists changed (web remote edits); playlist screens reload on it.
     @Published private(set) var playlistsVersion = 0
@@ -65,6 +67,10 @@ final class ServerConnection: ObservableObject {
                     self.connected = true
                     self.retryDelay = 1
                     self.failures = 0
+                    if !self.launchReported {
+                        self.launchReported = true
+                        self.engine?.reportLaunch()
+                    }
                     switch message {
                     case .string(let text):
                         self.handle(Data(text.utf8))

@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS items (
   sub_track TEXT,
   sub_ord INTEGER,
   subs TEXT,
+  lufs REAL,
+  tpeak REAL,
+  loud_fail INTEGER NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0,
   dup_of INTEGER,
   added REAL NOT NULL,
@@ -76,6 +79,11 @@ def connect(db_path):
     cols = {r["name"] for r in con.execute("PRAGMA table_info(items)")}
     if "subs" not in cols:  # added 2026-10-19 (subtitle language choice); NULL = videos get re-probed once
         con.execute("ALTER TABLE items ADD COLUMN subs TEXT")
+        con.commit()
+    if "lufs" not in cols:  # added 2026-10-20 (loudness leveling; filled by loudness.py)
+        con.execute("ALTER TABLE items ADD COLUMN lufs REAL")
+        con.execute("ALTER TABLE items ADD COLUMN tpeak REAL")
+        con.execute("ALTER TABLE items ADD COLUMN loud_fail INTEGER NOT NULL DEFAULT 0")
         con.commit()
     return con
 
@@ -391,6 +399,9 @@ def scan(db_path, roots, force=False):
                     continue
                 con.execute(sql, [rec[c] for c in COLUMNS])
                 if old:
+                    # the file changed: its measured loudness is stale
+                    con.execute("UPDATE items SET lufs = NULL, tpeak = NULL, loud_fail = 0 "
+                                "WHERE root = ? AND relpath = ?", key)
                     updated += 1
                 else:
                     added += 1

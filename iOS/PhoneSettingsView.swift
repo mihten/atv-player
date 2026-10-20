@@ -8,6 +8,7 @@ struct PhoneSettingsView: View {
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
+    @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
@@ -57,7 +58,7 @@ struct PhoneSettingsView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = widen  // refresh when either changes
+        _ = eqPreset; _ = widen; _ = loudness  // refresh when any changes
         return SoundSettings.summary
     }
 
@@ -197,9 +198,20 @@ struct PhoneSoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
+    @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
 
     var body: some View {
         Form {
+            Section {
+                Picker("Loudness", selection: $loudness) {
+                    ForEach(SoundSettings.Loudness.allCases, id: \.rawValue) { mode in
+                        Text(mode.name).tag(mode.rawValue)
+                    }
+                }
+            } footer: {
+                Text("Raise quiet tracks lifts songs and videos that were recorded much quieter than normal music (about −14 LUFS), as far as they can go without clipping (at most +8 dB). Level all tracks also lowers loud ones, so everything plays at a similar volume. The server measures each file once; files it has not measured yet play unchanged.")
+            }
+            .themedRow()
             Section {
                 Picker("Equalizer", selection: $eqPreset) {
                     Text("Off").tag("off")
@@ -227,7 +239,7 @@ struct PhoneSoundSettingsView: View {
         .phoneThemed()
         .navigationTitle("Sound")
         .withMiniPlayer()
-        .onChange(of: "\(eqPreset)|\(widen)") {
+        .onChange(of: "\(eqPreset)|\(widen)|\(loudness)") {
             engine.applySettings()
         }
     }
