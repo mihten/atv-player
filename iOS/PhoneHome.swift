@@ -130,8 +130,7 @@ struct PhoneHome: View {
         VStack(alignment: .leading, spacing: 12) {
             Group {
                 switch theme {
-                case .noir: Text(title.uppercased()).font(.system(size: 13, weight: .heavy)).tracking(3)
-                case .vinyl: Text(title).font(.system(size: 22, weight: .medium, design: .serif).italic())
+                case .noir, .vinyl: Text(title.uppercased()).font(.system(size: 13, weight: .heavy)).tracking(3)
                 default: Text(title).font(theme.font(22, .bold))
                 }
             }

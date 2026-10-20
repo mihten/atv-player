@@ -6,6 +6,7 @@
 # One simulator at a time (two big simulators froze the runner), every simctl call has a watchdog.
 set -uo pipefail
 TV_APP=$1 PHONE_APP=$2 OUT=$3 PLATFORMS=$4
+EXTRA_ROUTES=${EXTRA_ROUTES:-}  # env: more -demoRoute screens per theme (e.g. "theme lyrics")
 shift 4
 THEMES=("$@")
 [ ${#THEMES[@]} -eq 0 ] && THEMES=(aurora)
@@ -105,7 +106,7 @@ if [[ $PLATFORMS == *tv* ]]; then
   t 30 "${DRV[@]}" play tv music "Harbor Lights"
   for theme in "${THEMES[@]}"; do
     echo "== Apple TV, $theme"
-    for route in home playlist folder settings; do
+    for route in home playlist folder settings $EXTRA_ROUTES; do
       launch "$TV" "$TV_ID" "$theme" "$route"
       play tv
       sleep 7
@@ -138,7 +139,7 @@ if [[ $PLATFORMS == *phone* ]]; then
   t 30 "${DRV[@]}" play phone music "Low Tide"
   for theme in "${THEMES[@]}"; do
     echo "== iPhone, $theme"
-    for route in library playlist queue settings; do
+    for route in library playlist queue settings $EXTRA_ROUTES; do
       launch "$PHONE" "$PHONE_ID" "$theme" "$route"
       play phone
       sleep 6

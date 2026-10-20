@@ -80,10 +80,8 @@ struct ShelfTitle: View {
     var body: some View {
         Group {
             switch theme {
-            case .noir:
+            case .noir, .vinyl:
                 Text(text.uppercased()).font(.system(size: 26, weight: .heavy)).tracking(5)
-            case .vinyl:
-                Text(text).font(.system(size: 34, weight: .medium, design: .serif).italic())
             default:
                 Text(text).font(theme.font(34, .bold))
             }

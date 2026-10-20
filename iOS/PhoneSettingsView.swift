@@ -1,52 +1,80 @@
 import SwiftUI
 import MobileVLCKit
 
-/// iPhone Settings. Same keys as the Apple TV app (PlayerSettings / SoundSettings), stored on the phone.
+/// iPhone Settings: one row per page (Theme, Server, Sound, Playback, Lyrics). Same keys as the Apple TV
+/// app (PlayerSettings / SoundSettings), stored on the phone.
 struct PhoneSettingsView: View {
-    @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var locator: ServerLocator
-    @EnvironmentObject var connection: ServerConnection
-    @State private var serverAddress = ServerLocator.manualAddress
-    @State private var addressInvalid = false
-
-    @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
-    @AppStorage(PlayerSettings.keepVideoAudioKey) private var keepVideoAudio = PlayerSettings.keepVideoAudioDefault
-    @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
-    @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
-    @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
-    @AppStorage(PlayerSettings.subSizeKey) private var size = 0
-    @AppStorage(PlayerSettings.subFontKey) private var font = ""
-    @AppStorage(PlayerSettings.subColorKey) private var color = PlayerSettings.defaultColor
-    @AppStorage(PlayerSettings.subBoldKey) private var bold = false
-    @AppStorage(PlayerSettings.subOutlineKey) private var outline = PlayerSettings.defaultOutline
-    @AppStorage(PlayerSettings.subBackgroundKey) private var background = 0
-    @AppStorage(PlayerSettings.subMarginKey) private var margin = 0
+    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
-    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
-    @AppStorage(AppTheme.motionKey) private var motion = true
-    @AppStorage(RemoteSettings.urlKey) private var remoteURL = ""
-    @AppStorage(RemoteSettings.userKey) private var remoteUser = ""
-    @AppStorage(RemoteSettings.modeKey) private var remoteMode = "audio"
-    @State private var remotePassword = RemoteSettings.password
-    @State private var remoteTest = ""
-    @State private var testing = false
-
-    private var appliedKey: String {
-        "\(subsOn)|\(subLang)|\(size)|\(font)|\(color)|\(bold)|\(outline)|\(background)|\(margin)|\(eqPreset)|\(widen)"
-    }
+    @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
+    @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
+    @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
 
     private var appVersion: String {
         let info = Bundle.main.infoDictionary
         return "Version \(info?["CFBundleShortVersionString"] as? String ?? "?") (build \(info?["CFBundleVersion"] as? String ?? "?"))"
     }
 
-    /// Saves the password (Keychain) and applies address/login; reconnects when the internet address is in use.
-    private func applyRemote() {
-        RemoteSettings.setPassword(remotePassword)
-        locator.remoteSettingsChanged()
-        if locator.isRemote { connection.restart() }
+    var body: some View {
+        Form {
+            Section {
+                row("Theme", "paintpalette", (AppTheme(rawValue: themeRaw) ?? .aurora).name) { PhoneThemeSettingsView() }
+                row("Server", "server.rack", serverSummary) { PhoneServerSettingsView() }
+                row("Sound", "speaker.wave.2", soundSummary) { PhoneSoundSettingsView() }
+                row("Playback", "play.circle", keepMusic ? "Background on" : "Background off") { PhonePlaybackSettingsView() }
+                row("Lyrics", "captions.bubble", lyricsSummary) { PhoneLyricsSettingsView() }
+            }
+            .themedRow()
+
+            Section {
+                Text(appVersion).foregroundStyle(.secondary)
+            }
+            .themedRow()
+        }
+        .phoneThemed()
+        .navigationTitle("Settings")
+        .withMiniPlayer()
     }
+
+    private func row<Destination: View>(_ title: String, _ symbol: String, _ value: String,
+                                        @ViewBuilder destination: @escaping () -> Destination) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            LabeledContent {
+                Text(value).lineLimit(1)
+            } label: {
+                Label(title, systemImage: symbol)
+            }
+        }
+    }
+
+    private var serverSummary: String {
+        if locator.isRemote { return "Internet" }
+        return locator.isManual ? Config.remoteAddress : "Automatic"
+    }
+
+    private var soundSummary: String {
+        _ = eqPreset; _ = widen  // refresh when either changes
+        return SoundSettings.summary
+    }
+
+    private var lyricsSummary: String {
+        guard subsOn else { return "Off" }
+        switch subLang {
+        case "eng": return "English"
+        case "hrv": return "Croatian"
+        default: return "On"
+        }
+    }
+}
+
+/// Settings → Theme.
+struct PhoneThemeSettingsView: View {
+    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
+    @AppStorage(AppTheme.motionKey) private var motion = true
 
     var body: some View {
         Form {
@@ -63,13 +91,40 @@ struct PhoneSettingsView: View {
                 }
                 .sensoryFeedback(.selection, trigger: themeRaw)
                 Toggle("Moving background and spinning record", isOn: $motion)
-            } header: {
-                Text("Appearance")
             } footer: {
                 Text((AppTheme(rawValue: themeRaw) ?? .aurora).tagline + ".")
             }
             .themedRow()
+        }
+        .phoneThemed()
+        .navigationTitle("Theme")
+        .withMiniPlayer()
+    }
+}
 
+/// Settings → Server: home server address and the internet address for away from home.
+struct PhoneServerSettingsView: View {
+    @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var locator: ServerLocator
+    @EnvironmentObject var connection: ServerConnection
+    @State private var serverAddress = ServerLocator.manualAddress
+    @State private var addressInvalid = false
+    @AppStorage(RemoteSettings.urlKey) private var remoteURL = ""
+    @AppStorage(RemoteSettings.userKey) private var remoteUser = ""
+    @AppStorage(RemoteSettings.modeKey) private var remoteMode = "audio"
+    @State private var remotePassword = RemoteSettings.password
+    @State private var remoteTest = ""
+    @State private var testing = false
+
+    /// Saves the password (Keychain) and applies address/login; reconnects when the internet address is in use.
+    private func applyRemote() {
+        RemoteSettings.setPassword(remotePassword)
+        locator.remoteSettingsChanged()
+        if locator.isRemote { connection.restart() }
+    }
+
+    var body: some View {
+        Form {
             Section {
                 TextField("Address (empty = automatic)", text: $serverAddress)
                     .textInputAutocapitalization(.never)
@@ -82,7 +137,7 @@ struct PhoneSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(addressInvalid ? .red : .secondary)
             } header: {
-                Text("Server")
+                Text("Home network")
             } footer: {
                 Text("Leave empty to find the server automatically on the Wi-Fi (Bonjour). Type an address (e.g. 10.0.0.5 or 10.0.0.5:8080) only if it is not found.")
             }
@@ -128,8 +183,24 @@ struct PhoneSettingsView: View {
                 Text("Used when the home server does not answer (mobile data, other Wi-Fi). The app goes back to the home network by itself. Audio only plays a music video as sound and uses far less data; Audio + video streams the whole video file, which can be very large. Leave the address empty to turn this off.")
             }
             .themedRow()
+        }
+        .phoneThemed()
+        .navigationTitle("Server")
+        .withMiniPlayer()
+        .onDisappear { applyRemote() }
+        .onChange(of: remoteMode) { engine.streamChanged() }
+    }
+}
 
-            Section("Sound") {
+/// Settings → Sound.
+struct PhoneSoundSettingsView: View {
+    @EnvironmentObject var engine: PlayerEngine
+    @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
+    @AppStorage(SoundSettings.widenKey) private var widen = 0
+
+    var body: some View {
+        Form {
+            Section {
                 Picker("Equalizer", selection: $eqPreset) {
                     Text("Off").tag("off")
                     ForEach(SoundSettings.appPresets, id: \.id) { Text($0.name).tag("a:\($0.id)") }
@@ -137,33 +208,85 @@ struct PhoneSettingsView: View {
                     Text("Custom").tag("custom")
                 }
                 NavigationLink("Edit custom equalizer") { PhoneEqualizerView() }
+            } footer: {
+                Text("10-band graphic equalizer. The custom editor can start from any built-in preset (Load preset).")
+            }
+            .themedRow()
+            Section {
                 Picker("Stereo widener", selection: $widen) {
                     Text("Off").tag(0)
                     Text("Light").tag(1)
                     Text("Normal").tag(2)
                     Text("Strong").tag(3)
                 }
+            } footer: {
+                Text("Widens the stereo image on speakers; on headphones it sounds hollow.")
             }
             .themedRow()
+        }
+        .phoneThemed()
+        .navigationTitle("Sound")
+        .withMiniPlayer()
+        .onChange(of: "\(eqPreset)|\(widen)") {
+            engine.applySettings()
+        }
+    }
+}
 
+/// Settings → Playback.
+struct PhonePlaybackSettingsView: View {
+    @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
+    @AppStorage(PlayerSettings.keepVideoAudioKey) private var keepVideoAudio = PlayerSettings.keepVideoAudioDefault
+    @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
+
+    var body: some View {
+        Form {
             Section {
                 Toggle("Music keeps playing in the background", isOn: $keepMusic)
                 Toggle("Music videos keep playing as audio", isOn: $keepVideoAudio)
                 Toggle("Fast seek", isOn: $fastSeek)
-            } header: {
-                Text("Playback")
             } footer: {
                 Text("Background = Home button or locked screen. With the second switch on, a music video continues as audio only and its picture is back when you return; off = it pauses. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
             }
             .themedRow()
+        }
+        .phoneThemed()
+        .navigationTitle("Playback")
+        .withMiniPlayer()
+    }
+}
 
-            Section("Lyrics / subtitles") {
+/// Settings → Lyrics (subtitles in music videos).
+struct PhoneLyricsSettingsView: View {
+    @EnvironmentObject var engine: PlayerEngine
+    @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
+    @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
+    @AppStorage(PlayerSettings.subSizeKey) private var size = 0
+    @AppStorage(PlayerSettings.subFontKey) private var font = ""
+    @AppStorage(PlayerSettings.subColorKey) private var color = PlayerSettings.defaultColor
+    @AppStorage(PlayerSettings.subBoldKey) private var bold = false
+    @AppStorage(PlayerSettings.subOutlineKey) private var outline = PlayerSettings.defaultOutline
+    @AppStorage(PlayerSettings.subBackgroundKey) private var background = 0
+    @AppStorage(PlayerSettings.subMarginKey) private var margin = 0
+
+    private var appliedKey: String {
+        "\(subsOn)|\(subLang)|\(size)|\(font)|\(color)|\(bold)|\(outline)|\(background)|\(margin)"
+    }
+
+    var body: some View {
+        Form {
+            Section {
                 Toggle("Show lyrics / subtitles", isOn: $subsOn)
                 Picker("Language", selection: $subLang) {
                     Text("Default (as set in the file)").tag("")
                     Text("English").tag("eng")
                     Text("Croatian").tag("hrv")
                 }
+            } footer: {
+                Text("Default shows the track the file marks as default. English or Croatian picks that language when the video has it.")
+            }
+            .themedRow()
+            Section("Style") {
                 Picker("Text size", selection: $size) {
                     Text("Default").tag(0)
                     Text("Small").tag(20)
@@ -201,17 +324,10 @@ struct PhoneSettingsView: View {
                 }
             }
             .themedRow()
-
-            Section {
-                Text(appVersion).foregroundStyle(.secondary)
-            }
-            .themedRow()
         }
         .phoneThemed()
-        .navigationTitle("Settings")
+        .navigationTitle("Lyrics")
         .withMiniPlayer()
-        .onDisappear { applyRemote() }
-        .onChange(of: remoteMode) { engine.streamChanged() }
         .onChange(of: appliedKey) {
             engine.applySettings()
         }

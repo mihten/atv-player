@@ -66,7 +66,12 @@ struct HomeView: View {
         case .vinyl:
             HStack(spacing: 18) {
                 Image(systemName: "opticaldisc").font(.system(size: 44)).foregroundStyle(theme.accent(artwork.palette))
-                Text("ATV Player").font(.system(size: 60, weight: .semibold, design: .serif).italic())
+                HStack(spacing: 0) {
+                    Text("ATV").font(.system(size: 64, weight: .black).width(.condensed))
+                    Text("PLAYER").font(.system(size: 64, weight: .thin).width(.condensed))
+                        .foregroundStyle(theme.accent(artwork.palette))
+                }
+                .tracking(4)
             }
         default:
             Text("ATV Player")

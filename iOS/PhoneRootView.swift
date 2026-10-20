@@ -29,7 +29,11 @@ struct PhoneRootView: View {
             QueueTab()
                 .tabItem { Label("Queue", systemImage: "list.number") }
                 .tag(2)
-            NavigationStack { PhoneSettingsView().demoPush("eq") }
+            NavigationStack {
+                PhoneSettingsView()
+                    .demoPush("eq").demoPush("theme").demoPush("server")
+                    .demoPush("sound").demoPush("playback").demoPush("lyrics")
+            }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(3)
         }

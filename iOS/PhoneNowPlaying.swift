@@ -433,7 +433,7 @@ struct PhoneNowPlayingView: View {
                 Text(item.title).font(theme.display(40)).lineLimit(2).minimumScaleFactor(0.6)
             case .vinyl:
                 Text(item.title).font(theme.display(28)).lineLimit(2)
-                Text(item.artist ?? " ").font(.system(size: 19, design: .serif).italic()).opacity(0.85).lineLimit(1)
+                Text(item.artist ?? " ").font(theme.font(19, .medium)).opacity(0.85).lineLimit(1)
                 if let album = item.album {
                     Text(album).font(theme.font(14)).opacity(0.5).lineLimit(1)
                 }
@@ -514,9 +514,9 @@ struct PhoneNowPlayingView: View {
             Spacer(minLength: 0)
             if let next = state?.upcoming?.first {
                 HStack(spacing: 6) {
-                    Text(theme == .vinyl ? "Next:" : "NEXT")
-                        .font(theme == .vinyl ? .system(size: 12, design: .serif).italic() : .system(size: 10, weight: .heavy))
-                        .tracking(theme == .vinyl ? 0 : 2)
+                    Text("NEXT")
+                        .font(.system(size: 10, weight: .heavy))
+                        .tracking(2)
                         .foregroundStyle(accent)
                     Text(next.title).font(theme.font(13)).opacity(0.7).lineLimit(1)
                 }

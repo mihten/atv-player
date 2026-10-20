@@ -6,7 +6,7 @@ enum PhoneDemo {
         switch DemoRoute.screen {
         case "playlists", "playlist": 1
         case "queue": 2
-        case "settings", "eq": 3
+        case "settings", "eq", "theme", "server", "sound", "playback", "lyrics": 3
         default: 0
         }
     }
@@ -18,6 +18,11 @@ enum PhoneDemo {
         case "folder": PhoneFolderView(root: "music", folder: "Neon Harbor/Midnight Ferries", title: "Midnight Ferries")
         case "playlist": PhonePlaylistView(playlistID: 1, title: "Playlist")
         case "eq": PhoneEqualizerView()
+        case "theme": PhoneThemeSettingsView()
+        case "server": PhoneServerSettingsView()
+        case "sound": PhoneSoundSettingsView()
+        case "playback": PhonePlaybackSettingsView()
+        case "lyrics": PhoneLyricsSettingsView()
         default: EmptyView()
         }
     }

@@ -49,8 +49,8 @@ enum AppTheme: String, CaseIterable, Identifiable {
     var fontDesign: Font.Design {
         switch self {
         case .aurora: .rounded
-        case .noir, .classic: .default
-        case .vinyl: .serif
+        // Vinyl uses Noir's typeface (the serif was not liked); it keeps its own colours and record.
+        case .noir, .vinyl, .classic: .default
         }
     }
 
@@ -59,11 +59,10 @@ enum AppTheme: String, CaseIterable, Identifiable {
         .system(size: size, weight: weight, design: fontDesign)
     }
 
-    /// Big titles: Noir uses heavy condensed type, Vinyl a serif, Aurora rounded.
+    /// Big titles: Noir and Vinyl use heavy condensed type, Aurora rounded.
     func display(_ size: CGFloat) -> Font {
         switch self {
-        case .noir: .system(size: size, weight: .heavy, design: .default).width(.condensed)
-        case .vinyl: .system(size: size, weight: .semibold, design: .serif)
+        case .noir, .vinyl: .system(size: size, weight: .heavy, design: .default).width(.condensed)
         case .aurora: .system(size: size, weight: .bold, design: .rounded)
         case .classic: .system(size: size, weight: .bold)
         }
@@ -71,10 +70,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
 
     /// Small caps-style labels above sections ("NOW PLAYING", "UP NEXT").
     func eyebrow(_ size: CGFloat) -> Font {
-        switch self {
-        case .vinyl: .system(size: size, weight: .medium, design: .serif).italic()
-        default: .system(size: size, weight: .bold, design: fontDesign)
-        }
+        .system(size: size, weight: .bold, design: fontDesign)
     }
 
     /// Accent colour: Aurora and Noir take it from the cover art, Vinyl is always amber.

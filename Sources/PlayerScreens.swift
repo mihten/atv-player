@@ -205,8 +205,8 @@ struct VinylPlayer: View {
                     .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
                                             removal: .move(edge: .top).combined(with: .opacity)))
                 VStack(alignment: .leading, spacing: 18) {
-                    Text(sideLabel)
-                        .font(.system(size: 28, weight: .regular, design: .serif).italic())
+                    Text(sideLabel.uppercased())
+                        .font(.system(size: 22, weight: .heavy)).tracking(5)
                         .foregroundStyle(accent)
                     VStack(alignment: .leading, spacing: 12) {
                         Text(item.title)
@@ -214,7 +214,7 @@ struct VinylPlayer: View {
                             .lineLimit(3)
                             .minimumScaleFactor(0.55)
                         if let artist = item.artist, !artist.isEmpty {
-                            Text(artist).font(.system(size: 38, weight: .regular, design: .serif).italic()).opacity(0.85)
+                            Text(artist).font(theme.font(38, .medium)).opacity(0.85)
                         }
                         Text(([item.album].compactMap { $0 } + (item.year.map { [String($0.prefix(4))] } ?? []))
                                 .joined(separator: ", "))
@@ -317,9 +317,9 @@ struct UpNext: View {
     var body: some View {
         if let upcoming = connection.state?.upcoming, !upcoming.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                Text(numbered ? "Up next" : "UP NEXT")
+                Text("UP NEXT")
                     .font(theme.eyebrow(20))
-                    .tracking(numbered ? 0 : 4)
+                    .tracking(4)
                     .opacity(0.6)
                 if numbered {
                     ForEach(Array(upcoming.prefix(3).enumerated()), id: \.offset) { index, next in
@@ -327,7 +327,7 @@ struct UpNext: View {
                             Text("\(index + 1).").font(theme.font(24)).foregroundStyle(accent).frame(width: 34, alignment: .leading)
                             Text(next.title).font(theme.font(26)).lineLimit(1)
                             if let artist = next.artist {
-                                Text("— " + artist).font(theme.font(24).italic()).opacity(0.55).lineLimit(1)
+                                Text("— " + artist).font(theme.font(24)).opacity(0.55).lineLimit(1)
                             }
                         }
                     }

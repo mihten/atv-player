@@ -12,6 +12,9 @@ on:
       platforms:
         description: "tv,phone / tv / phone / none"
         default: "tv,phone"
+      extra_routes:
+        description: "Extra screens to screenshot per theme, e.g. 'theme lyrics' (Settings pages)"
+        default: ""
       remote_test:
         description: "Also run the remote-access check (iPhone app through a basic-auth proxy)"
         default: "false"
@@ -31,6 +34,7 @@ jobs:
       BUILD_NUMBER: ${{ github.run_number }}
       THEMES: ${{ github.event.inputs.themes || 'aurora noir vinyl' }}
       REMOTE_TEST: ${{ github.event.inputs.remote_test || 'false' }}
+      EXTRA_ROUTES: ${{ github.event.inputs.extra_routes || '' }}
       PLATFORMS: ${{ github.event.inputs.platforms || (contains(github.event.head_commit.message, '[release]') && 'none' || 'tv,phone') }}
     steps:
       - uses: actions/checkout@v4

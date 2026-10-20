@@ -10,7 +10,11 @@ struct DemoDestination: View {
         case "folders": FolderRootsView()
         case "folder": FolderView(root: "music", folder: "Neon Harbor/Midnight Ferries", title: "Midnight Ferries")
         case "settings": SettingsView()
+        case "theme": ThemeSettingsView()
+        case "server": ServerSettingsView()
         case "sound": SoundSettingsView()
+        case "playback": PlaybackSettingsView()
+        case "lyrics": LyricsSettingsView()
         case "eq": CustomEqualizerView()
         default: EmptyView()
         }
