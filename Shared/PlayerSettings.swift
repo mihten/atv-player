@@ -65,7 +65,7 @@ enum PlayerSettings {
     }
     static var fastSeek: Bool { defaults.object(forKey: fastSeekKey) as? Bool ?? true }
     static var seekBack: Double { Double(defaults.object(forKey: seekBackKey) as? Int ?? 10) }
-    static var seekForward: Double { Double(defaults.object(forKey: seekForwardKey) as? Int ?? 30) }
+    static var seekForward: Double { Double(defaults.object(forKey: seekForwardKey) as? Int ?? 10) }
 
     /// libVLC options for the subtitle renderer (freetype). Empty = VLC defaults.
     static func vlcOptions() -> [String] {

@@ -8,7 +8,7 @@ struct SettingsView: View {
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
     @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
-    @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 30
+    @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.widenKey) private var widen = 0
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
@@ -185,7 +185,7 @@ struct PlaybackSettingsView: View {
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
-    @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 30
+    @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
 
     var body: some View {
         SettingsPage(title: "Playback") {
