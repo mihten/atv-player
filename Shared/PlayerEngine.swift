@@ -172,6 +172,56 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
         if abs(clock.position - position) >= 0.25 { clock.position = position }
         if abs(clock.duration - duration) >= 0.5 { clock.duration = duration }
+        watchProgress(vlcTime)
+    }
+
+    // MARK: - Stall watchdog
+
+    /// VLC sometimes goes quiet while it should be playing: no time progress and no state event (seen on the iPhone:
+    /// frozen at 4 s of a video, and stuck 0.1 s before the end of a video without the Ended event, so the queue
+    /// never moved on). The ticker watches VLC's time while the user wants playback:
+    /// - stuck within 3 s of the end for 4 s = the item is over -> report "ended" (the server plays the next one);
+    /// - stuck elsewhere for 8 s = a stall -> reopen the item at the same spot once, a second stall -> report an error
+    ///   (the server skips).
+    /// Every 10 s while playing the app also sends its position, so the server and the web remote stay true.
+    private var lastVLCTime: Double = -1
+    private var lastProgressAt = Date()
+    private var stallRetriedItem: Int?
+    private var lastHeartbeat = Date()
+
+    private func watchProgress(_ vlcTime: Double) {
+        let now = Date()
+        if vlcTime != lastVLCTime {
+            lastVLCTime = vlcTime
+            lastProgressAt = now
+        }
+        guard let item = current, wantPlaying, startedPlaying, !endedSent else {
+            lastProgressAt = now  // the clock only runs while playback is wanted
+            return
+        }
+        if now.timeIntervalSince(lastHeartbeat) >= 10 {
+            lastHeartbeat = now
+            report()
+        }
+        let stuck = now.timeIntervalSince(lastProgressAt)
+        let nearEnd = duration > 0 && vlcTime >= duration - 3
+        let state = VLCMediaPlayerStateToString(vlc.state)
+        if nearEnd && stuck >= 4 {
+            log("end not signalled by VLC: '\(item.title)' stuck at \(String(format: "%.1f", vlcTime)) of \(Int(duration)) s for \(Int(stuck)) s, state \(state) -> next; \(envNote)")
+            finish()
+        } else if !nearEnd && stuck >= 8 {
+            lastProgressAt = now
+            if stallRetriedItem != item.id {
+                stallRetriedItem = item.id
+                log("stall: '\(item.title)' stuck at \(String(format: "%.1f", vlcTime)) s for \(Int(stuck)) s, state \(state), video hidden \(videoHidden) -> reopening at that spot; \(mediaNote)")
+                load(item, position: max(0, vlcTime - 1), autoplay: true, present: false, force: true)
+            } else {
+                log("stall again: '\(item.title)' stuck at \(String(format: "%.1f", vlcTime)) s, state \(state) -> skipping; \(mediaNote)")
+                wantPlaying = false  // the server answers the error with the next item (autoplay)
+                setPlaying(false)
+                connection?.send(["type": "error", "item": item.id, "message": "playback stalled twice"])
+            }
+        }
     }
 
     /// One log line per item, 6 s after it starts: shows whether VLC time events arrive and time advances.
@@ -184,7 +234,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             guard let self, !Task.isCancelled, self.current?.id == item.id else { return }
             self.connection?.send([
                 "type": "log",
-                "message": "\(self.audioReport); progress check '\(item.title)': timeEvents=\(self.timeEvents) vlcTime \(startTime)->\(self.vlc.time.intValue) ms clock=\(Int(self.clock.position)) s state=\(VLCMediaPlayerStateToString(self.vlc.state)) playing=\(self.isPlaying); \(self.mediaNote)",
+                "message": "\(self.audioReport); progress check '\(item.title)': timeEvents=\(self.timeEvents) vlcTime \(startTime)->\(self.vlc.time.intValue) ms clock=\(Int(self.clock.position)) s state=\(VLCMediaPlayerStateToString(self.vlc.state)) playing=\(self.isPlaying); audio blocks decoded \(self.vlc.media?.numberOfDecodedAudioBlocks ?? -1), buffers lost \(self.vlc.media?.numberOfLostAudioBuffers ?? -1); \(self.mediaNote)",
             ])
             if item.isVideo && !self.videoHidden {
                 self.logPictureStats(after: 10, label: "at 6-16 s of '\(item.title)'")
