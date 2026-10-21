@@ -119,6 +119,41 @@ def unit():
     lrc = L.parse_lrc("[00:05.00]♪\n[00:06.00]one\n[00:08.00]ΓÖ¬\n[00:09.00]two\n[00:10.00]three\n")
     check([(c["t"], c["e"]) for c in lrc] == [("one", 8.0), ("two", 10.0), ("three", None)],
           f"lrc: a note-only line acts as an instrumental gap: {lrc}")
+    junk = ["=Willis Lyrics=", "[Music1].................[Music1]", "[Music]...............................[Music]",
+            "[Chorus]", "[x2]", "[ guitar ]", "[Guitar Solo2].........................................[Guitar Solo2]",
+            "..........@@@@@", "---------------------@@@@@", "...", "signature by tifon. [TFM]", "[TIFON]...@...TFM...1...",
+            "ENJOY.", "Ripp: 2012.09.20.", "KIadás Éve:>> Année de publication",
+            "France uploader merci.....> Franciaország feltöltés köszönöm", "Thank you donwloand.", "Thanks for downloading!",
+            "Köszi a letöltést.", "Feltöltve 2012.09.20.",
+            "Player VLC Média Player. Free.... http://www.videolan.org/", "By: someone_1@hotmail.com",
+            "[ From: http://www.metrolyrics.com/someone-like-you-lyrics-adele.html ]", "www.t.me/pmedia_music",
+            "Mr.Coolly ÖĆ×÷ ¸č´ĘĚáą©Őß--bati", "ŕĹˇŁˇŁˇŁˇŁˇŁˇŁ", "×÷ Çú :Metallica ˇˇ×÷ ´Ę :Metallica"]
+    left = {j: L.clean_text(j) for j in junk if L.clean_text(j)}
+    check(not left, f"junk lines (placeholders, watermarks, credits, web text, garbled encodings) dropped: {left or 'all ' + str(len(junk))}")
+    keep = {
+        "[Chorus] My girl, my girl": "My girl, my girl",                              # only the tag is cut
+        "Ba ba ba ba var song_I'd = \"\"; var youtube_video = false;": "Ba ba ba ba",  # scraped code cut off
+        "Good men through the ages, Tryin' to find the sun;": None,
+        "Mama they try and break me......": None, "Hold on... please wait": None,
+        "Čuješ li me, đuture? Šapni mi, žao mi je": None, "Café — naïve ½, 3 × 4 = 12": None,
+        "Made by hand, sung by heart": None, "Welcome to the riot": None, "We Don’t Give A Shit About A Copyright Law": None,
+        "Title of my heart": None, "Enjoy the silence": None, "He signed by the river": None,
+        "Thank you, down low": None, "Thank you for the love": None, "Thanks, Dolly, for the flowers": None,
+    }
+    bad = {k: L.clean_text(k) for k, v in keep.items() if L.clean_text(k) != (k if v is None else v)}
+    check(not bad, f"real text kept, only the junk part cut: {bad or 'all ' + str(len(keep))}")
+    hdr = L.parse_srt("1\n00:00:01,000 --> 00:00:02,000\nArtist: Metallica\n\n2\n00:00:03,000 --> 00:00:04,000\nAlbum: X\n\n"
+                      "3\n00:00:05,000 --> 00:00:06,000\nTitle: Y\n\n4\n00:00:07,000 --> 00:00:08,000\nreal line\n")
+    hdr = L.drop_headers(hdr)
+    check([c["t"] for c in hdr] == ["real line"], f"Artist:/Album:/Title: block at the start of a track dropped: {hdr}")
+    late = L.drop_headers([{"s": None, "e": None, "t": f"line {i}"} for i in range(10)] + [{"s": None, "e": None, "t": "Title: later"}])
+    check(late[-1]["t"] == "Title: later", "a Title: line late in the lyrics is kept")
+    comp = L.parse_lrc("[00:40.00]I'm the bangaran[00:55.07] (I am) I'm the bangaran[00:57.03] I'm an angel\n[01:00.00]next\n")
+    check([(c["s"], c["t"]) for c in comp] == [(40.0, "I'm the bangaran"), (55.07, "(I am) I'm the bangaran"),
+                                                (57.03, "I'm an angel"), (60.0, "next")],
+          f"compressed LRC ([t1]text[t2]text) becomes separate cues: {comp}")
+    junkplain = L.plain_cues("Ripp: 2012.09.20.\n\nsignature by tifon. [TFM]\nENJOY.\n\nVerse one\n[Chorus]\nline two\n\nKIadás Éve:>> x\n")
+    check([c["t"] for c in junkplain] == ["Verse one", "line two"], f"plain lyrics: junk left out, no stray gaps: {[c['t'] for c in junkplain]}")
     p = L.plain_cues("Verse\r\nline two\r\n\r\n\r\nChorus\n")
     check([x["t"] for x in p] == ["Verse", "line two", "", "Chorus"], f"plain: blank runs become one gap: {[x['t'] for x in p]}")
 

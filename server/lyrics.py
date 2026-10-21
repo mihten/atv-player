@@ -39,7 +39,7 @@ MARKUP = re.compile(r"<[^>]*>|\{\\[^}]*\}")
 # Music-note decorations that subtitle authors put around sung lines. They carry no information, so they are
 # dropped (the player ignores them, nobody has to edit the files). Besides the real symbols this also covers
 # the garbled forms: UTF-8 bytes of a note read as DOS text (cp437: "ΓÖ¬" for ♪), Windows-1252 ("â™ª") or Latin-1.
-CLEAN_VERSION = "2"  # bump when the text cleaning changes: every file is read again once (ensure_current)
+CLEAN_VERSION = "4"  # bump when the text cleaning changes: every file is read again once (ensure_current)
 NOTE_CHARS = "♩♪♫♬♭♮♯🎵🎶🎼" + "".join(chr(c) for c in range(0x1D100, 0x1D1FF))
 
 
@@ -60,6 +60,47 @@ def _note_patterns():
 NOTE_RE = re.compile("|".join(re.escape(p) for p in _note_patterns()) + "|[" + re.escape(NOTE_CHARS) + "]")
 HASH_MARK = re.compile(r"^#\s+|\s+#$")  # "# lyrics #": a lone hash around a line is the same kind of mark
 
+# Junk that is not lyrics: placeholders, watermarks, release-group credits, scraped web text, text garbled by a
+# wrong encoding. A line is dropped, or only its junk part is cut, so the real lyrics stay. Nobody has to edit
+# files. Add new patterns here (and bump CLEAN_VERSION).
+BRACKET_TAG = re.compile(r"^\s*(?:\[[^\]]{0,40}\][\s.\-_~=*@#>:|]*)+|(?:[\s.\-_~=*@#>:|]*\[[^\]]{0,40}\])+\s*$")
+JS_CODE = re.compile(r"\s*\b(?:var|let|const)\s+[\w$'\\]+\s*=.*$")  # scraped page code glued to a line
+WEB_ADDRESS = re.compile(r"https?://|\bwww\.|\bt\.me/|\S+@\S+\.[a-z]{2,}", re.I)
+EQUALS_WRAPPED = re.compile(r"^\s*=.*=\s*$")  # "=Willis Lyrics="
+ENCODING_GARBAGE = re.compile("×÷|÷×|[ˇ˘˙˛˝¸]")  # a Chinese (GBK) credit line read as Latin text: "ÖĆ×÷Őß"
+CREDIT_LINE = re.compile(
+    r"\b(?:signature|synced|subtitles?|subtitled|lyrics?|lrc|transcribed|ripped|uploaded|timed|tagged)\s+by\b"
+    r"|\b(?:uploader|tifon|tfm)\b|letölt|feltölt|kiadás|publication\b|>>"
+    r"|\bthank(?:s| you)\b.{0,10}\bd\w{0,3}w\w{0,2}lo\w+"  # "Thank you download(ing)" and typos of it
+    r"|^\s*(?:ripp?|rip)\s*:|^\s*enjoy[.!]*\s*$", re.I)
+HEADER_LINE = re.compile(r"^\s*(?:artist|album|title|by|length|composer|lyricist)\s*[:：]", re.I)
+HEADER_CUES = 8  # an Artist:/Album:/Title: block counts only at the start of a track
+
+
+def clean_line(line):
+    """One line of lyrics -> the line without junk, or "" when nothing real is left."""
+    line = NOTE_RE.sub("", line)
+    line = JS_CODE.sub("", line)
+    line = BRACKET_TAG.sub("", line)
+    line = HASH_MARK.sub("", re.sub(r"\s+", " ", line).strip()).strip()
+    if (not any(ch.isalnum() for ch in line) or WEB_ADDRESS.search(line) or EQUALS_WRAPPED.match(line)
+            or ENCODING_GARBAGE.search(line) or CREDIT_LINE.search(line)):
+        return ""
+    return line
+
+
+def drop_headers(cues):
+    """Remove an "Artist: …/Album: …/Title: …" block from the first cues (LRC id tags shown as text)."""
+    out, seen = [], 0
+    for cue in cues:
+        if seen < HEADER_CUES and HEADER_LINE.match(cue["t"]):
+            seen += 1
+            continue
+        if cue["t"]:
+            seen += 1
+        out.append(cue)
+    return out
+
 
 def _secs(h, m, s, frac):
     return int(h) * 3600 + int(m) * 60 + int(s) + int(frac) / 10 ** len(frac)
@@ -67,10 +108,9 @@ def _secs(h, m, s, frac):
 
 def clean_text(text):
     text = html.unescape(MARKUP.sub("", text))
-    text = NOTE_RE.sub("", text)
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.replace("\r", "").split("\n")]
     lines = [re.sub(r"^-\s*", "", ln) if len(lines) > 1 else ln for ln in lines]  # "- " speaker dashes
-    lines = [HASH_MARK.sub("", ln).strip() for ln in lines]
+    lines = [clean_line(ln) for ln in lines]
     return "\n".join(ln for ln in lines if ln)
 
 
@@ -113,19 +153,26 @@ def parse_lrc(text):
             continue
         if LRC_HEADER.match(line) and not LRC_TIME.match(line):
             continue
-        stamps, pos = [], 0
-        while True:
-            m = LRC_TIME.match(line, pos)
-            if not m:
-                break
+        # "[t1]text1[t2]text2": every stamp starts its own text (compressed LRC); several stamps in a row share
+        # the text after them (repeated chorus). Text before the first stamp is ignored.
+        stamps, pos, found = [], 0, False
+
+        def flush(text):
+            body = clean_text(LRC_WORD.sub("", text))
+            for t in stamps:
+                raw.append((max(0.0, t - offset), body))
+
+        for m in LRC_TIME.finditer(line):
+            segment = line[pos:m.start()]
+            if stamps and segment.strip():
+                flush(segment)
+                stamps = []
             frac = m.group(3) or "0"
             stamps.append(int(m.group(1)) * 60 + int(m.group(2)) + int(frac) / 10 ** len(frac))
+            found = True
             pos = m.end()
-        if not stamps:
-            continue
-        body = clean_text(LRC_WORD.sub("", line[pos:]))
-        for t in stamps:
-            raw.append((max(0.0, t - offset), body))
+        if found:
+            flush(line[pos:])
     raw.sort(key=lambda r: r[0])
     cues = []
     for i, (start, body) in enumerate(raw):
@@ -137,12 +184,16 @@ def parse_lrc(text):
 
 
 def plain_cues(text):
-    """Unsynced text: one cue per line; runs of blank lines become a single empty cue (a gap)."""
+    """Unsynced text: one cue per line; runs of blank lines become a single empty cue (a gap). Junk lines
+    (credits, placeholders, notes…) are left out like they were not there."""
     cues, blank = [], False
-    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = re.sub(r"\s+", " ", line).strip()
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             blank = bool(cues)
+            continue
+        line = clean_line(line)
+        if not line:
             continue
         if blank:
             cues.append({"s": None, "e": None, "t": ""})
@@ -152,6 +203,7 @@ def plain_cues(text):
 
 
 def _track(cues, synced, ord_=None, lang="", title="", default=False, forced=False):
+    cues = drop_headers(cues)
     return {"ord": ord_, "lang": lang, "title": title, "is_default": default, "forced": forced,
             "synced": synced, "cues": cues}
 
@@ -244,9 +296,11 @@ def extract(path, kind, subs_json):
             subs = json.loads(subs_json or "null")
         except ValueError:
             subs = None
-        return {"tracks": read_video_lyrics(path, subs)}
-    track = read_tag_lyrics(path)
-    return {"tracks": [track] if track else []}
+        tracks = read_video_lyrics(path, subs)
+    else:
+        track = read_tag_lyrics(path)
+        tracks = [track] if track else []
+    return {"tracks": [t for t in tracks if t["cues"]]}  # a track that was only junk is no lyrics
 
 
 def level(data):
