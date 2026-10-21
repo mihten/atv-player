@@ -455,7 +455,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         guard !videoHidden else { return }
         videoHidden = true
         vlc.currentVideoTrackIndex = -1
+        #if os(iOS)
         updateNowPlaying()
+        #endif
         log("video track off (\(lyricsCover ? "lyrics view" : "background")), audio keeps playing; \(envNote)")
     }
 
@@ -465,7 +467,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         if let track = trackIDs(vlc.videoTrackIndexes).first {
             vlc.currentVideoTrackIndex = track
         }
+        #if os(iOS)
         updateNowPlaying()
+        #endif
         log("foreground: video track back on; \(envNote)")
     }
 
@@ -656,6 +660,18 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
     }
 
+    /// iPhone: while only the sound of a video plays (background, lyrics view) it is "audio", because iOS can pause
+    /// "video" playing in the background. Apple TV: always the item's real type. tvOS shows a system "Now Playing"
+    /// banner ("To open player, hold ...") whenever the media type changes, so switching the lyrics view on and off for
+    /// a video flashed it on every press (v0.18.0).
+    private func nowPlayingMediaType(_ item: MediaItem) -> MPNowPlayingInfoMediaType {
+        #if os(tvOS)
+        return item.kind == "video" ? .video : .audio
+        #else
+        return item.isVideo && !videoHidden ? .video : .audio
+        #endif
+    }
+
     private func updateNowPlaying() {
         guard let item = current else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -666,8 +682,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-            // While only the sound plays in the background it is audio: iOS can pause "video" playing in the background.
-            MPNowPlayingInfoPropertyMediaType: (item.isVideo && !videoHidden ? MPNowPlayingInfoMediaType.video : .audio).rawValue,
+            MPNowPlayingInfoPropertyMediaType: nowPlayingMediaType(item).rawValue,
         ]
         if let artist = item.artist { info[MPMediaItemPropertyArtist] = artist }
         if let album = item.album { info[MPMediaItemPropertyAlbumTitle] = album }
