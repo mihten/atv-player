@@ -13,10 +13,10 @@ struct LyricsMetrics {
     var top: CGFloat         // empty space before the first synced line
     var bottom: CGFloat      // and after the last
     var anchorY: CGFloat     // where the current line sits (0 top … 1 bottom)
-    var followsPlayback: Bool  // unsynced text scrolls with the song's progress (no touch to scroll on a TV)
+    var followsPlayback: Bool  // unsynced text scrolls with the song's progress (the lyrics never take touches)
 
     static let phone = LyricsMetrics(line: 27, gap: 18, plain: 20, info: 20, caption: 10, top: 70, bottom: 180,
-                                     anchorY: 0.36, followsPlayback: false)
+                                     anchorY: 0.36, followsPlayback: true)
     static let tv = LyricsMetrics(line: 54, gap: 34, plain: 38, info: 38, caption: 20, top: 140, bottom: 420,
                                   anchorY: 0.38, followsPlayback: true)
 }
@@ -144,8 +144,9 @@ private var edgeFade: LinearGradient {
                    startPoint: .top, endPoint: .bottom)
 }
 
-/// Time-synced lyrics: the current line is bright and centred, the others are dim; scrolls by itself (not for
-/// 3 s after you touched it).
+/// Time-synced lyrics: the current line is bright and centred, the others are dim; scrolls by itself only.
+/// No manual scrolling on either device: on the iPhone a drag must reach the player sheet (swipe down to close),
+/// on the TV the remote keeps skip / seek.
 struct SyncedLyrics: View {
     let track: LyricsTrack
     @EnvironmentObject var engine: PlayerEngine
@@ -153,7 +154,6 @@ struct SyncedLyrics: View {
     @Environment(\.lyricsMetrics) private var m
     @State private var index = -1
     @State private var lit = false
-    @State private var touched = Date.distantPast
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -175,13 +175,10 @@ struct SyncedLyrics: View {
                     Color.clear.frame(height: m.bottom)
                 }
             }
-            #if os(iOS)
-            .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { _ in touched = Date() })
-            #else
-            // A TV has no touch: the remote keeps skip / seek, so this view must never take focus or scroll.
             .scrollDisabled(true)
-            .focusable(false)
             .allowsHitTesting(false)
+            #if os(tvOS)
+            .focusable(false)
             #endif
             .onReceive(Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()) { _ in
                 update(proxy, animated: true)
@@ -201,7 +198,7 @@ struct SyncedLyrics: View {
         if on != lit { lit = on }
         guard found != index else { return }
         index = found
-        guard found >= 0, Date().timeIntervalSince(touched) > 3 else { return }
+        guard found >= 0 else { return }
         if animated {
             withAnimation(.easeInOut(duration: 0.5)) { proxy.scrollTo(found, anchor: UnitPoint(x: 0.5, y: m.anchorY)) }
         } else {
@@ -210,8 +207,8 @@ struct SyncedLyrics: View {
     }
 }
 
-/// Lyrics without time stamps: the whole text. On the iPhone you scroll it; on the Apple TV it follows the
-/// song's progress (a rough guide: the text has no times).
+/// Lyrics without time stamps: the whole text, following the song's progress (a rough guide: the text has no
+/// times). Not scrollable by hand, same reason as SyncedLyrics.
 struct PlainLyrics: View {
     let track: LyricsTrack
     @EnvironmentObject var engine: PlayerEngine
@@ -244,10 +241,10 @@ struct PlainLyrics: View {
                 .foregroundStyle(theme.ink.opacity(0.92))
                 .padding(.top, 30)  // below the top fade, so the caption stays readable
             }
-            #if os(tvOS)
             .scrollDisabled(true)
-            .focusable(false)
             .allowsHitTesting(false)
+            #if os(tvOS)
+            .focusable(false)
             #endif
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
                 guard m.followsPlayback, engine.liveDuration > 1 else { return }

@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.18.3"
+    MARKETING_VERSION: "0.18.4"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   # Apple TV app (TVVLCKit). Shared/ = engine, server connection, models, settings models.
