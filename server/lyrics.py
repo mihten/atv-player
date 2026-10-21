@@ -36,6 +36,30 @@ LRC_WORD = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")  # enhanced LRC word t
 SRT_TIME = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{1,3})")
 MARKUP = re.compile(r"<[^>]*>|\{\\[^}]*\}")
 
+# Music-note decorations that subtitle authors put around sung lines. They carry no information, so they are
+# dropped (the player ignores them, nobody has to edit the files). Besides the real symbols this also covers
+# the garbled forms: UTF-8 bytes of a note read as DOS text (cp437: "ΓÖ¬" for ♪), Windows-1252 ("â™ª") or Latin-1.
+CLEAN_VERSION = "2"  # bump when the text cleaning changes: every file is read again once (ensure_current)
+NOTE_CHARS = "♩♪♫♬♭♮♯🎵🎶🎼" + "".join(chr(c) for c in range(0x1D100, 0x1D1FF))
+
+
+def _note_patterns():
+    pats = set()
+    for ch in NOTE_CHARS:
+        raw = ch.encode("utf-8")
+        for enc in ("cp437", "cp1252", "latin-1"):
+            try:
+                garbled = raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+            if garbled != ch:
+                pats.add(garbled)
+    return sorted(pats, key=len, reverse=True)
+
+
+NOTE_RE = re.compile("|".join(re.escape(p) for p in _note_patterns()) + "|[" + re.escape(NOTE_CHARS) + "]")
+HASH_MARK = re.compile(r"^#\s+|\s+#$")  # "# lyrics #": a lone hash around a line is the same kind of mark
+
 
 def _secs(h, m, s, frac):
     return int(h) * 3600 + int(m) * 60 + int(s) + int(frac) / 10 ** len(frac)
@@ -43,9 +67,10 @@ def _secs(h, m, s, frac):
 
 def clean_text(text):
     text = html.unescape(MARKUP.sub("", text))
-    text = text.replace("♪", "").replace("♫", "")
+    text = NOTE_RE.sub("", text)
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.replace("\r", "").split("\n")]
     lines = [re.sub(r"^-\s*", "", ln) if len(lines) > 1 else ln for ln in lines]  # "- " speaker dashes
+    lines = [HASH_MARK.sub("", ln).strip() for ln in lines]
     return "\n".join(ln for ln in lines if ln)
 
 
@@ -231,6 +256,18 @@ def level(data):
     return 1 if tracks else 0
 
 
+def ensure_current(con):
+    """The cleaning rules changed (CLEAN_VERSION): forget everything read so far, the job reads it again."""
+    row = con.execute("SELECT value FROM meta WHERE key = 'lyrics_version'").fetchone()
+    if row and row[0] == CLEAN_VERSION:
+        return False
+    con.execute("UPDATE items SET lyr = NULL")
+    con.execute("DELETE FROM lyrics")
+    con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('lyrics_version', ?)", (CLEAN_VERSION,))
+    con.commit()
+    return True
+
+
 def store(con, item_id, data):
     lvl = level(data)
     if lvl:
@@ -288,6 +325,8 @@ def run(db_path, roots, on_result=None):
     done = 0
     started = time.time()
     try:
+        if ensure_current(con):
+            log.info("lyrics: cleaning rules changed (version %s), reading every file again", CLEAN_VERSION)
         todo = con.execute("SELECT id, root, relpath, kind, subs FROM items WHERE lyr IS NULL "
                            "ORDER BY hidden, kind DESC, id").fetchall()
         for row in todo:

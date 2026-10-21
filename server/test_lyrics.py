@@ -102,6 +102,23 @@ def unit():
     check(c[-1]["t"] == "last word" and c[-1]["e"] is None, "lrc: word stamps removed, last cue open ended")
     neg = L.parse_lrc("[offset:-4499]\n[00:11.00]a\n[00:12.00]b\n[00:13.00]c\n")
     check(abs(neg[0]["s"] - 15.5) < 0.01, f"lrc: offset -4499 ms shifts 11.0 -> 15.5: {neg[0]['s']}")
+    notes = {
+        "ΓÖ¬ Is this the real life ΓÖ¬": "Is this the real life",      # UTF-8 note read as DOS text (cp437)
+        "â™ª Hello â™ª": "Hello",                                      # ... as Windows-1252
+        "♬ one ♩ two ♫ three ♪": "one two three",
+        "🎵 la la 🎶": "la la",
+        "♭ flat ♯ sharp": "flat sharp",
+        "# singing #": "singing",
+        "#1 hit": "#1 hit",
+        "Café — naïve ½": "Café — naïve ½",                              # real text is left alone
+    }
+    bad = {k: L.clean_text(k) for k, v in notes.items() if L.clean_text(k) != v}
+    check(not bad, f"note symbols (real and garbled) removed, other text untouched: {bad or 'all ' + str(len(notes))}")
+    check(L.parse_srt("1\n00:00:01,000 --> 00:00:02,000\nΓÖ¬ ΓÖ¬\n\n2\n00:00:03,000 --> 00:00:04,000\nΓÖ¬ Real line ΓÖ¬\n") ==
+          [{"s": 3.0, "e": 4.0, "t": "Real line"}], "srt: a cue with only note marks is dropped")
+    lrc = L.parse_lrc("[00:05.00]♪\n[00:06.00]one\n[00:08.00]ΓÖ¬\n[00:09.00]two\n[00:10.00]three\n")
+    check([(c["t"], c["e"]) for c in lrc] == [("one", 8.0), ("two", 10.0), ("three", None)],
+          f"lrc: a note-only line acts as an instrumental gap: {lrc}")
     p = L.plain_cues("Verse\r\nline two\r\n\r\n\r\nChorus\n")
     check([x["t"] for x in p] == ["Verse", "line two", "", "Chorus"], f"plain: blank runs become one gap: {[x['t'] for x in p]}")
 
