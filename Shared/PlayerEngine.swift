@@ -186,6 +186,9 @@ final class PlayerEngine: NSObject, ObservableObject {
                 "type": "log",
                 "message": "\(self.audioReport); progress check '\(item.title)': timeEvents=\(self.timeEvents) vlcTime \(startTime)->\(self.vlc.time.intValue) ms clock=\(Int(self.clock.position)) s state=\(VLCMediaPlayerStateToString(self.vlc.state)) playing=\(self.isPlaying); \(self.mediaNote)",
             ])
+            if item.isVideo && !self.videoHidden {
+                self.logPictureStats(after: 10, label: "at 6-16 s of '\(item.title)'")
+            }
         }
     }
 
@@ -471,6 +474,31 @@ final class PlayerEngine: NSObject, ObservableObject {
         updateNowPlaying()
         #endif
         log("foreground: video track back on; \(envNote)")
+        // Turning the picture track on in the middle of a stream starts the video decoder on whatever frame arrives
+        // next, not on a keyframe: VP9/AV1 then stutter until the next item (seen on the iPhone, lockscreen lyrics ->
+        // unlock -> video). A seek to the current spot makes VLC restart demuxing at a keyframe, so the decoder starts
+        // clean. Done a moment later, once the track switch has gone through.
+        let id = current?.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, !self.videoHidden, self.current?.id == id, self.vlc.isSeekable else { return }
+            let here = Double(self.vlc.time.intValue) / 1000
+            guard here > 1 else { return }
+            self.vlc.time = VLCTime(int: Int32(here * 1000))
+            self.log("video track back on: restarted the picture at \(Int(here)) s (clean decoder start)")
+            self.logPictureStats(after: 5, label: "5 s after the picture came back")
+        }
+    }
+
+    /// Displayed vs lost pictures over the next `seconds` (VLC media statistics): a choppy video shows lost pictures.
+    func logPictureStats(after seconds: Double, label: String) {
+        guard let media = vlc.media else { return }
+        let shown0 = media.numberOfDisplayedPictures, lost0 = media.numberOfLostPictures
+        let id = current?.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.current?.id == id, let m = self.vlc.media else { return }
+            let shown = m.numberOfDisplayedPictures - shown0, lost = m.numberOfLostPictures - lost0
+            self.log("pictures \(label): \(shown) shown, \(lost) lost in \(Int(seconds)) s; \(self.envNote)")
+        }
     }
 
     /// Re-read Settings. Subtitle style options need a new VLC instance; playback resumes at the same position.
