@@ -59,6 +59,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var startedPlaying = false
     private var retriedStart = false
     private var loadGeneration = 0
+    /// iPhone: the picture track is off only for the duration of a seek (see coverVideoForSeek).
+    private var seekHidVideo = false
+    private var seekCoverTask: Task<Void, Never>?
     private var startCheck: Task<Void, Never>?
     private var startTimeout: Task<Void, Never>?
     /// iOS: playback was running when a call/Siri interrupted it.
@@ -263,6 +266,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         current = item
         applyLevel(for: item)
         videoHidden = false  // new media starts with its picture track on
+        seekHidVideo = false
+        seekCoverTask?.cancel()
         tracksApplied = false
         endedSent = false
         isPlaying = false  // the next VLC event reports the real state for the new item
@@ -447,12 +452,50 @@ final class PlayerEngine: NSObject, ObservableObject {
     func seek(to seconds: Double) {
         let target = max(0, seconds)
         log("seek to \(Int(target)) s requested: seekable \(vlc.isSeekable), state \(VLCMediaPlayerStateToString(vlc.state))")
+        #if os(iOS)
+        coverVideoForSeek()
+        #endif
         vlc.time = VLCTime(int: Int32(target * 1000))
         position = target
         clock.position = target
         report()
         updateNowPlaying()
     }
+
+    #if os(iOS)
+    /// A seek in a video makes VLC wait for the picture decoder to find its keyframe and catch up (slow for 4K
+    /// AV1/VP9), and the audio waits with it: a glitch or gap. With the picture track off a seek is audio-only
+    /// and clean (music and the lyrics view never glitch). So during a seek the picture track is switched off and
+    /// comes back once the sound is running again; the picture then follows a moment later, as after a lock-screen
+    /// return. Nothing changes when the picture is already off (lyrics view, background) or nothing is playing.
+    private func coverVideoForSeek() {
+        guard current?.isVideo == true, wantPlaying else { return }
+        if !videoHidden {
+            seekHidVideo = true
+            hideVideo()
+        }
+        guard seekHidVideo else { return }
+        seekCoverTask?.cancel()
+        let generation = loadGeneration
+        seekCoverTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            var last = -1
+            for _ in 0..<30 {  // up to 3 s more: wait until the clock really advances
+                guard let self, !Task.isCancelled, generation == self.loadGeneration else { return }
+                let now = Int(self.vlc.time.intValue)
+                if self.vlc.isPlaying, last >= 0, now > last { break }
+                last = now
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, !Task.isCancelled, generation == self.loadGeneration else { return }
+            self.seekHidVideo = false
+            if self.videoHidden, !self.lyricsCover, !self.inBackground {
+                self.log("seek: sound is running again, picture back on; \(self.envNote)")
+                self.showVideo()
+            }
+        }
+    }
+    #endif
 
     func seek(by delta: Double) {
         let upper = duration > 1 ? duration - 1 : position + max(delta, 0)
@@ -511,7 +554,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         #if os(iOS)
         updateNowPlaying()
         #endif
-        log("video track off (\(lyricsCover ? "lyrics view" : "background")), audio keeps playing; \(envNote)")
+        log("video track off (\(seekHidVideo ? "seek" : lyricsCover ? "lyrics view" : "background")), audio keeps playing; \(envNote)")
     }
 
     private func showVideo() {
