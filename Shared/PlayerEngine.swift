@@ -457,14 +457,18 @@ final class PlayerEngine: NSObject, ObservableObject {
         updateNowPlaying()
     }
 
-    /// Diagnostic only (nothing acts on it): what a seek costs. 0.3 s after the jump note the clock, 3 s later compare how much
-    /// playback time passed with the wall clock (the difference = how long it stood still) and how many audio blocks were
-    /// decoded / buffers lost meanwhile. A new seek or load cancels the watch (a burst of seeks reports the last one).
+    /// Diagnostic only (nothing acts on it): where a seek lands and what it costs. Logged: the position before the jump, the
+    /// target, where VLC's clock is 0.3 s after the jump (with fast seek on VLC lands on the keyframe BEFORE the target:
+    /// target - landed = how far early), and 3 s later how much playback time passed against the wall clock (the difference =
+    /// how long it stood still) plus audio blocks decoded / buffers lost meanwhile. A new seek or load cancels the watch (a
+    /// burst of seeks reports the last one).
     private func watchSeek(to target: Double) {
         seekWatch?.cancel()
         guard wantPlaying, current != nil else { return }
         let generation = loadGeneration
         let id = current?.id
+        let from = Double(vlc.time.intValue) / 1000
+        let fast = PlayerSettings.fastSeek
         seekWatch = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard let self, !Task.isCancelled, generation == self.loadGeneration else { return }
@@ -477,7 +481,8 @@ final class PlayerEngine: NSObject, ObservableObject {
             let stalled = max(0, wall - (t1 - t0))
             let decoded = (self.vlc.media?.numberOfDecodedAudioBlocks ?? 0) - decoded0
             let lost = (self.vlc.media?.numberOfLostAudioBuffers ?? 0) - lost0
-            self.log("seek to \(Int(target)) s: over the next \(String(format: "%.1f", wall)) s playback advanced \(String(format: "%.1f", t1 - t0)) s (stood still ~\(String(format: "%.1f", stalled)) s), audio blocks +\(decoded), buffers lost +\(lost), video \(self.videoHidden ? "off" : "on"); \(self.envNote)")
+            func f(_ x: Double) -> String { String(format: "%.1f", x) }
+            self.log("seek diag: from \(f(from)) s to target \(f(target)) s, fast seek \(fast ? "on" : "off"); clock 0.3 s later \(f(t0)) s (\(f(target - t0)) s before target), \(f(wall)) s later \(f(t1)) s: playback advanced \(f(t1 - t0)) s (stood still ~\(f(stalled)) s), audio blocks +\(decoded), buffers lost +\(lost), video \(self.videoHidden ? "off" : "on"); \(self.envNote)")
         }
     }
 

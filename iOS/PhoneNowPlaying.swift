@@ -393,7 +393,7 @@ struct PhoneNowPlayingView: View {
                     }
                     titleBlock(item, accent: accent)
                     ThemedScrubber(value: $shown, duration: max(transport.duration, 1), accent: accent,
-                                   onBegin: beginScrub, onEnd: { endScrub(transport, at: $0) })
+                                   onBegin: beginScrub, onEnd: { endScrub(transport, to: $0) })
                         .padding(.top, 14)
                     times(max(transport.duration, 1),
                           font: .system(size: 12, weight: .medium, design: theme == .noir ? .monospaced : theme.fontDesign))
