@@ -267,6 +267,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         current = item
         applyLevel(for: item)
         videoHidden = false  // new media starts with its picture track on
+        pictureKeptOn = false
+        backgroundWatch?.cancel()
         seekWatch?.cancel()
         tracksApplied = false
         endedSent = false
@@ -502,13 +504,18 @@ final class PlayerEngine: NSObject, ObservableObject {
         connection?.command("prev", ["position": position])
     }
 
+    /// How long the iPhone keeps a music video's picture track on after the app is left (fixed, no setting).
+    private static let backgroundPictureGrace: TimeInterval = 60
+
     /// Leaving the app (Home button / lock): music keeps playing unless disabled in Settings; a music video
     /// keeps playing as audio only if its Settings switch is on, else it pauses. With the picture track switched off
     /// (tvOS never gets here) it needs a decoder restart on return, which waits for the next keyframe (1.6-7 s in this
-    /// library) = the picture glitches for a few seconds. So on the iPhone the track stays ON by default: VLC's iOS
-    /// video output skips drawing while the app is in the background (makeCurrent fails, the picture is released) and
-    /// the decoder keeps running, so the picture is current when the app comes back. A video that LOADS while in the
-    /// background still starts with the track off (the vout cannot be created then, see applyTracks).
+    /// library) = the picture glitches for a few seconds. So on the iPhone the track stays ON for the first
+    /// `backgroundPictureGrace` seconds: VLC's iOS video output skips drawing while the app is in the background
+    /// (makeCurrent fails, the picture is released) and the decoder keeps running unseen, so a quick app switch finds
+    /// the picture current. After that the track is switched off, so a long stretch (locked screen) costs no decoding;
+    /// returning then restarts the picture as before. A video that LOADS while in the background still starts with
+    /// the track off (the vout cannot be created then, see applyTracks).
     func appDidEnterBackground() {
         inBackground = true
         UserDefaults.standard.set("background", forKey: Self.lastStateKey)
@@ -516,9 +523,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         if current?.isVideo == true {
             if PlayerSettings.keepVideoAudioInBackground {
                 #if os(iOS)
-                if PlayerSettings.keepPictureInBackground, !lyricsCover, !videoHidden {
+                if !lyricsCover, !videoHidden {
                     pictureKeptOn = true
-                    log("background: picture track kept on (VLC drops the frames itself), watching the clock; \(envNote)")
+                    log("background: picture track kept on for \(Int(Self.backgroundPictureGrace)) s (VLC drops the frames itself), watching the clock; \(envNote)")
                     watchBackgroundPicture()
                     return
                 }
@@ -548,12 +555,12 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     #if os(iOS)
-    /// Safety net for the untested part (VLC keeping the clock running with the picture on in the background): if the
-    /// clock stands still for 3 s while the app is backgrounded and playback is wanted, switch the picture off as
-    /// design-26 did, so the sound does not depend on this experiment.
+    /// Ends the "picture kept on" state in the background: after `backgroundPictureGrace` seconds, and at once (safety net)
+    /// if the VLC clock stands still for 3 s while playback is wanted, so the sound never depends on this.
     private func watchBackgroundPicture() {
         backgroundWatch?.cancel()
         let generation = loadGeneration
+        let started = Date()
         backgroundWatch = Task { [weak self] in
             var last: Int32 = -1
             var since = Date()
@@ -561,6 +568,12 @@ final class PlayerEngine: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard let self, generation == self.loadGeneration, self.inBackground, self.pictureKeptOn,
                       !self.videoHidden, self.wantPlaying else { return }
+                if Date().timeIntervalSince(started) >= Self.backgroundPictureGrace {
+                    self.log("background: \(Int(Self.backgroundPictureGrace)) s are up -> picture track off (decoding stops); \(self.envNote)")
+                    self.pictureKeptOn = false
+                    self.hideVideo()
+                    return
+                }
                 let now = self.vlc.time.intValue
                 if now != last {
                     last = now

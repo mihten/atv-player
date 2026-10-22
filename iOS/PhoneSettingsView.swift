@@ -249,7 +249,6 @@ struct PhoneSoundSettingsView: View {
 struct PhonePlaybackSettingsView: View {
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.keepVideoAudioKey) private var keepVideoAudio = PlayerSettings.keepVideoAudioDefault
-    @AppStorage(PlayerSettings.keepPictureKey) private var keepPicture = true
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
 
     var body: some View {
@@ -257,11 +256,9 @@ struct PhonePlaybackSettingsView: View {
             Section {
                 Toggle("Music keeps playing in the background", isOn: $keepMusic)
                 Toggle("Music videos keep playing as audio", isOn: $keepVideoAudio)
-                Toggle("Keep the picture running in the background", isOn: $keepPicture)
-                    .disabled(!keepVideoAudio)
                 Toggle("Fast seek", isOn: $fastSeek)
             } footer: {
-                Text("Background = Home button or locked screen. With the second switch on, a music video continues as audio and is back when you return; off = it pauses. Third switch on: the picture keeps decoding unseen, so it is there at once when you return, but it uses more battery while the app is left; off = the picture is switched off and takes a few seconds to catch up. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
+                Text("Background = Home button or locked screen. With the second switch on, a music video continues as audio and its picture is back when you return; off = it pauses. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
             }
             .themedRow()
         }

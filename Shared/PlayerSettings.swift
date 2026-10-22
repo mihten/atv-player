@@ -5,7 +5,6 @@ import Foundation
 enum PlayerSettings {
     static let keepMusicKey = "keepMusicInBackground"
     static let keepVideoAudioKey = "keepVideoAudioInBackground"
-    static let keepPictureKey = "keepPictureInBackground"
     static let subsOnKey = "subsOn"
     static let subLangKey = "subLang"  // "" = file default, "eng", "hrv"
     static let subSizeKey = "subSize"
@@ -37,10 +36,6 @@ enum PlayerSettings {
     static var keepVideoAudioInBackground: Bool {
         defaults.object(forKey: keepVideoAudioKey) as? Bool ?? keepVideoAudioDefault
     }
-    /// iPhone: leave a music video's picture track ON while the app is in the background (VLC's iOS video output drops the
-    /// frames itself), so the picture is there at once on return instead of a few seconds late (a decoder restarted
-    /// mid-stream waits for the next keyframe). Costs CPU/battery while backgrounded.
-    static var keepPictureInBackground: Bool { defaults.object(forKey: keepPictureKey) as? Bool ?? true }
     static var subtitlesOn: Bool { defaults.object(forKey: subsOnKey) as? Bool ?? true }
     static var subtitleLanguage: String { defaults.string(forKey: subLangKey) ?? "" }
 
