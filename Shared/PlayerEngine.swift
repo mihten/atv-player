@@ -59,6 +59,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var startedPlaying = false
     private var retriedStart = false
     private var loadGeneration = 0
+    /// The picture track was left on when the app went to the background (see appDidEnterBackground).
+    private var pictureKeptOn = false
+    private var backgroundWatch: Task<Void, Never>?
     private var seekWatch: Task<Void, Never>?
     private var startCheck: Task<Void, Never>?
     private var startTimeout: Task<Void, Never>?
@@ -500,14 +503,26 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     /// Leaving the app (Home button / lock): music keeps playing unless disabled in Settings; a music video
-    /// keeps playing as audio only if its Settings switch is on (the picture is switched off, because iOS
-    /// does not render video in the background and VLC would stall), else it pauses.
+    /// keeps playing as audio only if its Settings switch is on, else it pauses. With the picture track switched off
+    /// (tvOS never gets here) it needs a decoder restart on return, which waits for the next keyframe (1.6-7 s in this
+    /// library) = the picture glitches for a few seconds. So on the iPhone the track stays ON by default: VLC's iOS
+    /// video output skips drawing while the app is in the background (makeCurrent fails, the picture is released) and
+    /// the decoder keeps running, so the picture is current when the app comes back. A video that LOADS while in the
+    /// background still starts with the track off (the vout cannot be created then, see applyTracks).
     func appDidEnterBackground() {
         inBackground = true
         UserDefaults.standard.set("background", forKey: Self.lastStateKey)
         guard wantPlaying else { return }
         if current?.isVideo == true {
             if PlayerSettings.keepVideoAudioInBackground {
+                #if os(iOS)
+                if PlayerSettings.keepPictureInBackground, !lyricsCover, !videoHidden {
+                    pictureKeptOn = true
+                    log("background: picture track kept on (VLC drops the frames itself), watching the clock; \(envNote)")
+                    watchBackgroundPicture()
+                    return
+                }
+                #endif
                 hideVideo()
             } else {
                 pause(source: "background")
@@ -520,9 +535,46 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// Back in the app: bring the picture back.
     func appDidBecomeActive() {
         inBackground = false
+        backgroundWatch?.cancel()
         UserDefaults.standard.set("foreground", forKey: Self.lastStateKey)
+        if pictureKeptOn {
+            pictureKeptOn = false
+            if !videoHidden {
+                log("foreground: picture track was kept on in the background, nothing to restart; \(envNote)")
+                logPictureStats(after: 3, label: "3 s after returning with the picture kept on")
+            }
+        }
         if !lyricsCover { showVideo() }
     }
+
+    #if os(iOS)
+    /// Safety net for the untested part (VLC keeping the clock running with the picture on in the background): if the
+    /// clock stands still for 3 s while the app is backgrounded and playback is wanted, switch the picture off as
+    /// design-26 did, so the sound does not depend on this experiment.
+    private func watchBackgroundPicture() {
+        backgroundWatch?.cancel()
+        let generation = loadGeneration
+        backgroundWatch = Task { [weak self] in
+            var last: Int32 = -1
+            var since = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, generation == self.loadGeneration, self.inBackground, self.pictureKeptOn,
+                      !self.videoHidden, self.wantPlaying else { return }
+                let now = self.vlc.time.intValue
+                if now != last {
+                    last = now
+                    since = Date()
+                } else if Date().timeIntervalSince(since) >= 3 {
+                    self.log("background: VLC clock frozen at \(now / 1000) s for 3 s with the picture kept on, state \(VLCMediaPlayerStateToString(self.vlc.state)) -> picture track off; \(self.envNote)")
+                    self.pictureKeptOn = false
+                    self.hideVideo()
+                    return
+                }
+            }
+        }
+    }
+    #endif
 
     /// The lyrics view is on screen instead of the picture (or not any more).
     func setLyricsCover(_ on: Bool) {
