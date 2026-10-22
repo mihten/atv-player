@@ -66,8 +66,6 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// The app is not in the foreground; the video track of a playing music video is switched off.
     private var inBackground = false
     private var videoHidden = false
-    /// The next load() starts without fast seek (exact start position, no jump back to the previous keyframe).
-    private var exactNextLoad = false
     /// iPhone lyrics view: the lyrics replace the picture, so a video's picture track is switched off
     /// (the sound keeps playing and nothing is decoded for a picture nobody sees).
     private var lyricsCover = false
@@ -279,11 +277,10 @@ final class PlayerEngine: NSObject, ObservableObject {
         position = startAt
         let media = VLCMedia(url: item.mediaURL)
         media.addOption(":network-caching=1500")
-        if PlayerSettings.fastSeek && !exactNextLoad {
+        if PlayerSettings.fastSeek {
             // Seek to the nearest keyframe instead of decoding up to it (AV1 keyframes are 2-7 s apart).
             media.addOption(":input-fast-seek")
         }
-        exactNextLoad = false
         if startAt > 1 {
             media.addOption(":start-time=\(Int(startAt))")
         }
@@ -530,29 +527,12 @@ final class PlayerEngine: NSObject, ObservableObject {
         checkPictureAfterSwitch()
     }
 
-    /// Turning the picture track on in the middle of a stream starts the video decoder on whatever frame arrives
-    /// next, not on a keyframe, so VP9/AV1 can stutter until the next item. v0.18.2 always forced a seek to cure
-    /// that, but the seek itself rebuffered (a ~1 s gap) and, with fast seek, landed on the keyframe BEFORE the
-    /// current spot (a jump back) on every return to the app / lyrics -> video. Now nothing is touched: the
-    /// pictures shown/lost in the first 1.5 s decide. Clean = leave it. Choppy = reopen the item at the current
-    /// spot once, with fast seek off so it starts exactly there.
+    /// Turning the picture track on mid-stream can start the decoder off a keyframe. Fixes tried so far made it worse:
+    /// v0.18.2 seeked to the current spot (a ~1 s gap plus a jump back with fast seek) and v0.18.5 reopened the item
+    /// when the VLC picture counters said "choppy", but those counters read 0 right after the switch (and garbage after
+    /// a reload), so it reopened on EVERY switch. Now the switch touches nothing; the counters are only logged.
     private func checkPictureAfterSwitch() {
-        guard let media = vlc.media, let item = current else { return }
-        let shown0 = media.numberOfDisplayedPictures, lost0 = media.numberOfLostPictures
-        let generation = loadGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, generation == self.loadGeneration, self.current?.id == item.id,
-                  !self.videoHidden, self.wantPlaying, self.isPlaying, let m = self.vlc.media else { return }
-            let shown = m.numberOfDisplayedPictures - shown0, lost = m.numberOfLostPictures - lost0
-            let here = Double(self.vlc.time.intValue) / 1000
-            // ~24-30 fps = 36-45 pictures in 1.5 s; under 15 shown or any burst of lost pictures = not smooth.
-            let choppy = shown < 15 || lost > 2
-            self.log("picture after the switch: \(shown) shown, \(lost) lost in 1.5 s at \(Int(here)) s -> \(choppy ? "choppy, reopening here without fast seek" : "smooth, left alone"); \(self.envNote)")
-            guard choppy, self.vlc.isSeekable, here > 1 else { return }
-            self.exactNextLoad = true
-            self.load(item, position: here, autoplay: true, present: false, force: true)
-            self.logPictureStats(after: 5, label: "5 s after the picture restart")
-        }
+        logPictureStats(after: 3, label: "3 s after the picture came back (log only, nothing is restarted)")
     }
 
     /// Displayed vs lost pictures over the next `seconds` (VLC media statistics): a choppy video shows lost pictures.
