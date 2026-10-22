@@ -317,13 +317,9 @@ struct PhoneNowPlayingView: View {
     private func scrubber(_ transport: Transport) -> some View {
         let duration = max(transport.duration, 1)
         return VStack(spacing: 4) {
-            Slider(value: $shown, in: 0...duration, onEditingChanged: { editing in
-                if editing {
-                    beginScrub()
-                } else {
-                    endScrub(transport, at: shown)
-                }
-            })
+            SeekBar(value: $shown, range: duration,
+                    onBegan: { beginScrub() },
+                    onEnded: { target in endScrub(transport, to: target) })
             times(duration)
         }
     }
@@ -333,9 +329,12 @@ struct PhoneNowPlayingView: View {
         scrubStarted = Date()
     }
 
-    private func endScrub(_ transport: Transport, at value: Double) {
-        transport.seek(to: value)
-        holdUntil = Date().addingTimeInterval(1.5)
+    /// `target` nil = the touch changed nothing (a tap on the thumb): no seek, so no stale jump back.
+    private func endScrub(_ transport: Transport, to target: Double?) {
+        if let target {
+            transport.seek(to: target)
+            holdUntil = Date().addingTimeInterval(1.5)
+        }
         scrubbing = false
     }
 
@@ -660,19 +659,20 @@ struct FullScreenVideo: View {
     private var progressBar: some View {
         let duration = max(transport.duration, 1)
         return VStack(spacing: 2) {
-            Slider(value: $shown, in: 0...duration, onEditingChanged: { editing in
-                if editing {
-                    scrubbing = true
-                    scrubStarted = Date()
-                    hideTask?.cancel()
-                } else {
-                    transport.seek(to: shown)
-                    holdUntil = Date().addingTimeInterval(1.5)
-                    scrubbing = false
-                    showControls()
-                }
-            })
-            .tint(.white)
+            SeekBar(value: $shown, range: duration, tint: .white, track: .white.opacity(0.3),
+                    onBegan: {
+                        scrubbing = true
+                        scrubStarted = Date()
+                        hideTask?.cancel()
+                    },
+                    onEnded: { target in
+                        if let target {
+                            transport.seek(to: target)
+                            holdUntil = Date().addingTimeInterval(1.5)
+                        }
+                        scrubbing = false
+                        showControls()
+                    })
             HStack {
                 Text(formatTime(shown))
                 Spacer()
