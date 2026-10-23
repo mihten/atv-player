@@ -40,7 +40,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.13.1"
+VERSION = "0.14.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -867,6 +867,28 @@ def item_path(it):
 
 
 AUDIO_LOCKS: dict[int, asyncio.Lock] = {}
+# Video keyframe times per item (seconds), computed once per file version with ffprobe; the iPhone app uses them to
+# cover the picture until the next keyframe after its picture track comes back mid-stream (else it is blocky).
+KEYFRAMES: dict[int, tuple[float, list]] = {}
+KEYFRAME_SEM = asyncio.Semaphore(1)  # one ffprobe at a time on the small CT
+
+
+def video_keyframes(path):
+    """Presentation times (s) of the first video stream's keyframes, sorted. Reads the packet index only, no decoding."""
+    res = subprocess.run(
+        ["nice", "-n", "10", "ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", path],
+        capture_output=True, text=True, timeout=300,
+    )
+    times = []
+    for line in res.stdout.splitlines():
+        parts = line.split(",")
+        if len(parts) >= 2 and "K" in parts[1]:
+            try:
+                times.append(round(float(parts[0]), 3))
+            except ValueError:
+                pass
+    return sorted(set(times))
 
 
 def make_audio_only(it, out):
@@ -1007,6 +1029,38 @@ async def run_lyrics():
     LYRICS_TASK = asyncio.create_task(job())
 
 
+async def api_keyframes(request):
+    """{"id", "times": [s, ...]} = video keyframe times of one item (empty for songs). Cached per file mtime."""
+    it = LIB.get(int(request.match_info["id"]))
+    if not it:
+        raise web.HTTPNotFound(text="no such item")
+    times = []
+    if it["kind"] == "video":
+        cached = KEYFRAMES.get(it["id"])
+        if cached and cached[0] == it["mtime"]:
+            times = cached[1]
+        else:
+            path = item_path(it)
+            if not os.path.isfile(path):
+                raise web.HTTPNotFound(text="file missing")
+            async with KEYFRAME_SEM:
+                cached = KEYFRAMES.get(it["id"])
+                if cached and cached[0] == it["mtime"]:
+                    times = cached[1]
+                else:
+                    started = time.time()
+                    try:
+                        times = await asyncio.get_running_loop().run_in_executor(None, video_keyframes, path)
+                    except (subprocess.SubprocessError, OSError) as e:
+                        log.warning("keyframes %s: %s", it["id"], e)
+                        raise web.HTTPServiceUnavailable(text="keyframe index failed")
+                    KEYFRAMES[it["id"]] = (it["mtime"], times)
+                    log.info("keyframes %s: %d in %.1f s ('%s')", it["id"], len(times), time.time() - started, it["title"])
+    resp = web.json_response({"id": it["id"], "times": times})
+    resp.enable_compression()
+    return resp
+
+
 async def api_lyrics(request):
     """Embedded lyrics of one item: {"id", "lyr": 0|1|2, "tracks": [{ord, lang, title, is_default, forced,
     synced, cues: [{s, e, t}]}]}. Extracted on demand when the background job has not reached the file yet."""
@@ -1140,6 +1194,7 @@ def make_app():
     app.router.add_get("/api/loudness", api_loudness)
     app.router.add_get("/api/lyrics", api_lyrics_status)
     app.router.add_get("/api/lyrics/{id:\\d+}", api_lyrics)
+    app.router.add_get("/api/keyframes/{id:\\d+}", api_keyframes)
     app.router.add_post("/api/screenshot", api_screenshot)
     app.router.add_get("/shots/{name}", shot_file)
     app.router.add_get("/media/{id:\\d+}", media)
