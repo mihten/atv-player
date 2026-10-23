@@ -63,6 +63,11 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var pictureKeptOn = false
     private var backgroundWatch: Task<Void, Never>?
     private var seekWatch: Task<Void, Never>?
+    /// Seek timing trace (log only, nothing acts on it): events since the seek call, see traceSeek.
+    private var traceT0: Date?
+    private var traceEvents: [String] = []
+    private var traceTimeEvents = 0
+    private var traceTask: Task<Void, Never>?
     private var startCheck: Task<Void, Never>?
     private var startTimeout: Task<Void, Never>?
     /// iOS: playback was running when a call/Siri interrupted it.
@@ -267,6 +272,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         current = item
         applyLevel(for: item)
         videoHidden = false  // new media starts with its picture track on
+        traceTask?.cancel()
+        traceT0 = nil
         pictureKeptOn = false
         backgroundWatch?.cancel()
         seekWatch?.cancel()
@@ -455,6 +462,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         let target = max(0, seconds)
         log("seek to \(Int(target)) s requested: seekable \(vlc.isSeekable), state \(VLCMediaPlayerStateToString(vlc.state))")
         watchSeek(to: target)
+        traceSeek(to: target)
         vlc.time = VLCTime(int: Int32(target * 1000))
         position = target
         clock.position = target
@@ -488,6 +496,70 @@ final class PlayerEngine: NSObject, ObservableObject {
             let lost = (self.vlc.media?.numberOfLostAudioBuffers ?? 0) - lost0
             func f(_ x: Double) -> String { String(format: "%.1f", x) }
             self.log("seek diag: from \(f(from)) s to target \(f(target)) s, fast seek \(fast ? "on" : "off"); clock 0.3 s later \(f(t0)) s (\(f(target - t0)) s before target), \(f(wall)) s later \(f(t1)) s: playback advanced \(f(t1 - t0)) s (stood still ~\(f(stalled)) s), audio blocks +\(decoded), buffers lost +\(lost), video \(self.videoHidden ? "off" : "on"); \(self.envNote)")
+        }
+    }
+
+    private func traceNote(_ text: String) {
+        guard let t0 = traceT0, traceEvents.count < 30 else { return }
+        traceEvents.append("\(text)@\(Int(Date().timeIntervalSince(t0) * 1000))")
+    }
+
+    /// Diagnostic only: WHERE the time goes after a seek. The seek diag above starts 0.3 s late and reads VLC's clock,
+    /// which already shows the target right after the call, so it cannot see an audio break. This one starts at the seek
+    /// call and samples every 50 ms for 4 s: VLC's clock, the audio buffers actually handed to the audio output
+    /// (`playedAudioBuffers`), and bytes read from the input; plus the VLC state changes and the first time events with
+    /// their ms offsets. One log line per seek (a new seek or load cancels the previous trace).
+    private func traceSeek(to target: Double) {
+        traceTask?.cancel()
+        guard wantPlaying, current != nil, vlc.media != nil else { return }
+        let t0 = Date()
+        traceT0 = t0
+        traceEvents = []
+        traceTimeEvents = 0
+        let generation = loadGeneration
+        let id = current?.id
+        let from = Double(vlc.time.intValue) / 1000
+        let fast = PlayerSettings.fastSeek
+        let video = videoHidden ? "off" : "on"
+        let latency = AVAudioSession.sharedInstance().outputLatency
+        traceTask = Task { [weak self] in
+            var samples: [(ms: Int, clock: Int, played: Int, read: Int)] = []
+            while !Task.isCancelled {
+                guard let self, generation == self.loadGeneration, self.current?.id == id else { return }
+                let ms = Int(Date().timeIntervalSince(t0) * 1000)
+                if ms > 4000 { break }
+                let st = self.vlc.media?.statistics
+                samples.append((ms, Int(self.vlc.time.intValue), Int(st?.playedAudioBuffers ?? 0), Int(st?.readBytes ?? 0)))
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard let self, !Task.isCancelled, generation == self.loadGeneration, samples.count > 4 else { return }
+            // longest stretch in which no audio buffer reached the audio output
+            var lastChange = samples[0].ms
+            var maxGap = 0, gapStart = 0
+            var firstIncrease = -1
+            for i in 1..<samples.count {
+                if samples[i].played != samples[i - 1].played {
+                    if firstIncrease < 0 { firstIncrease = samples[i].ms }
+                    let gap = samples[i].ms - lastChange
+                    if gap > maxGap { maxGap = gap; gapStart = lastChange }
+                    lastChange = samples[i].ms
+                }
+            }
+            let tail = samples[samples.count - 1].ms - lastChange
+            if tail > maxGap { maxGap = tail; gapStart = lastChange }
+            func at(_ ms: Int) -> (clock: Int, played: Int, read: Int) {
+                let s = samples.last(where: { $0.ms <= ms }) ?? samples[0]
+                return (s.clock, s.played, s.read)
+            }
+            let base = at(0)
+            let marks = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500]
+            let clockTxt = marks.map { String(format: "%.1f", Double(at($0).clock) / 1000 - target) }.joined(separator: " ")
+            let playedTxt = zip(marks, marks.dropFirst()).map { String(at($1).played - at($0).played) }.joined(separator: " ")
+            let readAll = Double(samples[samples.count - 1].read - base.read) / 1e6
+            let read1 = Double(at(1000).read - base.read) / 1e6
+            func f(_ x: Double) -> String { String(format: "%.1f", x) }
+            self.log("seek trace: from \(f(from)) s to \(f(target)) s, fast seek \(fast ? "on" : "off"), video \(video), output latency \(Int(latency * 1000)) ms | events [\(self.traceEvents.joined(separator: ", "))], \(self.traceTimeEvents) time events | audio buffers played: first increase at \(firstIncrease) ms, longest silent stretch \(maxGap) ms starting at \(gapStart) ms | clock minus target every 0.5 s [\(clockTxt)] | buffers played per 0.5 s [\(playedTxt)] | input read +\(f(readAll)) MB (first second +\(f(read1)) MB); \(self.envNote)")
+            self.traceT0 = nil
         }
     }
 
@@ -681,6 +753,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     fileprivate func handleState(from source: ObjectIdentifier?) {
         guard source == nil || source == ObjectIdentifier(vlc) else { return }  // event from a replaced player
         let state = vlc.state
+        traceNote("state " + VLCMediaPlayerStateToString(state).replacingOccurrences(of: "VLCMediaPlayerState", with: ""))
         switch state {
         case .ended:
             if !startedPlaying {
@@ -726,6 +799,8 @@ final class PlayerEngine: NSObject, ObservableObject {
     fileprivate func handleTime(from source: ObjectIdentifier?) {
         guard source == nil || source == ObjectIdentifier(vlc) else { return }
         timeEvents += 1
+        traceTimeEvents += 1
+        if traceTimeEvents <= 3 { traceNote("time \(vlc.time.intValue)") }
         if !startedPlaying {
             startedPlaying = true
             startCheck?.cancel()
