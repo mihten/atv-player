@@ -35,6 +35,7 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
         let module = context?.module ?? ""
         let type = context?.objectType ?? ""
         let lower = message.lowercased()
+        if lower.hasPrefix("buffering ") && lower.hasSuffix("%") { return }  // progress lines (0%..100%) would fill the window
         let audioSource = type.contains("audio") || module.contains("audio") || module.contains("aout")
         let isProblem = level.rawValue <= 1  // errors and warnings
         let videoChatter = type.contains("video output") && !isProblem

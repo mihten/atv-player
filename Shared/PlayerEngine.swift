@@ -67,8 +67,6 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// iPhone: the picture track stays on for `lyricsPictureGrace` s after the lyrics view opens (see setLyricsCover).
     private var lyricsKeptOn = false
     private var lyricsWatch: Task<Void, Never>?
-    /// iOS: pending release of the Bluetooth keep-alive after a pause (see releaseAudioLinkSoon).
-    fileprivate var linkReleaseTask: Task<Void, Never>?
     private var settleTask: Task<Void, Never>?
     private var backgroundWatch: Task<Void, Never>?
     private var seekWatch: Task<Void, Never>?
@@ -163,17 +161,10 @@ final class PlayerEngine: NSObject, ObservableObject {
         vlc.delegate = self
         vlc.drawable = videoView
         configureAudio()
-        #if os(iOS)
-        AudioSessionGuard.install()
-        // Same route-sharing policy VLC's audio output sets on every activation, so its first start changes nothing.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, policy: .longFormAudio, options: [])
-        #else
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        #endif
         try? AVAudioSession.sharedInstance().setActive(true)
         #if os(iOS)
         vlc.libraryInstance.loggers = [VLCLogTap.shared]
-        AudioKeepAlive.shared.log = { [weak self] text in self?.log(text) }
         observeAudioSession()
         #endif
         setupRemoteCommands()
@@ -300,7 +291,6 @@ final class PlayerEngine: NSObject, ObservableObject {
         pictureSettling = false
         #if os(iOS)
         if item.isVideo { KeyframeStore.shared.prefetch(item) }
-        if autoplay { keepAudioLinkOpen("load") } else { releaseAudioLinkSoon("loaded paused") }
         #endif
         tracksApplied = false
         endedSent = false
@@ -421,7 +411,6 @@ final class PlayerEngine: NSObject, ObservableObject {
         wantPlaying = true
         pendingToggle = (Date(), source, true)
         #if os(iOS)
-        keepAudioLinkOpen("play")
         vlcLogWindow("play via \(source)")
         #endif
         switch vlc.state {
@@ -442,7 +431,6 @@ final class PlayerEngine: NSObject, ObservableObject {
         pendingToggle = (Date(), source, false)
         #if os(iOS)
         vlcLogWindow("pause via \(source)")
-        releaseAudioLinkSoon("pause")
         #endif
         if vlc.canPause {
             vlc.pause()
@@ -1091,24 +1079,6 @@ final class PlayerEngine: NSObject, ObservableObject {
 
 #if os(iOS)
 extension PlayerEngine {
-    /// Bluetooth keep-alive (AudioKeepAlive.swift): hold the audio session + run silence while playback is wanted.
-    fileprivate func keepAudioLinkOpen(_ why: String) {
-        linkReleaseTask?.cancel()
-        linkReleaseTask = nil
-        AudioKeepAlive.shared.hold(why)
-    }
-
-    /// Release the keep-alive 30 s after playback stops being wanted (a quick pause/play keeps the Bluetooth link).
-    fileprivate func releaseAudioLinkSoon(_ why: String) {
-        guard AudioSessionGuard.shared.holding else { return }
-        linkReleaseTask?.cancel()
-        linkReleaseTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            guard let self, !Task.isCancelled, !self.wantPlaying else { return }
-            AudioKeepAlive.shared.release("\(why) + 30 s")
-        }
-    }
-
     /// Diagnostic: VLC's own audio messages for the next 5 s go to the server log as one entry (VLCLogTap.swift).
     fileprivate func vlcLogWindow(_ label: String) {
         let (id, previous) = VLCLogTap.shared.begin(label)
