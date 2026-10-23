@@ -300,6 +300,7 @@ struct PhoneNowPlayingView: View {
         VideoSurface(engine: engine, active: !fullScreen)  // the cover above owns the picture while it is up
             .id(fullScreen)  // re-attach the video view here after the full-screen cover closes
             .aspectRatio(16 / 9, contentMode: .fit)
+            .overlay { PictureCover() }  // hides the blocky picture until the next keyframe (engine.pictureSettling)
             .clipShape(RoundedRectangle(cornerRadius: theme == .noir ? 2 : 12))
             .overlay(alignment: .bottomTrailing) {
                 Button { fullScreen = true } label: {
@@ -588,6 +589,7 @@ struct FullScreenVideo: View {
         ZStack {
             Color.black.ignoresSafeArea()
             VideoSurface(engine: engine).ignoresSafeArea().allowsHitTesting(false)
+            PictureCover().ignoresSafeArea()
             // Own tap layer between the picture and the controls: show/hide the controls.
             Color.clear
                 .ignoresSafeArea()
@@ -693,5 +695,27 @@ struct FullScreenVideo: View {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { withAnimation { controls = false } }
         }
+    }
+}
+
+/// Covers the video while `engine.pictureSettling`: the picture track came back mid-stream and stays blocky until the
+/// next keyframe. Shows the item's artwork on black and fades out when the engine lifts it. Never takes touches.
+struct PictureCover: View {
+    @EnvironmentObject var engine: PlayerEngine
+
+    var body: some View {
+        ZStack {
+            if engine.pictureSettling, let item = engine.current {
+                ZStack {
+                    Color.black
+                    RemoteImage(url: item.art == true ? item.artURL : nil) { Color.black }
+                        .opacity(0.85)
+                }
+                .clipped()
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.4), value: engine.pictureSettling)
+        .allowsHitTesting(false)
     }
 }

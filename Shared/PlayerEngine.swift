@@ -39,6 +39,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// Bumped when the user starts something (server load with present=true, or the Now Playing
     /// card / Play-Pause in a menu), so the UI shows the player. Auto-advance does not bump it.
     @Published private(set) var startCounter = 0
+    /// iPhone: the picture area shows a cover instead of the video until the next keyframe has played, after the picture
+    /// track came back mid-stream (lyrics -> video, return to the app after the background grace). See coverUntilKeyframe.
+    @Published private(set) var pictureSettling = false
 
     weak var connection: ServerConnection?
     private var tracksApplied = false
@@ -61,6 +64,10 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var loadGeneration = 0
     /// The picture track was left on when the app went to the background (see appDidEnterBackground).
     private var pictureKeptOn = false
+    /// iPhone: the picture track stays on for `lyricsPictureGrace` s after the lyrics view opens (see setLyricsCover).
+    private var lyricsKeptOn = false
+    private var lyricsWatch: Task<Void, Never>?
+    private var settleTask: Task<Void, Never>?
     private var backgroundWatch: Task<Void, Never>?
     private var seekWatch: Task<Void, Never>?
     /// Seek timing trace (log only, nothing acts on it): events since the seek call, see traceSeek.
@@ -277,6 +284,13 @@ final class PlayerEngine: NSObject, ObservableObject {
         pictureKeptOn = false
         backgroundWatch?.cancel()
         seekWatch?.cancel()
+        lyricsKeptOn = false
+        lyricsWatch?.cancel()
+        settleTask?.cancel()
+        pictureSettling = false
+        #if os(iOS)
+        if item.isVideo { KeyframeStore.shared.prefetch(item) }
+        #endif
         tracksApplied = false
         endedSent = false
         isPlaying = false  // the next VLC event reports the real state for the new item
@@ -463,6 +477,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         log("seek to \(Int(target)) s requested: seekable \(vlc.isSeekable), state \(VLCMediaPlayerStateToString(vlc.state))")
         watchSeek(to: target)
         traceSeek(to: target)
+        endPictureCover(reason: "seek")
         vlc.time = VLCTime(int: Int32(target * 1000))
         position = target
         clock.position = target
@@ -591,6 +606,13 @@ final class PlayerEngine: NSObject, ObservableObject {
     func appDidEnterBackground() {
         inBackground = true
         UserDefaults.standard.set("background", forKey: Self.lastStateKey)
+        #if os(iOS)
+        if lyricsKeptOn {  // lyrics view + app left: nobody will see the picture soon, stop decoding it
+            lyricsKeptOn = false
+            lyricsWatch?.cancel()
+            hideVideo()
+        }
+        #endif
         guard wantPlaying else { return }
         if current?.isVideo == true {
             if PlayerSettings.keepVideoAudioInBackground {
@@ -661,21 +683,105 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
     #endif
 
-    /// The lyrics view is on screen instead of the picture (or not any more).
+    /// How long the iPhone keeps decoding a music video's picture unseen after the lyrics view opens (fixed, no setting).
+    private static let lyricsPictureGrace: TimeInterval = 60
+
+    /// The lyrics view is on screen instead of the picture (or not any more). iPhone: the picture track stays on for the
+    /// first `lyricsPictureGrace` seconds, so switching back to the video within that time shows a clean picture at once
+    /// (a track switched on mid-stream is blocky until the next keyframe); after that it is switched off (no unseen
+    /// decoding while the lyrics stay up) and the return is covered until the next keyframe (coverUntilKeyframe).
     func setLyricsCover(_ on: Bool) {
         guard on != lyricsCover else { return }
         lyricsCover = on
         guard current?.isVideo == true else { return }
         if on {
+            #if os(iOS)
+            if !videoHidden {
+                endPictureCover(reason: "lyrics view")
+                lyricsKeptOn = true
+                log("lyrics view: picture track kept on for \(Int(Self.lyricsPictureGrace)) s, switching back within that time is instant; \(envNote)")
+                watchLyricsPicture()
+                return
+            }
+            #endif
             hideVideo()
-        } else if !(inBackground && PlayerSettings.keepVideoAudioInBackground) {
-            showVideo()
+        } else {
+            #if os(iOS)
+            lyricsWatch?.cancel()
+            if lyricsKeptOn {
+                lyricsKeptOn = false
+                if !videoHidden {
+                    log("lyrics view closed within \(Int(Self.lyricsPictureGrace)) s: the picture track was kept on, nothing to restart; \(envNote)")
+                    return
+                }
+            }
+            #endif
+            if !(inBackground && PlayerSettings.keepVideoAudioInBackground) {
+                showVideo()
+            }
         }
+    }
+
+    #if os(iOS)
+    private func watchLyricsPicture() {
+        lyricsWatch?.cancel()
+        let generation = loadGeneration
+        lyricsWatch = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.lyricsPictureGrace * 1_000_000_000))
+            guard let self, !Task.isCancelled, generation == self.loadGeneration, self.lyricsKeptOn,
+                  self.lyricsCover, !self.videoHidden else { return }
+            self.lyricsKeptOn = false
+            self.log("lyrics view: \(Int(Self.lyricsPictureGrace)) s are up -> picture track off (decoding stops); \(self.envNote)")
+            self.hideVideo()
+        }
+    }
+
+    /// The picture track just came back mid-stream: the decoder has no reference picture until the next keyframe and the
+    /// picture is blocky meanwhile. Cover it (the views show the artwork) until playback has passed that keyframe, using
+    /// the keyframe times from the server; unknown times = 2.5 s; never longer than 8 s of playback.
+    private func coverUntilKeyframe() {
+        guard let item = current, item.isVideo else { return }
+        settleTask?.cancel()
+        let now = Double(vlc.time.intValue) / 1000
+        let next = KeyframeStore.shared.next(after: now + 0.05, for: item.id)
+        let until: Double
+        let why: String
+        if let next {
+            until = min(next + 0.25, now + 8)
+            why = next.isFinite ? String(format: "next keyframe at %.1f s", next) : "no keyframe left in the file"
+        } else {
+            until = now + 2.5
+            why = "keyframe times unknown"
+        }
+        pictureSettling = true
+        let started = Date()
+        log(String(format: "picture cover on at %.1f s until %.1f s (%@); ", now, until, why) + envNote)
+        let generation = loadGeneration
+        settleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, generation == self.loadGeneration, self.pictureSettling, !self.videoHidden else { return }
+                if Double(self.vlc.time.intValue) / 1000 >= until { break }
+            }
+            guard let self, !Task.isCancelled, generation == self.loadGeneration, self.pictureSettling else { return }
+            self.pictureSettling = false
+            self.log(String(format: "picture cover off at %.1f s after %.1f s", Double(self.vlc.time.intValue) / 1000,
+                            Date().timeIntervalSince(started)))
+        }
+    }
+    #endif
+
+    private func endPictureCover(reason: String) {
+        settleTask?.cancel()
+        guard pictureSettling else { return }
+        pictureSettling = false
+        log("picture cover off (\(reason))")
     }
 
     private func hideVideo() {
         guard !videoHidden else { return }
         videoHidden = true
+        endPictureCover(reason: "picture track off")
         vlc.currentVideoTrackIndex = -1
         #if os(iOS)
         updateNowPlaying()
@@ -694,6 +800,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         #endif
         log("foreground: video track back on; \(envNote)")
         checkPictureAfterSwitch()
+        #if os(iOS)
+        coverUntilKeyframe()
+        #endif
     }
 
     /// Turning the picture track on mid-stream can start the decoder off a keyframe. Fixes tried so far made it worse:
