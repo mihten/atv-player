@@ -40,7 +40,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.13.0"
+VERSION = "0.13.1"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -526,7 +526,7 @@ async def on_message(s, data, role):
             s.errors = 0
         await broadcast_state(s)
     elif role == "player" and kind == "log":
-        log.info("player[%s]: %s", s.kind, str(data.get("message"))[:300])
+        log.info("player[%s]: %s", s.kind, str(data.get("message"))[:1500])  # seek trace lines are ~700 chars
     elif role == "player" and kind == "ended":
         if data.get("item") == s.current_id:
             await advance(s, user=False)
