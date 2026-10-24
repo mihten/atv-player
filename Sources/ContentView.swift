@@ -102,7 +102,7 @@ struct ContentView: View {
     }
 
     private func shuffle(_ name: String) {
-        connection.command("play_collection", ["collection": name, "shuffle": true])
+        connection.startPlayback(["collection": name])
     }
 }
 
@@ -117,13 +117,13 @@ struct VideoListView: View {
                 Text(errorText).foregroundStyle(.secondary)
             }
             Button {
-                connection.command("play_collection", ["collection": "videos", "shuffle": true])
+                connection.startPlayback(["collection": "videos"])
             } label: {
-                Label("Shuffle all music videos", systemImage: "shuffle")
+                Label("Play all music videos (shuffled)", systemImage: "play.fill")
             }
             ForEach(items) { item in
                 Button {
-                    connection.command("play_collection", ["collection": "videos", "start_id": item.id])
+                    connection.startPlayback(["collection": "videos", "start_id": item.id])
                 } label: {
                     RowLabel(title: item.title, detail: item.artist ?? "", systemImage: "film", item: item)
                 }
@@ -370,26 +370,17 @@ struct FolderView: View {
             if let result {
                 Section {
                     if result.hasSubfolders {
-                        Button { play(shuffle: true) } label: {
-                            Label("Shuffle all, including subfolders (\(result.total))", systemImage: "shuffle")
-                        }
-                        Button { play(shuffle: false) } label: {
-                            Label("Play all, including subfolders", systemImage: "play.fill")
+                        Button { play() } label: {
+                            Label("Play all, including subfolders (\(result.total))", systemImage: "play.fill")
                         }
                         if !result.items.isEmpty {
-                            Button { play(shuffle: true, recursive: false) } label: {
-                                Label("Shuffle this folder only (\(result.items.count))", systemImage: "shuffle")
-                            }
-                            Button { play(shuffle: false, recursive: false) } label: {
-                                Label("Play this folder only", systemImage: "play")
+                            Button { play(recursive: false) } label: {
+                                Label("Play this folder only (\(result.items.count))", systemImage: "play")
                             }
                         }
                     } else {
-                        Button { play(shuffle: true) } label: {
-                            Label("Shuffle all (\(result.total))", systemImage: "shuffle")
-                        }
-                        Button { play(shuffle: false) } label: {
-                            Label("Play all", systemImage: "play.fill")
+                        Button { play() } label: {
+                            Label("Play all (\(result.total))", systemImage: "play.fill")
                         }
                     }
                 }
@@ -407,7 +398,7 @@ struct FolderView: View {
                 if !result.items.isEmpty {
                     Section("Files") {
                         ForEach(result.items) { item in
-                            Button { play(shuffle: false, recursive: false, startAt: item.id) } label: {
+                            Button { play(recursive: false, startAt: item.id) } label: {
                                 RowLabel(
                                     title: item.title,
                                     detail: [item.artist, item.lossless == true ? "lossless" : nil]
@@ -428,12 +419,11 @@ struct FolderView: View {
         .task { await load() }
     }
 
-    private func play(shuffle: Bool, recursive: Bool = true, startAt: Int? = nil) {
-        var args: [String: Any] = [
-            "collection": "folder", "root": root, "folder": folder, "shuffle": shuffle, "recursive": recursive,
-        ]
+    /// Starts shuffled with repeat all (startPlayback); a picked file plays first.
+    private func play(recursive: Bool = true, startAt: Int? = nil) {
+        var args: [String: Any] = ["collection": "folder", "root": root, "folder": folder, "recursive": recursive]
         if let startAt { args["start_id"] = startAt }
-        connection.command("play_collection", args)
+        connection.startPlayback(args)
     }
 
     private func load() async {

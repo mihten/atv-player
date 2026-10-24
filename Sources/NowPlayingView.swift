@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Full-screen player. Siri Remote: down = next, up = previous, left/right = jump back/forward
-/// (Settings), play/pause = toggle, click = lyrics on/off (and show the info), Back = return to the menu.
+/// (Settings), play/pause = toggle, click = lyrics on/off (and show the info), click-and-hold = quick panel (shuffle,
+/// repeat, lyrics / subtitle track), Back = close the panel / return to the menu.
 struct NowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -15,8 +16,23 @@ struct NowPlayingView: View {
     @State private var forward = true
     /// Lyrics instead of cover / video; remembered on this device, switched with the remote's click button.
     @AppStorage("lyricsMode") private var lyricsMode = false
+    @State private var panel = false
+    /// The current press already opened the panel, so its release is not a click.
+    @State private var heldOpen = false
 
     var body: some View {
+        ZStack {
+            player
+                .disabled(panel)
+            if panel {
+                QuickPanel { closePanel() }
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: panel)
+    }
+
+    private var player: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let item = engine.current {
@@ -89,9 +105,21 @@ struct NowPlayingView: View {
             engine.togglePlay(source: "player-screen")
             flash()
         }
-        .onTapGesture {  // click on the Siri Remote
-            lyricsMode.toggle()
-            flash()
+        // One handler for both, so a hold never also counts as a click: released before 0.5 s = click (lyrics),
+        // held 0.5 s = quick panel.
+        .onLongPressGesture(minimumDuration: 0.5) {
+            heldOpen = true
+            panel = true
+            remoteLog("remote: centre held -> quick panel open")
+        } onPressingChanged: { pressing in
+            guard !pressing else { return }
+            if heldOpen {
+                heldOpen = false
+            } else if !panel {
+                lyricsMode.toggle()
+                remoteLog("remote: centre click -> lyrics \(lyricsMode ? "on" : "off")")
+                flash()
+            }
         }
         .onExitCommand { dismiss() }
         .onChange(of: engine.current?.id) {
@@ -108,6 +136,19 @@ struct NowPlayingView: View {
         guard lyricsMode else { return }
         LyricsStore.shared.prefetch(engine.current)
         LyricsStore.shared.prefetch(connection.state?.upcoming?.first)
+    }
+
+    /// Remote-input lines for the server log (checks the click / hold handling on the device).
+    private func remoteLog(_ message: String) {
+        connection.send(["type": "log", "message": message])
+    }
+
+    private func closePanel() {
+        remoteLog("remote: quick panel closed")
+        panel = false
+        heldOpen = false
+        focused = true
+        flash()
     }
 
     private func flash() {
@@ -143,10 +184,8 @@ struct InfoBar: View {
             ProgressRow(clock: engine.clock, upNext: connection.state?.upcoming?.first?.title)
             HStack(spacing: 30) {
                 Label(engine.isPlaying ? "Playing" : "Paused", systemImage: engine.isPlaying ? "play.fill" : "pause.fill")
-                if connection.state?.shuffle == true {
-                    Label("Shuffle", systemImage: "shuffle")
-                }
-                Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● lyrics")
+                PlayModeIcons(size: 22)
+                Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● lyrics   hold ● options")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)

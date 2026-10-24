@@ -67,11 +67,8 @@ struct PlaylistView: View {
                 let playable = detail.items.filter { !$0.isMissing }.count
                 Section {
                     if playable > 0 {
-                        Button { play(shuffle: false) } label: {
+                        Button { play() } label: {
                             Label("Play (\(playable))", systemImage: "play.fill")
-                        }
-                        Button { play(shuffle: true) } label: {
-                            Label("Shuffle", systemImage: "shuffle")
                         }
                     } else {
                         Text("Empty. Add songs and videos in the web remote: \(Config.remoteAddress)")
@@ -87,7 +84,7 @@ struct PlaylistView: View {
                                          systemImage: "exclamationmark.triangle")
                                     .opacity(0.45)
                             } else {
-                                Button { play(shuffle: false, startIndex: index) } label: {
+                                Button { play(startIndex: index) } label: {
                                     RowLabel(
                                         title: entry.title,
                                         detail: [entry.artist, entry.lossless == true ? "lossless" : nil]
@@ -110,10 +107,11 @@ struct PlaylistView: View {
     }
 
     /// startIndex = position in the stored playlist (the server maps it past missing entries).
-    private func play(shuffle: Bool, startIndex: Int? = nil) {
-        var args: [String: Any] = ["collection": "playlist", "playlist": playlistID, "shuffle": shuffle]
+    /// Starts shuffled with repeat all (startPlayback); a picked entry plays first.
+    private func play(startIndex: Int? = nil) {
+        var args: [String: Any] = ["collection": "playlist", "playlist": playlistID]
         if let startIndex { args["start_index"] = startIndex }
-        connection.command("play_collection", args)
+        connection.startPlayback(args)
     }
 
     private func load() async {

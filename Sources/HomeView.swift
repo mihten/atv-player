@@ -157,7 +157,7 @@ struct HomeView: View {
             LazyHStack(spacing: 40) {
                 ForEach(videos.prefix(40)) { video in
                     Button {
-                        connection.command("play_collection", ["collection": "videos", "start_id": video.id])
+                        connection.startPlayback(["collection": "videos", "start_id": video.id])
                     } label: {
                         PosterLabel(item: video, size: CGSize(width: 400, height: 225))
                     }
@@ -197,7 +197,7 @@ struct HomeView: View {
     // MARK: - Data
 
     private func shuffle(_ name: String) {
-        connection.command("play_collection", ["collection": name, "shuffle": true])
+        connection.startPlayback(["collection": name])
     }
 
     private func loadVideos() async {
