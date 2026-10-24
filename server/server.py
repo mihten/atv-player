@@ -40,7 +40,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -131,7 +131,7 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
 STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
 KINDS = ("tv", "phone")
 KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone"}
-SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position")
+SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items")
 
 
 class Session:
@@ -151,6 +151,10 @@ class Session:
         self.position_at = time.time()
         self.duration = 0.0
         self.errors = 0
+        # Playlist id the queue was started from (None = anything else), and its playable ids at that time:
+        # an edit of that playlist rebuilds the upcoming part of the queue (follow_playlist).
+        self.source = None
+        self.source_items: list[int] = []
 
     @property
     def players(self):
@@ -275,8 +279,47 @@ def playlist_detail(pl):
     return d
 
 
+def follow_playlist(s, pl_id):
+    """The playlist this session's queue came from was edited: rebuild the queue from its new contents. The current
+    item keeps playing (also when it was removed); items already played this round stay behind it; with shuffle the
+    rest is shuffled again, without it the playlist order is used from the current item on. Deleted / emptied = stop
+    following (the queue stays as it is)."""
+    pl = PLAYLISTS.get(pl_id)
+    new = [i for i in pl["items"] if i in LIB] if pl else []
+    if not new:
+        s.source, s.source_items = None, []
+        return False
+    if new == s.source_items:  # rename only
+        return False
+    cur = s.current_id
+    if s.shuffle:
+        keep = set(new)
+        played = [i for i in s.queue[:max(s.index, 0)] if i in keep]
+        rest = list(new)
+        for i in played + ([cur] if cur is not None else []):
+            if i in rest:
+                rest.remove(i)
+        random.shuffle(rest)
+        s.queue = played + ([cur] if cur is not None else []) + rest
+        s.index = len(played) if cur is not None else 0
+    elif cur in new:
+        s.queue, s.index = list(new), new.index(cur)
+    else:
+        keep = set(new)
+        k = sum(1 for i in s.queue[:max(s.index, 0)] if i in keep)
+        s.queue = new[:k] + ([cur] if cur is not None else []) + new[k:]
+        s.index = k
+    s.original, s.source_items = list(new), list(new)
+    log.info("[%s] queue follows playlist %s: %d items now, current %s kept", s.kind, pl_id, len(s.queue), cur)
+    return True
+
+
 async def playlists_changed(pl_id=None):
     save_playlists()
+    for s in SESSIONS.values():
+        if pl_id is not None and s.source == pl_id and follow_playlist(s, pl_id):
+            s.save()
+            await broadcast_state(s)
     msg = {"type": "playlists", "id": pl_id}
     for ws in list(PLAYERS) + list(REMOTES):
         await send(ws, msg)
@@ -417,6 +460,7 @@ async def advance(s, user):
 async def handle_cmd(s, msg):
     cmd = msg.get("cmd")
     if cmd == "play_ids":
+        s.source, s.source_items = None, []
         await set_queue(s, msg.get("ids") or [], msg.get("start_index"), bool(msg.get("shuffle")))
     elif cmd == "play_collection":
         name = msg.get("collection", "all")
@@ -436,7 +480,12 @@ async def handle_cmd(s, msg):
                 start = sum(1 for i in stored[:start] if i in LIB)
         else:
             start = ids.index(msg["start_id"]) if msg.get("start_id") in ids else None
+        log.info("[%s] play %s%s: %d items, shuffle %s", s.kind, name, f" {playlist}" if playlist is not None else "",
+                 len(ids), bool(msg.get("shuffle")))
         await set_queue(s, ids, start, bool(msg.get("shuffle")))
+        if ids:
+            s.source, s.source_items = playlist, (list(ids) if playlist is not None else [])
+            s.save()
     elif cmd == "enqueue":
         ids = [i for i in (msg.get("ids") or []) if i in LIB]
         if not ids:
@@ -445,6 +494,7 @@ async def handle_cmd(s, msg):
             await set_queue(s, ids)
             return
         pos = s.index + 1 if msg.get("mode") == "next" else len(s.queue)
+        s.source, s.source_items = None, []  # edited by hand: no longer just the playlist
         s.queue[pos:pos] = ids
         s.original.extend(ids)
         s.save()
@@ -494,12 +544,14 @@ async def handle_cmd(s, msg):
     elif cmd == "remove":
         idx = int(msg.get("index", -1))
         if 0 <= idx < len(s.queue) and idx != s.index:
+            s.source, s.source_items = None, []
             del s.queue[idx]
             if idx < s.index:
                 s.index -= 1
             s.save()
             await broadcast_state(s)
     elif cmd == "clear":
+        s.source, s.source_items = None, []
         cur = s.current_id
         s.queue = [cur] if cur is not None else []
         s.original = list(s.queue)
@@ -541,6 +593,15 @@ async def on_message(s, data, role):
 
 
 # ---------------------------------------------------------------- HTTP handlers
+
+@web.middleware
+async def api_no_store(request, handler):
+    """API answers change with every edit; without this the apps' URL cache may hand out an old playlist."""
+    resp = await handler(request)
+    if request.path.startswith("/api/") and "Cache-Control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
 
 async def ws_handler(request):
     q = request.query
@@ -1173,7 +1234,7 @@ async def on_startup(app):
 
 
 def make_app():
-    app = web.Application()
+    app = web.Application(middlewares=[api_no_store])
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     app.router.add_get("/", index)

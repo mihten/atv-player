@@ -123,6 +123,7 @@ struct PlaylistView: View {
                 return
             }
             detail = try JSONDecoder.server().decode(PlaylistDetail.self, from: data)
+            connection.send(["type": "log", "message": "playlist \(playlistID) shown: \(detail?.items.count ?? 0) entries (update \(connection.playlistsVersion))"])
             gone = false
             errorText = nil
         } catch {

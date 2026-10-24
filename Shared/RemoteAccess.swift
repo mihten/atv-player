@@ -75,6 +75,9 @@ enum Net {
 
     static func request(_ url: URL) -> URLRequest {
         var request = URLRequest(url: url)
+        // API answers (playlists, library, state) change with every edit: always ask the server, never the URL cache.
+        // Artwork and media keep the normal cache (the server sends max-age for those).
+        if url.path.contains("/api/") { request.cachePolicy = .reloadIgnoringLocalCacheData }
         if Config.isRemote, let login = Config.credentials, url.host == Config.serverURL.host {
             request.setValue(basic(user: login.user, password: login.password), forHTTPHeaderField: "Authorization")
         }
