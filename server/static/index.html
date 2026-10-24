@@ -259,6 +259,9 @@ html[data-look="noir"] .h2, html[data-look="vinyl"] .h2 { font: 700 12px/1 var(-
 .th .eq { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; height: auto; background: rgba(0,0,0,.5); color: var(--acc); padding: 13px 12px; }
 .th .eq i { height: 18px; }
 .row .acts { display: flex; gap: 6px; flex: none; }
+.row .inpl { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 34%; font-size: 11px; font-weight: 600; color: var(--ink3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+.row .inpl svg { flex: none; width: 12px; height: 12px; }
+.row .inpl span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .lead { flex: none; }
 .chev { width: 16px; height: 16px; color: var(--ink3); transition: transform .2s; flex: none; }
 .row.open .chev { transform: rotate(90deg); }
@@ -399,6 +402,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
   nav#tabs button { flex: 1; padding: 7px 2px; font-size: 13.5px; }
   .row .th.fold { display: none; }  /* folder rows carry ＋ ▶ 🔀 already: give the name the room */
   .row { gap: 10px; padding-left: 10px; padding-right: 10px; }
+  .row .inpl { max-width: 26%; }
 }
 /* home view (Search tab without a query): music-video shelf + albums */
 .shelf { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 230px); gap: 14px; overflow-x: auto; padding: 2px 2px 12px; margin: 0 -2px; scrollbar-width: thin; scroll-snap-type: x proximity; }
@@ -583,6 +587,7 @@ let mode = ["tv", "phone"].includes(localStorage.getItem("atvSession")) ? localS
 let session = mode === "phone" ? "phone" : "tv", sessionList = [], followTimer = null;
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
 let playlists = [], openPl = null, plHeads = new Map();  // openPl = playlist detail shown; plHeads = first items per playlist (mosaics)
+let plMember = new Map(), plUndo = null;  // plMember: item id -> [{id, name}] of the playlists holding it; plUndo: order before the last sort / dedup
 
 const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2,"0")}:${x}` : `${m}:${x}`; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -599,9 +604,13 @@ async function loadPlaylists() {
   if (openPl) { try { openPl = await api("GET", `/api/playlists/${openPl.id}`); } catch { openPl = null; } }
   if (tab === "playlists") render();
   // first items of every playlist for the cover mosaics (like the apps' PlaylistMosaic)
-  const heads = await Promise.all(playlists.slice(0, 60).map((p) => api("GET", `/api/playlists/${p.id}`).then((d) => [p.id, d.items.filter((i) => !i.missing).slice(0, 4)]).catch(() => [p.id, []])));
-  plHeads = new Map(heads);
-  if (tab === "playlists" && !openPl) render();
+  const details = await Promise.all(playlists.slice(0, 60).map((p) => api("GET", `/api/playlists/${p.id}`).catch(() => null)));
+  plHeads = new Map(); plMember = new Map();
+  details.forEach((d, n) => {
+    const p = playlists[n]; plHeads.set(p.id, d ? d.items.filter((i) => !i.missing).slice(0, 4) : []);
+    if (d) for (const id of new Set(d.items.map((i) => i.id))) { const l = plMember.get(id) || []; l.push({ id: p.id, name: p.name }); plMember.set(id, l); }
+  });
+  if (tab !== "playlists" || !openPl) render();
 }
 
 function connect() {
@@ -727,10 +736,16 @@ function tick() {
   requestAnimationFrame(tick);
 }
 
+/** Playlists a file is in (from the details loadPlaylists fetches), as a pill on the far right of its row. */
+function inPlaylists(id) {
+  const skip = tab === "playlists" && openPl ? openPl.id : null;
+  const names = (plMember.get(id) || []).filter((p) => p.id !== skip).map((p) => p.name);
+  return names.length ? `<span class="inpl" title="In playlist${names.length === 1 ? "" : "s"}: ${esc(names.join(", "))}">${ic("list")}<span>${esc(names.join(", "))}</span></span>` : "";
+}
 function rowHtml(it, extra = "", cls = "", th = "") {
   const badges = (it.kind === "video" ? '<span class="badge">video</span>' : "") + (it.lossless ? '<span class="badge">lossless</span>' : "");
   return `<div class="row ${cls}" data-id="${it.id}" ${extra}>${thumb(it, th)}<div class="meta"><div class="t">${esc(it.title)}${badges}</div>` +
-         `<div class="s">${esc([it.artist, it.folder || it.root].filter(Boolean).join(" · "))}</div></div></div>`;
+         `<div class="s">${esc([it.artist, it.folder || it.root].filter(Boolean).join(" · "))}</div></div>${inPlaylists(it.id)}</div>`;
 }
 const group = (html) => `<div class="group">${html}</div>`;
 const isCur = (id) => st && st.current && st.current.id === id;
@@ -751,19 +766,41 @@ function render() {
     const vids = lib.filter((i) => i.kind === "video").sort((a, b) => `${a.artist}${a.title}`.toLowerCase().localeCompare(`${b.artist}${b.title}`.toLowerCase()));
     main.innerHTML = vids.length ? `<div class="h2">Music videos</div><div class="vgrid">` + vids.map(videoTile).join("") + `</div>` : '<div class="empty">No videos</div>';
   } else if (tab === "folders") {
-    const tree = new Map();
-    for (const i of lib) { const key = `${i.root}/${i.folder}`; tree.set(key, (tree.get(key) || 0) + 1); }
-    const tops = new Map();
-    for (const [key, n] of tree) { const [root, ...rest] = key.split("/"); const top = `${root}/${rest[0] || ""}`; tops.set(top, (tops.get(top) || 0) + n); }
+    // Every folder level opens (files can sit several folders deep); counts include subfolders.
+    const count = new Map(), kids = new Map();
+    for (const i of lib) {
+      const parts = (i.folder || "").split("/").filter(Boolean);
+      for (let d = 0; d <= parts.length; d++) {
+        const key = `${i.root}/${parts.slice(0, d).join("/")}`;
+        count.set(key, (count.get(key) || 0) + 1);
+        if (d < parts.length) { if (!kids.has(key)) kids.set(key, new Set()); kids.get(key).add(parts.slice(0, d + 1).join("/")); }
+      }
+    }
+    const coll = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+    const branch = (root, folder, depth) => {
+      let out = "";
+      for (const sub of [...(kids.get(`${root}/${folder}`) || [])].sort(coll.compare)) {
+        const key = `${root}/${sub}`, open = openFolders.has(key);
+        out += folderRow(root, sub, count.get(key), depth, open);
+        if (open) out += branch(root, sub, depth + 1);
+      }
+      out += lib.filter((i) => i.root === root && (i.folder || "") === folder).map((i) => withLead(rowHtml(i, `data-act="item" style="--d:${depth}"`, `sub${isCur(i.id) ? " cur" : ""}`),
+        `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`)).join("");
+      return out;
+    };
     let html = "";
-    for (const [top, n] of [...tops].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const [root, folder] = [top.split("/")[0], top.split("/").slice(1).join("/")];
-      html += folderRow(root, folder, n, 0, openFolders.has(top));
-      if (openFolders.has(top)) {
-        const subs = [...tree].filter(([k]) => k.startsWith(top + "/")).sort((a, b) => a[0].localeCompare(b[0]));
-        for (const [k, m] of subs) html += folderRow(root, k.split("/").slice(1).join("/"), m, 1, false);
-        const files = lib.filter((i) => i.root === root && i.folder === folder);
-        html += files.map((i) => rowHtml(i, 'data-act="item" style="--d:1"', `sub${isCur(i.id) ? " cur" : ""}`)).join("");
+    for (const root of [...new Set(lib.map((i) => i.root))].sort(coll.compare)) {
+      // a root's own files appear under "(root)", its folders at the top level as before
+      if (lib.some((i) => i.root === root && !i.folder)) {
+        const key = `${root}/`, open = openFolders.has(key);
+        html += folderRow(root, "", lib.filter((i) => i.root === root && !i.folder).length, 0, open);
+        if (open) html += lib.filter((i) => i.root === root && !i.folder).map((i) => withLead(rowHtml(i, 'data-act="item" style="--d:1"', `sub${isCur(i.id) ? " cur" : ""}`),
+          `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`)).join("");
+      }
+      for (const top of [...(kids.get(`${root}/`) || [])].sort(coll.compare)) {
+        const key = `${root}/${top}`, open = openFolders.has(key);
+        html += folderRow(root, top, count.get(key), 0, open);
+        if (open) html += branch(root, top, 1);
       }
     }
     main.innerHTML = html ? group(html) : '<div class="empty">Loading library…</div>';
@@ -830,12 +867,12 @@ function folderRow(root, folder, n, depth, open) {
     `<span class="th fold">${ic("folder")}</span>` +
     `<div class="meta"><div class="t">${esc(label)}</div><div class="s">${esc(root)} · ${n} items</div></div>` +
     `<div class="acts"><button class="ib" data-act="playFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Play">${ic("play")}</button>` +
-    `<button class="ib" data-act="shuffleFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Shuffle">${ic("shuffle")}</button></div>${depth ? "" : ic("chev", "chev")}</div>`;
+    `<button class="ib" data-act="shuffleFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Shuffle">${ic("shuffle")}</button></div>${ic("chev", "chev")}</div>`;
 }
 
 /** "＋ add to playlist" as the first thing in a row (left side, away from ▶︎ / 🔀). */
 const withLead = (html, button) => html.replace(/^(<div[^>]*>)/, `$1${button}`);
-const withActs = (html, acts) => html.replace(/<\/div><\/div>$/, `</div><div class="acts">${acts}</div></div>`);
+const withActs = (html, acts) => html.replace(/<\/div>$/, `<div class="acts">${acts}</div></div>`);
 const plMeta = (p) => [`${p.count} item${p.count === 1 ? "" : "s"}`, p.videos ? `${p.videos} video${p.videos === 1 ? "" : "s"}` : "", fmt(p.duration), p.missing ? `${p.missing} missing` : ""].filter(Boolean).join(" · ");
 
 function mosaic(p, items) {
@@ -857,6 +894,9 @@ function playlistDetailHtml(p) {
   let html = `<button class="pill back" data-act="closePl">${ic("back")} Playlists</button>` +
     `<div class="plhead">${mosaic(p, p.items.filter((i) => !i.missing).slice(0, 4))}<div><div class="eyebrow">Playlist</div><div class="name">${esc(p.name)}</div><div class="s">${esc(plMeta(p))}</div></div>` +
     `<div class="btns"><button class="pill primary" data-act="playPl" data-pl="${p.id}">${ic("play")} Play</button><button class="pill" data-act="shufflePl" data-pl="${p.id}">${ic("shuffle")} Shuffle</button>` +
+    `<button class="pill" data-act="sortPl">${ic("list")} Sort</button>` +
+    (dupCount(p) ? `<button class="pill" data-act="dedupPl">${ic("x")} Deduplicate (${dupCount(p)})</button>` : "") +
+    (plUndo && plUndo.id === p.id ? `<button class="pill" data-act="undoPl">${ic("back")} Undo ${esc(plUndo.what)}</button>` : "") +
     `<button class="pill" data-act="renamePl">${ic("pencil")} Rename</button>${p.missing ? `<button class="pill" data-act="pruneMissing">${ic("x")} Remove missing</button>` : ""}<button class="pill" data-act="deletePl">${ic("trash")} Delete</button></div></div>`;
   if (!n) return html + '<div class="empty">Empty. Add songs and videos with ＋ in Search, Folders and Videos.</div>';
   return html + group(p.items.map((it, i) => {
@@ -866,6 +906,43 @@ function playlistDetailHtml(p) {
     return withActs(row, `<button class="ib" data-act="moveUp" data-index="${i}" ${i === 0 ? "disabled" : ""} title="Move up">${ic("up")}</button>` +
       `<button class="ib" data-act="moveDown" data-index="${i}" ${i === n - 1 ? "disabled" : ""} title="Move down">${ic("down")}</button><button class="ib" data-act="removeAt" data-index="${i}" title="Remove">${ic("x")}</button>`);
   }).join(""));
+}
+
+const dupCount = (p) => p.items.length - new Set(p.items.map((i) => i.id)).size;
+const SORTS = {
+  title: ["Title (A–Z)", (i) => [i.title]],
+  artist: ["Artist, then title", (i) => [i.artist || "", i.title]],
+  album: ["Album, then track", (i) => [i.album || "", String(i.track || 0).padStart(4, "0"), i.title]],
+  folder: ["Folder, then track", (i) => [`${i.root || ""}/${i.folder || ""}`, String(i.track || 0).padStart(4, "0"), i.title]],
+  kind: ["Songs first, then videos", (i) => [i.kind === "video" ? "1" : "0", i.artist || "", i.title]],
+  reverse: ["Reverse the current order", null],
+};
+/** Sorted copy of the open playlist's items; missing files go to the end, ties keep their order. */
+function sortedItems(key) {
+  const items = openPl.items.slice();
+  if (key === "reverse") return items.reverse();
+  const k = SORTS[key][1], coll = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+  return items.map((it, n) => ({ it, n })).sort((a, b) => {
+    if (!!a.it.missing !== !!b.it.missing) return a.it.missing ? 1 : -1;
+    const x = a.it.missing ? [] : k(a.it), y = b.it.missing ? [] : k(b.it);
+    for (let j = 0; j < Math.max(x.length, y.length); j++) { const c = coll.compare(x[j] || "", y[j] || ""); if (c) return c; }
+    return a.n - b.n;
+  }).map((e) => e.it);
+}
+/** Save a sort / dedup and remember the previous order for one Undo. */
+async function rewritePl(items, what) {
+  plUndo = { id: openPl.id, items: openPl.items.map((i) => i.id), what };
+  await savePlItems(items.map((i) => i.id));
+}
+function sortSheet() {
+  openSheet(`<div class="st">Sort "${esc(openPl.name)}" by…</div><div class="list">` +
+    Object.entries(SORTS).map(([k, [label]]) => `<button class="opt" data-sort="${k}">${ic("list")}<span class="t" style="flex:1">${label}</span></button>`).join("") +
+    `</div><div class="note">Saves the new order. Undo brings the old order back.</div><button class="opt cancel" data-sort="cancel">Cancel</button>`,
+  (e) => {
+    const b = e.target.closest("[data-sort]"); if (!b) return;
+    closeSheet();
+    if (b.dataset.sort !== "cancel") rewritePl(sortedItems(b.dataset.sort), "sort").then(() => toast(`Sorted: ${SORTS[b.dataset.sort][0]}`));
+  });
 }
 
 async function savePlItems(items) {
@@ -956,6 +1033,12 @@ document.addEventListener("click", (e) => {
   else if (act === "playFrom") cmd("play_collection", { collection: "playlist", playlist: openPl.id, start_index: +b.dataset.index });
   else if (act === "renamePl") { const name = prompt("Rename playlist:", openPl.name); if (name && name.trim()) api("PUT", `/api/playlists/${openPl.id}`, { name }).then((p) => { openPl = p; loadPlaylists(); }); }
   else if (act === "deletePl") { if (confirm(`Delete playlist "${openPl.name}"? The songs themselves are not touched.`)) api("DELETE", `/api/playlists/${openPl.id}`).then(() => { openPl = null; loadPlaylists(); }); }
+  else if (act === "sortPl") sortSheet();
+  else if (act === "dedupPl") {
+    const seen = new Set(), n = dupCount(openPl);
+    rewritePl(openPl.items.filter((i) => !seen.has(i.id) && seen.add(i.id)), "deduplicate").then(() => toast(`Removed ${n} duplicate${n === 1 ? "" : "s"} (first copy kept)`));
+  }
+  else if (act === "undoPl" && plUndo && plUndo.id === openPl.id) { const ids = plUndo.items; plUndo = null; savePlItems(ids).then(() => toast("Previous order restored")); }
   else if (act === "pruneMissing") savePlItems(openPl.items.filter((it) => !it.missing).map((it) => it.id));
   else if (act === "moveUp" || act === "moveDown" || act === "removeAt") {
     const i = +b.dataset.index, ids = openPl.items.map((it) => it.id);
