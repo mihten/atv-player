@@ -20,11 +20,18 @@ struct NowPlayingView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let item = engine.current {
+                if item.isVideo {
+                    // Stays in place under the lyrics: the picture keeps being decoded, so leaving the lyrics shows
+                    // a clean picture at once (no decoder restart, no blocks until the next keyframe).
+                    VideoSurface(engine: engine).ignoresSafeArea()
+                    PictureCover().ignoresSafeArea()
+                }
                 if lyricsMode {
+                    if item.isVideo { Color.black.ignoresSafeArea() }  // the Classic backdrop is transparent
                     TVLyricsScreen(item: item, forward: forward, hints: overlay)
                         .ignoresSafeArea()
                 } else if item.isVideo {
-                    VideoSurface(engine: engine).ignoresSafeArea()
+                    EmptyView()
                 } else if theme.isClassic {
                     AudioScreen(item: item)
                 } else {
@@ -94,8 +101,8 @@ struct NowPlayingView: View {
         }
     }
 
-    /// With lyrics on, a video's picture track is switched off (nothing is decoded for a picture nobody sees; the
-    /// sound keeps playing); the lyrics of this and the next item are fetched.
+    /// Tells the engine the lyrics are up (on the Apple TV the picture track stays on under them); the lyrics of this
+    /// and the next item are fetched.
     private func syncLyrics() {
         engine.setLyricsCover(lyricsMode)
         guard lyricsMode else { return }

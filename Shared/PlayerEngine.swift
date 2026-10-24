@@ -289,9 +289,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         lyricsWatch?.cancel()
         settleTask?.cancel()
         pictureSettling = false
-        #if os(iOS)
         if item.isVideo { KeyframeStore.shared.prefetch(item) }
-        #endif
         tracksApplied = false
         endedSent = false
         isPlaying = false  // the next VLC event reports the real state for the new item
@@ -697,6 +695,14 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// How long the iPhone keeps decoding a music video's picture unseen after the lyrics view opens (fixed, no setting).
     private static let lyricsPictureGrace: TimeInterval = 60
 
+    /// Apple TV: the lyrics screen is drawn over the video and the picture track is never switched off for it (mains
+    /// power, so unseen decoding costs nothing that matters), so switching back never waits for a keyframe.
+    #if os(tvOS)
+    private static let pictureStaysOnUnderLyrics = true
+    #else
+    private static let pictureStaysOnUnderLyrics = false
+    #endif
+
     /// The lyrics view is on screen instead of the picture (or not any more). iPhone: the picture track stays on for the
     /// first `lyricsPictureGrace` seconds, so switching back to the video within that time shows a clean picture at once
     /// (a track switched on mid-stream is blocky until the next keyframe); after that it is switched off (no unseen
@@ -705,6 +711,16 @@ final class PlayerEngine: NSObject, ObservableObject {
         guard on != lyricsCover else { return }
         lyricsCover = on
         guard current?.isVideo == true else { return }
+        if Self.pictureStaysOnUnderLyrics {
+            if on {
+                log("lyrics view: picture track stays on under the lyrics (Apple TV), switching back is instant; \(envNote)")
+            } else if videoHidden {
+                if !(inBackground && PlayerSettings.keepVideoAudioInBackground) { showVideo() }
+            } else {
+                log("lyrics view closed: the picture track stayed on, nothing to restart; \(envNote)")
+            }
+            return
+        }
         if on {
             #if os(iOS)
             if !videoHidden {
@@ -746,6 +762,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             self.hideVideo()
         }
     }
+    #endif
 
     /// The picture track just came back mid-stream: the decoder has no reference picture until the next keyframe and the
     /// picture is blocky meanwhile. Cover it (the views show the artwork) until playback has passed that keyframe, using
@@ -780,7 +797,6 @@ final class PlayerEngine: NSObject, ObservableObject {
                             Date().timeIntervalSince(started)))
         }
     }
-    #endif
 
     private func endPictureCover(reason: String) {
         settleTask?.cancel()
@@ -811,9 +827,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         #endif
         log("foreground: video track back on; \(envNote)")
         checkPictureAfterSwitch()
-        #if os(iOS)
         coverUntilKeyframe()
-        #endif
     }
 
     /// Turning the picture track on mid-stream can start the decoder off a keyframe. Fixes tried so far made it worse:
@@ -976,7 +990,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         let subtitles = trackIDs(vlc.videoSubTitlesIndexes)
         if item.isVideo && audio.isEmpty { return }  // streams not known yet, retry on the next event
         tracksApplied = true
-        if item.isVideo, lyricsCover || (inBackground && PlayerSettings.keepVideoAudioInBackground) {
+        if item.isVideo, (lyricsCover && !Self.pictureStaysOnUnderLyrics)
+            || (inBackground && PlayerSettings.keepVideoAudioInBackground) {
             videoHidden = false  // new media: its video track is on again, switch it off
             hideVideo()
         }
