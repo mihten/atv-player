@@ -98,6 +98,7 @@ struct CustomEqualizerView: View {
                         Image(systemName: "slider.vertical.3").font(.system(size: 34))
                         Text("Load\npreset").font(.system(size: 20, weight: .semibold)).multilineTextAlignment(.center)
                     }
+                    .foregroundStyle(.white)
                     .frame(width: 100, height: 140)
                 }
                 .focused($focus, equals: .load)

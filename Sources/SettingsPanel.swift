@@ -59,7 +59,12 @@ struct SettingsPanel: View {
         }
         .frame(width: Self.size.width, height: Self.size.height)
         .fontDesign(theme.fontDesign)
-        .background(RoundedRectangle(cornerRadius: 36, style: .continuous).fill(.regularMaterial))
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 36, style: .continuous).fill(.thickMaterial)
+                RoundedRectangle(cornerRadius: 36, style: .continuous).fill(Color.black.opacity(0.45))
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
         .shadow(color: .black.opacity(0.5), radius: 40, y: 12)
         .focusSection()

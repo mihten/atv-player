@@ -199,8 +199,6 @@ struct NowPlayingSidebar: View {
                         }
                     }
                 }
-                Text("⏯ Play/Pause pauses or resumes · select the card to open the player")
-                    .font(.system(size: 18)).opacity(0.5).padding(.top, 10)
                 Spacer(minLength: 0)
             }
             .frame(width: 440, alignment: .leading)
