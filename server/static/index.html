@@ -287,6 +287,24 @@ html[data-look="aurora"] .vt:hover .va { box-shadow: 0 14px 34px color-mix(in sr
 .vt .va > .ic { width: 30%; height: 30%; }
 .vt .lead { position: absolute; left: 8px; top: 8px; z-index: 2; background: rgba(0,0,0,.45); border-color: rgba(255,255,255,.2); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); color: #fff; }
 .vt .t { margin-top: 8px; font-size: 14px; }
+/* select mode: checkboxes instead of ＋, bar at the bottom */
+.ib.ck { border-radius: 9px; width: 30px; height: 30px; margin: 3px; border: 2px solid rgba(255,255,255,.55); }
+.vt .ib.ck { border: 2px solid rgba(255,255,255,.9); }
+.ib.ck .ic { width: 17px; height: 17px; opacity: 0; }
+.ib.ck.on { background: var(--acc); border-color: transparent; color: #000; }
+.ib.ck.on .ic { opacity: 1; }
+.ib.ck.on:disabled { opacity: .45; }
+.vt .ib.ck.on { background: var(--acc); color: #000; }
+.row.picked, .vt.picked .va { outline: 2px solid color-mix(in srgb, var(--acc) 70%, transparent); outline-offset: -2px; }
+.vt.picked .va { outline-offset: 0; }
+#selbar { position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 9; max-width: 740px; margin: 0 auto; border-radius: 18px; padding: 9px 10px 9px 16px;
+  display: none; align-items: center; gap: 8px; background: rgba(20,20,20,.92); border: 1px solid color-mix(in srgb, var(--acc) 55%, transparent); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+#selbar .grow { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 480px) { #selbar [data-act=selClear] { display: none; } }
+body.selecting #selbar { display: flex; }
+body.selecting #mini { display: none; }
+body.selecting #toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+body.selecting main { padding-bottom: 70px; }
 .vt.cur .t { color: var(--acc); }
 /* playlists */
 .plgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; }
@@ -476,6 +494,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
 
 <div id="mini"><span class="th" id="miniArt"></span><div class="meta"><div class="t" id="miniTitle"></div><div class="s" id="miniSub"></div></div>
   <button class="tb" id="miniPP" data-cmd="toggle" title="Play / pause"></button><button class="tb" data-cmd="next" id="miniNext" title="Next"></button><div class="mbar"><div id="miniFill"></div></div></div>
+<div id="selbar"><span class="grow" id="selCount"></span><button class="pill" data-act="selClear">Clear</button><button class="pill primary" data-act="selAdd" id="selAddBtn">Add to playlist</button><button class="pill" data-act="selDone">Done</button></div>
 <div class="sheet" id="sheet"><div id="sheetBody"></div></div>
 <div id="toast"></div>
 
@@ -778,6 +797,7 @@ function filterPlaylistRows() {
 
 function render() {
   const main = $("main");
+  drawSelbar();
   if (tab === "search") {
     const q = query.trim().toLowerCase();
     let items = q || scope ? searchItems(q) : [];
@@ -791,7 +811,7 @@ function render() {
     if (matchMedia("(hover: hover)").matches || query || scope) { q2.focus(); q2.setSelectionRange(query.length, query.length); }
   } else if (tab === "videos") {
     const vids = lib.filter((i) => i.kind === "video").sort((a, b) => `${a.artist}${a.title}`.toLowerCase().localeCompare(`${b.artist}${b.title}`.toLowerCase()));
-    main.innerHTML = vids.length ? `<div class="h2">Music videos</div><div class="vgrid">` + vids.map(videoTile).join("") + `</div>` : '<div class="empty">No videos</div>';
+    main.innerHTML = vids.length ? selToggleHtml() + `<div class="h2">Music videos</div><div class="vgrid">` + vids.map((i) => videoTile(i, true)).join("") + `</div>` : '<div class="empty">No videos</div>';
   } else if (tab === "folders") {
     // Every folder level opens (files can sit several folders deep); counts include subfolders.
     const count = new Map(), kids = new Map();
@@ -811,8 +831,7 @@ function render() {
         out += folderRow(root, sub, count.get(key), depth, open);
         if (open) out += branch(root, sub, depth + 1);
       }
-      out += lib.filter((i) => i.root === root && (i.folder || "") === folder).map((i) => withLead(rowHtml(i, `data-act="item" style="--d:${depth}"`, `sub${isCur(i.id) ? " cur" : ""}`),
-        `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`)).join("");
+      out += lib.filter((i) => i.root === root && (i.folder || "") === folder).map(fileRow(depth)).join("");
       return out;
     };
     let html = "";
@@ -821,8 +840,7 @@ function render() {
       if (lib.some((i) => i.root === root && !i.folder)) {
         const key = `${root}/`, open = openFolders.has(key);
         html += folderRow(root, "", lib.filter((i) => i.root === root && !i.folder).length, 0, open);
-        if (open) html += lib.filter((i) => i.root === root && !i.folder).map((i) => withLead(rowHtml(i, 'data-act="item" style="--d:1"', `sub${isCur(i.id) ? " cur" : ""}`),
-          `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`)).join("");
+        if (open) html += lib.filter((i) => i.root === root && !i.folder).map(fileRow(1)).join("");
       }
       for (const top of [...(kids.get(`${root}/`) || [])].sort(coll.compare)) {
         const key = `${root}/${top}`, open = openFolders.has(key);
@@ -830,7 +848,7 @@ function render() {
         if (open) html += branch(root, top, 1);
       }
     }
-    main.innerHTML = html ? group(html) : '<div class="empty">Loading library…</div>';
+    main.innerHTML = html ? selToggleHtml() + group(html) : '<div class="empty">Loading library…</div>';
   } else if (tab === "playlists") {
     main.innerHTML = openPl ? playlistDetailHtml(openPl) : playlistListHtml();
     const f = $("plq");
@@ -844,10 +862,19 @@ function render() {
   }
 }
 
-/** A music-video tile (16:9 frame grab, ＋ on the left corner); click plays the videos starting here. */
-const videoTile = (i) => `<div class="vt${isCur(i.id) ? " cur" : ""}" data-act="video" data-id="${i.id}"><div class="va" style="--th:${thumbBg(i.id)}">${ic("film")}${i.art ? `<img loading="lazy" src="/art/${i.id}" alt="" onerror="this.remove()">` : ""}` +
-  `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button></div>` +
-  `<div class="t">${esc(i.title)}</div><div class="s">${esc(i.artist || "")}</div></div>`;
+/** A music-video tile (16:9 frame grab, ＋ on the left corner); click plays the videos starting here.
+    `selectable` (Videos tab): in select mode the ＋ is a checkbox and a click ticks the tile instead. */
+const videoTile = (i, selectable) => {
+  const s = selectable && selMode, on = s && sel.has(`i:${i.id}`);
+  return `<div class="vt${isCur(i.id) ? " cur" : ""}${on ? " picked" : ""}" data-act="${s ? "selItem" : "video"}" data-id="${i.id}"><div class="va" style="--th:${thumbBg(i.id)}">${ic("film")}${i.art ? `<img loading="lazy" src="/art/${i.id}" alt="" onerror="this.remove()">` : ""}` +
+    (s ? ck(on, `data-act="selItem" data-id="${i.id}"`, false) : `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`) + `</div>` +
+    `<div class="t">${esc(i.title)}</div><div class="s">${esc(i.artist || "")}</div></div>`;
+};
+/** A file row in Folders: ＋ / checkbox on the left; in select mode a click on the row ticks it. */
+const fileRow = (depth) => (i) => {
+  const on = selMode && sel.has(`i:${i.id}`), covered = selMode && !!coverOfItem(i);
+  return withLead(rowHtml(i, `data-act="${selMode ? (covered ? "noop" : "selItem") : "item"}" style="--d:${depth}"`, `sub${isCur(i.id) ? " cur" : ""}${on || covered ? " picked" : ""}`), itemLead(i));
+};
 
 /** Same order all day, new order tomorrow (so the home view changes without jumping on every redraw). */
 function dailyShuffle(arr) {
@@ -891,8 +918,10 @@ function homeHtml() {
 
 function folderRow(root, folder, n, depth, open) {
   const label = folder ? folder.split("/").pop() : `(${root})`;
-  return `<div class="row${depth ? " sub" : ""}${open ? " open" : ""}" data-act="toggleFolder" data-key="${esc(root + "/" + folder)}" style="--d:${depth}">` +
-    `<button class="ib lead" data-act="addFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Add folder to playlist">${ic("plus")}</button>` +
+  const on = selMode && sel.has(`f:${root}/${folder}`), covered = selMode && !!coverOfFolder(root, folder);
+  return `<div class="row${depth ? " sub" : ""}${open ? " open" : ""}${on || covered ? " picked" : ""}" data-act="toggleFolder" data-key="${esc(root + "/" + folder)}" style="--d:${depth}">` +
+    (selMode ? ck(on, `data-act="selFolder" data-root="${esc(root)}" data-folder="${esc(folder)}"`, covered)
+      : `<button class="ib lead" data-act="addFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Add folder to playlist">${ic("plus")}</button>`) +
     `<span class="th fold">${ic("folder")}</span>` +
     `<div class="meta"><div class="t">${esc(label)}</div><div class="s">${esc(root)} · ${n} items</div></div>` +
     `<div class="acts"><button class="ib" data-act="searchFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Search in this folder">${ic("search")}</button>` +
@@ -902,6 +931,56 @@ function folderRow(root, folder, n, depth, open) {
 
 /** "＋ add to playlist" as the first thing in a row (left side, away from ▶︎ / 🔀). */
 const withLead = (html, button) => html.replace(/^(<div[^>]*>)/, `$1${button}`);
+
+/* ── Select mode (Folders, Videos): checkboxes instead of ＋, one "Add to playlist" for all of them ──
+   sel keeps the picks in click order: "f:<root>/<folder>" → {root, folder} (a folder incl. subfolders; the "(root)" row = that
+   root's own files only, as listed) and "i:<id>" → {id}. A picked folder covers what is inside it: those rows show ticked and
+   greyed, and picking a folder drops picks it now covers, so nothing is added twice. */
+let selMode = false;
+const sel = new Map();
+const inFolder = (root, folder, i) => i.root === root && (folder ? i.folder === folder || (i.folder || "").startsWith(folder + "/") : !i.folder);
+/** The picked folder that covers this item / folder (strictly above it), if any. */
+const coverOfItem = (i) => { for (const [k, v] of sel) if (k[0] === "f" && inFolder(v.root, v.folder, i)) return k; return null; };
+const coverOfFolder = (root, folder) => { for (const [k, v] of sel) if (k[0] === "f" && v.root === root && v.folder && folder !== v.folder && folder.startsWith(v.folder + "/")) return k; return null; };
+/** Library ids of all picks, in pick order, each folder in library order (= what the server's folder add gives), no repeats. */
+function selIds() {
+  const out = [], seen = new Set(), push = (id) => { if (!seen.has(id)) { seen.add(id); out.push(id); } };
+  for (const [k, v] of sel) {
+    if (k[0] === "i") { if (byId.has(v.id)) push(v.id); }
+    else for (const i of lib) if (inFolder(v.root, v.folder, i)) push(i.id);
+  }
+  return out;
+}
+const ck = (on, attrs, covered) => `<button class="ib lead ck${on || covered ? " on" : ""}" ${attrs} ${covered ? "disabled" : ""} title="${covered ? "In a selected folder" : on ? "Unselect" : "Select"}">${ic("check")}</button>`;
+/** ＋ (normal) or a checkbox (select mode) for a file row / video tile. */
+const itemLead = (i) => selMode ? ck(sel.has(`i:${i.id}`), `data-act="selItem" data-id="${i.id}"`, !!coverOfItem(i))
+  : `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`;
+const selToggleHtml = () => `<div class="toolbar"><span class="grow"></span>` +
+  `<button class="pill${selMode ? " primary" : ""}" data-act="${selMode ? "selDone" : "selStart"}">${ic("check")} ${selMode ? "Done" : "Select"}</button></div>`;
+function drawSelbar() {
+  const on = selMode && (tab === "folders" || tab === "videos");
+  document.body.classList.toggle("selecting", on);
+  if (!on) return;
+  const n = selIds().length;
+  $("selCount").textContent = n ? `${n} selected` : "None selected";
+  $("selAddBtn").disabled = !n;
+}
+function toggleSel(key, val) {
+  if (sel.has(key)) sel.delete(key);
+  else {
+    sel.set(key, val);
+    if (key[0] === "f") for (const [k, v] of [...sel]) {  // drop picks the new folder now covers
+      if (k === key) continue;
+      if (k[0] === "i" ? inFolder(val.root, val.folder, byId.get(v.id) || {}) : (val.folder && v.root === val.root && v.folder.startsWith(val.folder + "/"))) sel.delete(k);
+    }
+  }
+  render();
+}
+const endSelect = () => { selMode = false; sel.clear(); render(); };
+function addSelected() {
+  const ids = selIds(); if (!ids.length) return;
+  addToPlaylist({ ids }, `${ids.length} selected item${ids.length === 1 ? "" : "s"}`, endSelect);
+}
 const withActs = (html, acts) => html.replace(/<\/div>$/, `<div class="acts">${acts}</div></div>`);
 const plMeta = (p) => [`${p.count} item${p.count === 1 ? "" : "s"}`, p.videos ? `${p.videos} video${p.videos === 1 ? "" : "s"}` : "", fmt(p.duration), p.missing ? `${p.missing} missing` : ""].filter(Boolean).join(" · ");
 
@@ -992,8 +1071,8 @@ function openSheet(html, onclick) {
 }
 const closeSheet = () => $("sheet").classList.remove("show");
 
-/** Sheet: pick a playlist (or create one) and add `source` ({ids}, {folder}, {queue}) to it. */
-function addToPlaylist(source, label) {
+/** Sheet: pick a playlist (or create one) and add `source` ({ids}, {folder}, {queue}) to it; `done` runs after a successful add. */
+function addToPlaylist(source, label, done) {
   openSheet(`<div class="st">Add ${esc(label)} to…</div><div class="list">` +
     playlists.map((p) => `<button class="opt" data-pl="${p.id}">${ic("list")}<span class="t" style="flex:1">${esc(p.name)}</span><span class="s">${p.count}</span></button>`).join("") +
     `</div><button class="opt" data-pl="new">${ic("plus")} New playlist…</button><button class="opt cancel" data-pl="cancel">Cancel</button>`,
@@ -1001,9 +1080,10 @@ function addToPlaylist(source, label) {
     const b = e.target.closest("[data-pl]"); if (!b) return;
     closeSheet();
     if (b.dataset.pl === "cancel") return;
-    if (b.dataset.pl === "new") { await newPlaylist(source); return; }
+    if (b.dataset.pl === "new") { if (await newPlaylist(source) && done) done(); return; }
     const r = await api("POST", `/api/playlists/${b.dataset.pl}/items`, source);
     toast(`Added ${r.added} to "${r.playlist.name}"`);
+    if (done) done();
   });
 }
 
@@ -1035,6 +1115,7 @@ function lookSheet() {
   });
 }
 $("sheet").onclick = (e) => { if (e.target === $("sheet")) closeSheet(); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && selMode && !$("sheet").classList.contains("show")) endSelect(); });
 
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-cmd],[data-tab],[data-coll],[data-act]"); if (!b || b.closest("#sheet")) return;
@@ -1053,6 +1134,12 @@ document.addEventListener("click", (e) => {
   else if (act === "toggleFolder") { const k = b.dataset.key; openFolders.has(k) ? openFolders.delete(k) : openFolders.add(k); render(); }
   else if (act === "addFolder") addToPlaylist({ folder: { root: b.dataset.root, folder: b.dataset.folder, recursive: true } }, `folder "${b.dataset.folder || b.dataset.root}" (incl. subfolders)`);
   else if (act === "addOne") { const it = byId.get(+b.dataset.id); addToPlaylist({ ids: [it.id] }, `"${it.title}"`); }
+  else if (act === "selStart") { selMode = true; render(); }
+  else if (act === "selDone") endSelect();
+  else if (act === "selClear") { sel.clear(); render(); }
+  else if (act === "selAdd") addSelected();
+  else if (act === "selItem") toggleSel(`i:${+b.dataset.id}`, { id: +b.dataset.id });
+  else if (act === "selFolder") toggleSel(`f:${b.dataset.root}/${b.dataset.folder}`, { root: b.dataset.root, folder: b.dataset.folder });
   else if (act === "addResults") {
     const q = query.trim().toLowerCase();
     const ids = lib.filter((i) => `${i.title} ${i.artist || ""} ${i.album || ""} ${i.folder}`.toLowerCase().includes(q)).slice(0, 300).map((i) => i.id);
