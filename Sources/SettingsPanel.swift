@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Apple TV Settings: a panel in the lower-left corner over the current screen (not a full-screen page). Every page and
+/// Apple TV Settings (since 0.18.19): a panel in the lower-left corner over the current screen (not a full-screen page). Every page and
 /// picker opens inside the panel; Back goes one level up and closes the panel from its first page.
 enum SettingsRoute: Hashable {
     case theme, server, sound, playback, lyrics, about, equalizer
