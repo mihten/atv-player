@@ -6,7 +6,7 @@ enum PhoneDemo {
         switch DemoRoute.screen {
         case "playlists", "playlist": 1
         case "queue": 2
-        case "settings", "eq", "theme", "server", "sound", "playback", "lyrics": 3
+        case "settings", "eq", "theme", "server", "sound", "playback", "lyrics", "about": 3
         default: 0
         }
     }
@@ -23,6 +23,7 @@ enum PhoneDemo {
         case "sound": PhoneSoundSettingsView()
         case "playback": PhonePlaybackSettingsView()
         case "lyrics": PhoneLyricsSettingsView()
+        case "about": PhoneAboutView()
         default: EmptyView()
         }
     }

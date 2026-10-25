@@ -32,7 +32,7 @@ struct PhoneRootView: View {
             NavigationStack {
                 PhoneSettingsView()
                     .demoPush("eq").demoPush("theme").demoPush("server")
-                    .demoPush("sound").demoPush("playback").demoPush("lyrics")
+                    .demoPush("sound").demoPush("playback").demoPush("lyrics").demoPush("about")
             }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(3)
@@ -144,9 +144,6 @@ struct LibraryTab: View {
                         Button { shuffle("music") } label: { Label("Shuffle music", systemImage: "music.note") }
                         Button { shuffle("videos") } label: { Label("Shuffle music videos", systemImage: "film") }
                     }
-                    Section {
-                        ConnectionStatusRow()
-                    }
                 } else {
                     SearchResults(query: query).themedRow()
                 }
@@ -156,18 +153,6 @@ struct LibraryTab: View {
 
     private func shuffle(_ name: String) {
         connection.command("play_collection", ["collection": name, "shuffle": true])
-    }
-}
-
-struct ConnectionStatusRow: View {
-    @EnvironmentObject var connection: ServerConnection
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(connection.connected ? "Server connected" : "Connecting to \(Config.remoteAddress)…")
-            Text("This iPhone has its own queue; the Apple TV's is separate.")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
     }
 }
 

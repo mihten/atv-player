@@ -7,15 +7,30 @@ struct ContentView: View {
     @Environment(\.appTheme) private var theme
     @State private var showPlayer = false
     @State private var demoPush = false
-
-    private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        return "Version \(version) (build \(build))"
-    }
+    @State private var settingsOpen = false
+    @State private var settingsStart: SettingsRoute?
 
     var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            menus
+                .disabled(settingsOpen)  // focus stays in the panel
+            if settingsOpen {
+                Color.black.opacity(0.4).ignoresSafeArea()
+                    .transition(.opacity)
+                SettingsPanel(start: settingsStart) {
+                    settingsOpen = false
+                    settingsStart = nil
+                }
+                .padding(.leading, 60)
+                .padding(.bottom, 50)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: settingsOpen)
+        .environment(\.openSettings, { settingsOpen = true })
+    }
+
+    private var menus: some View {
         NavigationStack {
             Group {
                 if theme.isClassic {
@@ -31,6 +46,9 @@ struct ContentView: View {
                 DemoRoute.whenLoaded(engine) { showPlayer = true }
             } else if DemoRoute.is("open-player") {
                 DemoRoute.whenLoaded(engine, after: 5) { showPlayer = true }
+            } else if let route = SettingsRoute.demo(DemoRoute.screen) {
+                settingsStart = route
+                settingsOpen = true
             } else if DemoDestination.pushes {
                 demoPush = true
             }
@@ -71,9 +89,7 @@ struct ContentView: View {
                 } label: {
                     Label("Music videos", systemImage: "play.rectangle")
                 }
-                NavigationLink {
-                    SettingsView()
-                } label: {
+                Button { settingsOpen = true } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
@@ -87,14 +103,6 @@ struct ContentView: View {
                 Button { shuffle("videos") } label: {
                     Label("Shuffle music videos", systemImage: "film")
                 }
-            }
-            Section {
-                Text(connection.connected ? "Server connected" : "Connecting to \(Config.remoteAddress)…")
-                    .foregroundStyle(.secondary)
-                Text("Phone/PC remote: \(Config.remoteAddress)")
-                    .foregroundStyle(.secondary)
-            } footer: {
-                Text(appVersion)
             }
         }
         .withNowPlaying()

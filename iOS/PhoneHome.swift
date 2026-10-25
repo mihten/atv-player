@@ -28,12 +28,6 @@ struct PhoneHome: View {
                 if !videos.isEmpty {
                     shelf("Music videos") { videoShelf }
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(connection.connected ? "Connected to \(Config.remoteAddress)" : "Connecting to \(Config.remoteAddress)…")
-                    Text("This iPhone has its own queue; the Apple TV's is separate.")
-                }
-                .font(theme.font(12))
-                .opacity(0.5)
             }
             .padding(.horizontal, 18)
             .padding(.top, 4)

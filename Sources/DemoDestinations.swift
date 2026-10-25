@@ -9,13 +9,6 @@ struct DemoDestination: View {
         case "playlist": PlaylistView(playlistID: 1, title: "Playlist")
         case "folders": FolderRootsView()
         case "folder": FolderView(root: "music", folder: "Neon Harbor/Midnight Ferries", title: "Midnight Ferries")
-        case "settings": SettingsView()
-        case "theme": ThemeSettingsView()
-        case "server": ServerSettingsView()
-        case "sound": SoundSettingsView()
-        case "playback": PlaybackSettingsView()
-        case "lyrics": LyricsSettingsView()
-        case "eq": CustomEqualizerView()
         default: EmptyView()
         }
     }
@@ -23,6 +16,6 @@ struct DemoDestination: View {
     /// Routes that push a screen on top of the main menu.
     static var pushes: Bool {
         guard let screen = DemoRoute.screen else { return false }
-        return !["home", "player", "open-player"].contains(screen)
+        return !["home", "player", "open-player"].contains(screen) && SettingsRoute.demo(screen) == nil
     }
 }

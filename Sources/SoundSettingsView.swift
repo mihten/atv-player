@@ -18,8 +18,6 @@ struct SoundSettingsView: View {
                 }
             } header: {
                 Text("Loudness")
-            } footer: {
-                Text("Raise quiet tracks lifts songs and videos that were recorded much quieter than normal music (about −14 LUFS), as far as they can go without clipping (at most +8 dB). Level all tracks also lowers loud ones, so everything plays at a similar volume. The server measures each file once; files it has not measured yet play unchanged.")
             }
             Section {
                 Picker("Equalizer", selection: $preset) {
@@ -43,8 +41,6 @@ struct SoundSettingsView: View {
                 }
             } header: {
                 Text("Equalizer")
-            } footer: {
-                Text("10-band graphic equalizer. In the custom editor, Load preset (far left) starts from any built-in preset.")
             }
             Section {
                 Picker("Stereo widener", selection: $widen) {
@@ -55,15 +51,11 @@ struct SoundSettingsView: View {
                 }
             } header: {
                 Text("Stereo widener")
-            } footer: {
-                Text("Only affects ATV Player. Meant for the soundbar/speakers: it widens the stereo image there, but on headphones it sounds hollow. With the equalizer, widener and loudness off, the sound is not processed at all. Keep the soundbar on Standard / flat. A song or video that is playing restarts at the same position when these change.")
             }
         }
         .pickerStyle(.navigationLink)
-        .font(.system(size: 32))
-        .frame(width: 1000)
-        .frame(maxWidth: .infinity)
-        .themedScreen(intensity: 0.55)
+        .font(.system(size: 30))
+        .environment(\.defaultMinListRowHeight, 66)
         .navigationTitle("Sound")
         .onChange(of: "\(preset)|\(widen)|\(loudness)") {
             engine.applySettings()
@@ -94,19 +86,19 @@ struct CustomEqualizerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 40) {
-            Text("◀ ▶ choose band    ▲ ▼ ±1 dB    ◀ from Pre = Load preset    Back = save and apply")
-                .font(.system(size: 26))
+        VStack(spacing: 24) {
+            Text("◀ ▶ band    ▲ ▼ ±1 dB    ◀ from Pre = presets    Back = save")
+                .font(.system(size: 22))
                 .foregroundStyle(.secondary)
-            HStack(alignment: .center, spacing: 40) {
+            HStack(alignment: .center, spacing: 20) {
                 Button {
                     showPresets = true
                 } label: {
-                    VStack(spacing: 12) {
-                        Image(systemName: "slider.vertical.3").font(.system(size: 44))
-                        Text("Load\npreset").font(.system(size: 26, weight: .semibold)).multilineTextAlignment(.center)
+                    VStack(spacing: 10) {
+                        Image(systemName: "slider.vertical.3").font(.system(size: 34))
+                        Text("Load\npreset").font(.system(size: 20, weight: .semibold)).multilineTextAlignment(.center)
                     }
-                    .frame(width: 170, height: 170)
+                    .frame(width: 100, height: 140)
                 }
                 .focused($focus, equals: .load)
                 // tvOS moves focus to a focusable neighbour BEFORE onMoveCommand sees the press, so an
@@ -114,14 +106,14 @@ struct CustomEqualizerView: View {
                 // (leftmost) is selected or it already has focus; disabled = unreachable (seen on the
                 // TV in build 11), so ◀ on other bands reaches onMoveCommand again.
                 .disabled(focus == .bands && selected != 0)
-                HStack(alignment: .bottom, spacing: 26) {
+                HStack(alignment: .bottom, spacing: 10) {
                     ForEach(values.indices, id: \.self) { i in
                         BandColumn(label: i < labels.count ? labels[i] : "", value: values[i], range: range,
                                    selected: i == selected, focused: focus == .bands)
                     }
                 }
-                .padding(40)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                .padding(20)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
                 .focusable()
                 .focusEffectDisabled()
                 .focused($focus, equals: .bands)
@@ -137,12 +129,11 @@ struct CustomEqualizerView: View {
                     }
                 }
             }
-            Text(loadedFrom.map { "Started from \($0) (rounded to 1 dB steps)" } ?? " ")
-                .font(.system(size: 22))
+            Text(loadedFrom.map { "Started from \($0)" } ?? " ")
+                .font(.system(size: 20))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .themedScreen(intensity: 0.55)
         .navigationTitle("Custom equalizer")
         // A pushed full-screen list like the other pickers in Settings. A .sheet is a fixed-size card on
         // tvOS and clipped the list (build 19, user's photo).
@@ -179,7 +170,7 @@ struct CustomEqualizerView: View {
 }
 
 /// Built-in curves to start the custom equalizer from: the app's own presets, then VLC's (Flat first).
-/// Pushed full screen, laid out like Settings → Sound.
+/// Opens inside the Settings panel, laid out like Settings → Sound.
 struct PresetPickerList: View {
     let pick: (String) -> Void
 
@@ -198,14 +189,9 @@ struct PresetPickerList: View {
                 }
             } header: {
                 Text("VLC")
-            } footer: {
-                Text("The bands are filled in from the preset (rounded to 1 dB). Nothing is applied until you leave the editor with Back.")
             }
         }
-        .font(.system(size: 32))
-        .frame(width: 1000)
-        .frame(maxWidth: .infinity)
-        .themedScreen(intensity: 0.55)
+        .font(.system(size: 30))
         .navigationTitle("Load preset")
     }
 }
@@ -218,25 +204,25 @@ struct BandColumn: View {
     let focused: Bool
 
     var body: some View {
-        let height: CGFloat = 380
+        let height: CGFloat = 300
         let half = height / 2
         let barHeight = CGFloat(abs(value) / range) * half
         VStack(spacing: 12) {
             Text(value > 0 ? "+\(Int(value))" : "\(Int(value))")
-                .font(.system(size: 24, weight: selected ? .bold : .regular))
+                .font(.system(size: 20, weight: selected ? .bold : .regular))
             ZStack {
-                RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)).frame(width: 46, height: height)
-                Rectangle().fill(.white.opacity(0.35)).frame(width: 46, height: 2)
+                RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.08)).frame(width: 40, height: height)
+                Rectangle().fill(.white.opacity(0.35)).frame(width: 40, height: 2)
                 RoundedRectangle(cornerRadius: 6)
                     .fill(selected && focused ? Color.accentColor : .white.opacity(0.6))
-                    .frame(width: 46, height: max(barHeight, 3))
+                    .frame(width: 40, height: max(barHeight, 3))
                     .offset(y: value >= 0 ? -barHeight / 2 : barHeight / 2)
             }
             .frame(height: height)
             Text(label)
-                .font(.system(size: 22, weight: selected ? .bold : .regular))
+                .font(.system(size: 18, weight: selected ? .bold : .regular))
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 4)
         .padding(.vertical, 10)
         .background(selected ? Color.white.opacity(focused ? 0.18 : 0.08) : .clear,
                     in: RoundedRectangle(cornerRadius: 12))

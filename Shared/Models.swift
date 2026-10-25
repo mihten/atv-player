@@ -90,6 +90,7 @@ struct SessionState: Codable {
     let current: MediaItem?
     let upcoming: [MediaItem]?
     let players: Int?
+    let version: String?
 }
 
 /// Every server push uses this one shape; unused fields are nil.

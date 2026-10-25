@@ -7,6 +7,7 @@ struct HomeView: View {
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.appTheme) private var theme
+    @Environment(\.openSettings) private var openSettings
     @State private var videos: [MediaItem] = []
     @State private var playlists: [PlaylistInfo] = []
     @State private var covers: [Int: [MediaItem]] = [:]  // playlist id → first items, for the mosaic
@@ -22,7 +23,6 @@ struct HomeView: View {
                 if !playlists.isEmpty { shelf("Playlists") { playlistCards } }
                 shelf("Play") { playTiles }
                 if !videos.isEmpty { shelf("Music videos") { videoPosters } }
-                footer
             }
             .padding(.horizontal, 80)
             .padding(.top, 40)
@@ -145,7 +145,7 @@ struct HomeView: View {
             NavigationLink { VideoListView() } label: {
                 BrowseTileLabel(title: "Music videos", symbol: "play.rectangle", size: size)
             }
-            NavigationLink { SettingsView() } label: {
+            Button { openSettings() } label: {
                 BrowseTileLabel(title: "Settings", symbol: "gearshape", size: size)
             }
         }
@@ -184,14 +184,6 @@ struct HomeView: View {
             .padding(.vertical, 24)
         }
         .scrollClipDisabled()
-    }
-
-    private var footer: some View {
-        let info = Bundle.main.infoDictionary
-        let version = "Version \(info?["CFBundleShortVersionString"] as? String ?? "?") (build \(info?["CFBundleVersion"] as? String ?? "?"))"
-        return Text("\(version)  ·  Phone/PC remote: \(Config.remoteAddress)  ·  ⏯ pauses or resumes anywhere")
-            .font(theme.font(20))
-            .opacity(0.45)
     }
 
     // MARK: - Data

@@ -1,7 +1,7 @@
 import SwiftUI
 import MobileVLCKit
 
-/// iPhone Settings: one row per page (Theme, Server, Sound, Playback, Lyrics). Same keys as the Apple TV
+/// iPhone Settings: one row per page (Theme, Server, Sound, Playback, Lyrics, About). Same keys as the Apple TV
 /// app (PlayerSettings / SoundSettings), stored on the phone.
 struct PhoneSettingsView: View {
     @EnvironmentObject var locator: ServerLocator
@@ -12,11 +12,6 @@ struct PhoneSettingsView: View {
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
-
-    private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        return "Version \(info?["CFBundleShortVersionString"] as? String ?? "?") (build \(info?["CFBundleVersion"] as? String ?? "?"))"
-    }
 
     var body: some View {
         Form {
@@ -30,7 +25,7 @@ struct PhoneSettingsView: View {
             .themedRow()
 
             Section {
-                Text(appVersion).foregroundStyle(.secondary)
+                row("About", "info.circle", AppVersion.short) { PhoneAboutView() }
             }
             .themedRow()
         }
@@ -92,8 +87,6 @@ struct PhoneThemeSettingsView: View {
                 }
                 .sensoryFeedback(.selection, trigger: themeRaw)
                 Toggle("Moving background and spinning record", isOn: $motion)
-            } footer: {
-                Text((AppTheme(rawValue: themeRaw) ?? .aurora).tagline + ".")
             }
             .themedRow()
         }
@@ -139,8 +132,6 @@ struct PhoneServerSettingsView: View {
                     .foregroundStyle(addressInvalid ? .red : .secondary)
             } header: {
                 Text("Home network")
-            } footer: {
-                Text("Leave empty to find the server automatically on the Wi-Fi (Bonjour). Type an address (e.g. 10.0.0.5 or 10.0.0.5:8080) only if it is not found.")
             }
             .themedRow()
 
@@ -180,8 +171,6 @@ struct PhoneServerSettingsView: View {
                 LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
             } header: {
                 Text("Away from home")
-            } footer: {
-                Text("Used when the home server does not answer (mobile data, other Wi-Fi). The app goes back to the home network by itself. Audio only plays a music video as sound and uses far less data; Audio + video streams the whole video file, which can be very large. Leave the address empty to turn this off.")
             }
             .themedRow()
         }
@@ -208,8 +197,6 @@ struct PhoneSoundSettingsView: View {
                         Text(mode.name).tag(mode.rawValue)
                     }
                 }
-            } footer: {
-                Text("Raise quiet tracks lifts songs and videos that were recorded much quieter than normal music (about −14 LUFS), as far as they can go without clipping (at most +8 dB). Level all tracks also lowers loud ones, so everything plays at a similar volume. The server measures each file once; files it has not measured yet play unchanged.")
             }
             .themedRow()
             Section {
@@ -220,8 +207,6 @@ struct PhoneSoundSettingsView: View {
                     Text("Custom").tag("custom")
                 }
                 NavigationLink("Edit custom equalizer") { PhoneEqualizerView() }
-            } footer: {
-                Text("10-band graphic equalizer. The custom editor can start from any built-in preset (Load preset).")
             }
             .themedRow()
             Section {
@@ -231,8 +216,6 @@ struct PhoneSoundSettingsView: View {
                     Text("Normal").tag(2)
                     Text("Strong").tag(3)
                 }
-            } footer: {
-                Text("Widens the stereo image on speakers; on headphones it sounds hollow.")
             }
             .themedRow()
         }
@@ -257,8 +240,6 @@ struct PhonePlaybackSettingsView: View {
                 Toggle("Music keeps playing in the background", isOn: $keepMusic)
                 Toggle("Music videos keep playing as audio", isOn: $keepVideoAudio)
                 Toggle("Fast seek", isOn: $fastSeek)
-            } footer: {
-                Text("Background = Home button or locked screen. With the second switch on, a music video continues as audio and its picture is back when you return; off = it pauses. Fast seek jumps to the nearest keyframe so video does not stutter after a jump.")
             }
             .themedRow()
         }
@@ -294,8 +275,6 @@ struct PhoneLyricsSettingsView: View {
                     Text("English").tag("eng")
                     Text("Croatian").tag("hrv")
                 }
-            } footer: {
-                Text("Default shows the track the file marks as default. English or Croatian picks that language when the video has it.")
             }
             .themedRow()
             Section("Style") {
@@ -375,8 +354,7 @@ struct PhoneEqualizerView: View {
                     }
                 }
             } footer: {
-                Text((loadedFrom.map { "Started from \($0) (rounded to 1 dB). " } ?? "")
-                     + "Preamp 0 dB = same loudness as the equalizer off; its maximum is +8 dB. Saved and applied when you go back.")
+                if let loadedFrom { Text("Started from \(loadedFrom)") }
             }
             .themedRow()
             Section {
@@ -425,5 +403,47 @@ struct PhoneEqualizerView: View {
         values = [pre.rounded()] + bands.map { $0.rounded() }
         changed = true
         loadedFrom = SoundSettings.presetName(tag)
+    }
+}
+
+enum AppVersion {
+    static var short: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?" }
+    static var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?" }
+}
+
+/// Settings → About: what the app is, where its server is. The explanations that used to sit under the home screen
+/// and the settings live here, once.
+struct PhoneAboutView: View {
+    @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
+
+    var body: some View {
+        Form {
+            Section("ATV Player") {
+                LabeledContent("Version", value: "\(AppVersion.short) (build \(AppVersion.build))")
+                LabeledContent("Plays", value: "Songs and music videos from your own server")
+            }
+            .themedRow()
+            Section("Server") {
+                LabeledContent("Address", value: Config.remoteAddress)
+                LabeledContent("Status", value: connection.connected
+                               ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
+                LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
+                LabeledContent("Web remote", value: Config.remoteAddress)
+            }
+            .themedRow()
+            Section("Good to know") {
+                Text("This iPhone has its own queue; the Apple TV's is separate.")
+                Text("Loudness: the server measures each file once; new files play unchanged until then.")
+                Text("The stereo widener is meant for speakers; on headphones it sounds hollow.")
+                Text("Away from home, Audio only plays music videos as sound and uses far less data.")
+                Text("Fast seek jumps to the nearest keyframe, so a jump can land a few seconds off.")
+            }
+            .font(.footnote)
+            .themedRow()
+        }
+        .phoneThemed()
+        .navigationTitle("About")
+        .withMiniPlayer()
     }
 }

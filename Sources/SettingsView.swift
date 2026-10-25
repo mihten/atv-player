@@ -1,123 +1,8 @@
 import SwiftUI
 import TVVLCKit
 
-struct SettingsView: View {
-    @EnvironmentObject var engine: PlayerEngine
-    @EnvironmentObject var locator: ServerLocator
-
-    @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
-    @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
-    @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
-    @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
-    @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
-    @AppStorage(SoundSettings.widenKey) private var widen = 0
-    @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
-    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
-
-    /// The Now Playing card is disabled (= not focusable, proven on the TV in build 11) while the
-    /// screen opens, so tvOS puts the initial focus on the first setting; then it is enabled and ◀
-    /// reaches it. defaultFocus/focused on the List did NOT work (build 12).
-    @State private var panelReady = false
-    @Namespace private var settingsScope
-
-    var body: some View {
-        // tvOS Settings layout: left half shows the title and Now Playing (or a big symbol), rows on
-        // the right half. No navigation title: tvOS centres it and the list scrolls under it.
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Settings")
-                    .font(.system(size: 64, weight: .bold))
-                if engine.current != nil {
-                    NowPlayingSidebar(enabled: panelReady)
-                } else {
-                    VStack(spacing: 30) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 300, weight: .regular))
-                            .foregroundStyle(.secondary)
-                        Text("ATV Player")
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 60)
-                }
-            }
-            // Title left-aligned with the card/symbol below it, the column centred in the left half.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            settingsList
-                .frame(width: 960)
-                .padding(.trailing, 60)
-                .focusSection()
-        }
-        .focusScope(settingsScope)
-        .themedScreen(intensity: 0.55)
-        .toolbar(.hidden, for: .navigationBar)
-        .onAppear {
-            panelReady = false
-            Task {
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                panelReady = true
-            }
-        }
-        .onPlayPauseCommand {
-            if engine.current != nil { engine.togglePlay(source: "menu") }
-        }
-    }
-
-    /// One row per settings page, "Name ........ current value >", like the tvOS Settings app.
-    private var settingsList: some View {
-        List {
-            Section {
-                row("Theme", "paintpalette", (AppTheme(rawValue: themeRaw) ?? .aurora).name) { ThemeSettingsView() }
-                    .prefersDefaultFocus(true, in: settingsScope)
-                row("Server", "server.rack", locator.isManual ? Config.remoteAddress : "Automatic") { ServerSettingsView() }
-                row("Sound", "speaker.wave.2", soundSummary) { SoundSettingsView() }
-                row("Playback", "play.circle", "\(seekBack) s / \(seekForward) s") { PlaybackSettingsView() }
-                row("Lyrics", "captions.bubble", lyricsSummary) { LyricsSettingsView() }
-            } footer: {
-                Text(appVersion)
-            }
-        }
-        .font(.system(size: 34))
-        .environment(\.defaultMinListRowHeight, 78)
-    }
-
-    private func row<Destination: View>(_ title: String, _ symbol: String, _ value: String,
-                                        @ViewBuilder destination: @escaping () -> Destination) -> some View {
-        NavigationLink {
-            destination()
-        } label: {
-            HStack(spacing: 24) {
-                Image(systemName: symbol)
-                    .frame(width: 48)
-                Text(title)
-                Spacer()
-                Text(value).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-    }
-
-    private var soundSummary: String {
-        _ = eqPreset; _ = widen; _ = loudness  // refresh when any changes
-        return SoundSettings.summary
-    }
-
-    private var lyricsSummary: String {
-        guard subsOn else { return "Off" }
-        switch subLang {
-        case "eng": return "English"
-        case "hrv": return "Croatian"
-        default: return "On"
-        }
-    }
-
-    private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        return "Version \(info?["CFBundleShortVersionString"] as? String ?? "?") (build \(info?["CFBundleVersion"] as? String ?? "?"))"
-    }
-}
-
-/// Layout shared by the Settings sub-pages (same as Sound): a centred 1000 pt list on the themed
-/// background, pickers as "Name .... Value >" rows that open their own list.
+/// Layout shared by the Settings sub-pages inside the Settings panel: a list, pickers as "Name .... Value >" rows
+/// that open their own list in the panel.
 struct SettingsPage<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -125,10 +10,8 @@ struct SettingsPage<Content: View>: View {
     var body: some View {
         List { content }
             .pickerStyle(.navigationLink)
-            .font(.system(size: 32))
-            .frame(width: 1000)
-            .frame(maxWidth: .infinity)
-            .themedScreen(intensity: 0.55)
+            .font(.system(size: 30))
+            .environment(\.defaultMinListRowHeight, 66)
             .navigationTitle(title)
     }
 }
@@ -153,8 +36,6 @@ struct ThemeSettingsView: View {
                         Text(size.label).tag(size.rawValue)
                     }
                 }
-            } footer: {
-                Text("Aurora takes its colours from the cover art; Noir is black with big type; Vinyl is warm, with a record that spins while it plays; Classic is the original look. With motion off, backgrounds and records stand still.")
             }
         }
     }
@@ -174,8 +55,6 @@ struct ServerSettingsView: View {
                     .onSubmit { addressInvalid = !locator.setManual(serverAddress) }
                 Text("Using \(Config.remoteAddress) · \(locator.status)\(addressInvalid ? " · that is not an address" : "")")
                     .foregroundStyle(.secondary)
-            } footer: {
-                Text("Leave the address empty to find the server automatically (Bonjour). Type an address (e.g. 10.0.0.5 or 10.0.0.5:8080) only if it is not found.")
             }
         }
     }
@@ -199,8 +78,6 @@ struct PlaybackSettingsView: View {
                     ForEach([10, 15, 30, 60], id: \.self) { Text("\($0) seconds").tag($0) }
                 }
                 Toggle("Fast seek", isOn: $fastSeek)
-            } footer: {
-                Text("Music videos always pause when you leave the app. Fast seek jumps to the nearest keyframe (can be a few seconds off) so video does not stutter after a jump.")
             }
         }
     }
@@ -234,8 +111,6 @@ struct LyricsSettingsView: View {
                     Text("English").tag("eng")
                     Text("Croatian").tag("hrv")
                 }
-            } footer: {
-                Text("Default shows the track the file marks as default (or its forced track). English or Croatian picks that language when the video has it, otherwise Default. A language change switches the track without restarting.")
             }
             Section {
                 Picker("Text size", selection: $size) {
@@ -279,8 +154,6 @@ struct LyricsSettingsView: View {
                 }
             } header: {
                 Text("Style")
-            } footer: {
-                Text("Style changes restart a playing video at the same position.")
             }
         }
         .onChange(of: appliedKey) {
