@@ -131,18 +131,18 @@ struct LibraryTab: View {
     private var classicList: some View {
             List {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Section("Browse") {
+                        NavigationLink { PhoneFolderRootsView() } label: {
+                            Label("Folders", systemImage: "folder")
+                        }
+                        NavigationLink { PhoneVideoListView() } label: {
+                            Label("Music videos", systemImage: "play.rectangle")
+                        }
+                    }
                     Section {
                         Button { shuffle("all") } label: { Label("Shuffle everything", systemImage: "shuffle") }
                         Button { shuffle("music") } label: { Label("Shuffle music", systemImage: "music.note") }
                         Button { shuffle("videos") } label: { Label("Shuffle music videos", systemImage: "film") }
-                    }
-                    Section("Browse") {
-                        NavigationLink { PhoneVideoListView() } label: {
-                            Label("Music videos", systemImage: "play.rectangle")
-                        }
-                        NavigationLink { PhoneFolderRootsView() } label: {
-                            Label("Folders", systemImage: "folder")
-                        }
                     }
                     Section {
                         ConnectionStatusRow()

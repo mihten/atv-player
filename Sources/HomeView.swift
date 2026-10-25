@@ -18,10 +18,10 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 50) {
                 header
                 hero.focusSection()
-                shelf("Play") { playTiles }
                 shelf("Browse") { browseTiles }
-                if !videos.isEmpty { shelf("Music videos") { videoPosters } }
                 if !playlists.isEmpty { shelf("Playlists") { playlistCards } }
+                shelf("Play") { playTiles }
+                if !videos.isEmpty { shelf("Music videos") { videoPosters } }
                 footer
             }
             .padding(.horizontal, 80)
@@ -136,14 +136,14 @@ struct HomeView: View {
     private var browseTiles: some View {
         let size = CGSize(width: (width - 120) / 4, height: 130)
         return HStack(spacing: 40) {
-            NavigationLink { VideoListView() } label: {
-                BrowseTileLabel(title: "Music videos", symbol: "play.rectangle", size: size)
-            }
             NavigationLink { PlaylistsView() } label: {
                 BrowseTileLabel(title: "Playlists", symbol: "music.note.list", size: size)
             }
             NavigationLink { FolderRootsView() } label: {
                 BrowseTileLabel(title: "Folders", symbol: "folder", size: size)
+            }
+            NavigationLink { VideoListView() } label: {
+                BrowseTileLabel(title: "Music videos", symbol: "play.rectangle", size: size)
             }
             NavigationLink { SettingsView() } label: {
                 BrowseTileLabel(title: "Settings", symbol: "gearshape", size: size)

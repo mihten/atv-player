@@ -55,23 +55,7 @@ struct ContentView: View {
     /// The original main menu (Classic look).
     private var classicMenu: some View {
         List {
-            Section {
-                Button { shuffle("all") } label: {
-                    Label("Shuffle everything", systemImage: "shuffle")
-                }
-                Button { shuffle("music") } label: {
-                    Label("Shuffle music", systemImage: "music.note")
-                }
-                Button { shuffle("videos") } label: {
-                    Label("Shuffle music videos", systemImage: "film")
-                }
-            }
             Section("Browse") {
-                NavigationLink {
-                    VideoListView()
-                } label: {
-                    Label("Music videos", systemImage: "play.rectangle")
-                }
                 NavigationLink {
                     PlaylistsView()
                 } label: {
@@ -83,9 +67,25 @@ struct ContentView: View {
                     Label("Folders", systemImage: "folder")
                 }
                 NavigationLink {
+                    VideoListView()
+                } label: {
+                    Label("Music videos", systemImage: "play.rectangle")
+                }
+                NavigationLink {
                     SettingsView()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
+                }
+            }
+            Section {
+                Button { shuffle("all") } label: {
+                    Label("Shuffle everything", systemImage: "shuffle")
+                }
+                Button { shuffle("music") } label: {
+                    Label("Shuffle music", systemImage: "music.note")
+                }
+                Button { shuffle("videos") } label: {
+                    Label("Shuffle music videos", systemImage: "film")
                 }
             }
             Section {

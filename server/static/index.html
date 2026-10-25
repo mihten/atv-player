@@ -273,6 +273,9 @@ html[data-look="noir"] .search { border-radius: 6px; }
 .search .ic { color: var(--ink3); width: 19px; height: 19px; }
 .search input { flex: 1; border: 0; background: none; outline: none; padding: 13px 0; font-size: 16px; min-width: 0; }
 .search input::placeholder { color: var(--ink3); }
+.search .scope { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 45%; font-size: 12.5px; font-weight: 600; border: 1px solid var(--line); border-radius: 999px; padding: 3px 6px 3px 10px; cursor: pointer; }
+.search .scope span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search .scope .ic { width: 14px; height: 14px; }
 /* video grid */
 .vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
 .vt { cursor: pointer; position: relative; min-width: 0; }
@@ -586,6 +589,7 @@ function applyLook() { root.dataset.look = look; root.dataset.motion = motion ? 
 let mode = ["tv", "phone"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
 let session = mode === "phone" ? "phone" : "tv", sessionList = [], followTimer = null;
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
+let scope = null, plQuery = "";  // scope = {root, folder}: Search limited to one folder (incl. subfolders); plQuery = filter inside the open playlist
 let playlists = [], openPl = null, plHeads = new Map();  // openPl = playlist detail shown; plHeads = first items per playlist (mosaics)
 let plMember = new Map(), plUndo = null;  // plMember: item id -> [{id, name}] of the playlists holding it; plUndo: order before the last sort / dedup
 
@@ -750,18 +754,41 @@ function rowHtml(it, extra = "", cls = "", th = "") {
 const group = (html) => `<div class="group">${html}</div>`;
 const isCur = (id) => st && st.current && st.current.id === id;
 
+/** Library items matching the search text, inside `scope` (one folder and its subfolders) when set. */
+function searchItems(q) {
+  let items = lib;
+  if (scope) {
+    const f = scope.folder;
+    items = items.filter((i) => i.root === scope.root && (!f || i.folder === f || (i.folder || "").startsWith(f + "/")));
+    if (!q) return items.slice().sort((a, b) => `${a.folder}/${String(a.track || 0).padStart(4, "0")}${a.title}`.localeCompare(`${b.folder}/${String(b.track || 0).padStart(4, "0")}${b.title}`));
+  }
+  return q ? items.filter((i) => `${i.title} ${i.artist || ""} ${i.album || ""} ${i.folder}`.toLowerCase().includes(q)) : items;
+}
+/** Playlist filter: hide the rows that do not match (no redraw, so typing stays instant and keeps focus). */
+function filterPlaylistRows() {
+  const q = plQuery.trim().toLowerCase(), rows = document.querySelectorAll("#main .group > .row");
+  let shown = 0;
+  rows.forEach((r, n) => {
+    const it = openPl && openPl.items[n];
+    const hit = !q || (it && `${it.title} ${it.artist || ""} ${it.album || ""} ${it.folder || ""}`.toLowerCase().includes(q));
+    r.style.display = hit ? "" : "none"; if (hit) shown++;
+  });
+  const c = $("plcount"); if (c) c.textContent = q ? `${shown} of ${rows.length}` : "";
+}
+
 function render() {
   const main = $("main");
   if (tab === "search") {
     const q = query.trim().toLowerCase();
-    let items = q ? lib.filter((i) => `${i.title} ${i.artist || ""} ${i.album || ""} ${i.folder}`.toLowerCase().includes(q)) : [];
+    let items = q || scope ? searchItems(q) : [];
     const total = items.length; items = items.slice(0, 300);
-    main.innerHTML = `<label class="search">${ic("search")}<input type="search" id="q" placeholder="Title, artist, album, folder" value="${esc(query)}" autocomplete="off"></label>` +
+    const chip = scope ? `<span class="scope" data-act="clearScope" title="Search everything again"><span>in ${esc(scope.folder ? scope.folder.split("/").pop() : `(${scope.root})`)}</span>${ic("x")}</span>` : "";
+    main.innerHTML = `<label class="search">${ic("search")}${chip}<input type="search" id="q" placeholder="${scope ? "Search this folder" : "Title, artist, album, folder"}" value="${esc(query)}" autocomplete="off"></label>` +
       (q && items.length ? `<div class="toolbar"><span class="grow">${total} match${total === 1 ? "" : "es"}</span><button class="pill" data-act="addResults">${ic("plus")} Add ${total > 300 ? "first 300" : `these ${total}`} to a playlist</button></div>` : "") +
-      (q ? (items.length ? group(items.map((i) => rowHtml(i, 'data-act="item"', isCur(i.id) ? "cur" : "")).join("")) + (total > 300 ? `<div class="empty">${total - 300} more…</div>` : "") : '<div class="empty">No matches</div>')
+      (q || scope ? (items.length ? group(items.map((i) => rowHtml(i, 'data-act="item"', isCur(i.id) ? "cur" : "")).join("")) + (total > 300 ? `<div class="empty">${total - 300} more…</div>` : "") : '<div class="empty">No matches</div>')
          : (lib.length ? homeHtml() : `<div class="empty">Loading library…</div>`));
     const q2 = $("q"); q2.oninput = (e) => { query = e.target.value; render(); };
-    if (matchMedia("(hover: hover)").matches || query) { q2.focus(); q2.setSelectionRange(query.length, query.length); }
+    if (matchMedia("(hover: hover)").matches || query || scope) { q2.focus(); q2.setSelectionRange(query.length, query.length); }
   } else if (tab === "videos") {
     const vids = lib.filter((i) => i.kind === "video").sort((a, b) => `${a.artist}${a.title}`.toLowerCase().localeCompare(`${b.artist}${b.title}`.toLowerCase()));
     main.innerHTML = vids.length ? `<div class="h2">Music videos</div><div class="vgrid">` + vids.map(videoTile).join("") + `</div>` : '<div class="empty">No videos</div>';
@@ -806,6 +833,8 @@ function render() {
     main.innerHTML = html ? group(html) : '<div class="empty">Loading library…</div>';
   } else if (tab === "playlists") {
     main.innerHTML = openPl ? playlistDetailHtml(openPl) : playlistListHtml();
+    const f = $("plq");
+    if (f) { f.oninput = (e) => { plQuery = e.target.value; filterPlaylistRows(); }; filterPlaylistRows(); }
   } else if (tab === "queue") {
     if (!st || !st.queue.length) { main.innerHTML = '<div class="empty">Queue is empty. Shuffle something above, or pick songs in Search.</div>'; return; }
     main.innerHTML = `<div class="toolbar"><span class="grow">${st.queue.length} in queue</span><button class="pill" data-act="saveQueue">${ic("save")} Save as playlist</button><button class="pill" data-act="clear">${ic("x")} Clear upcoming</button></div>` +
@@ -866,7 +895,8 @@ function folderRow(root, folder, n, depth, open) {
     `<button class="ib lead" data-act="addFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Add folder to playlist">${ic("plus")}</button>` +
     `<span class="th fold">${ic("folder")}</span>` +
     `<div class="meta"><div class="t">${esc(label)}</div><div class="s">${esc(root)} · ${n} items</div></div>` +
-    `<div class="acts"><button class="ib" data-act="playFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Play">${ic("play")}</button>` +
+    `<div class="acts"><button class="ib" data-act="searchFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Search in this folder">${ic("search")}</button>` +
+    `<button class="ib" data-act="playFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Play">${ic("play")}</button>` +
     `<button class="ib" data-act="shuffleFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Shuffle">${ic("shuffle")}</button></div>${ic("chev", "chev")}</div>`;
 }
 
@@ -899,6 +929,7 @@ function playlistDetailHtml(p) {
     (plUndo && plUndo.id === p.id ? `<button class="pill" data-act="undoPl">${ic("back")} Undo ${esc(plUndo.what)}</button>` : "") +
     `<button class="pill" data-act="renamePl">${ic("pencil")} Rename</button>${p.missing ? `<button class="pill" data-act="pruneMissing">${ic("x")} Remove missing</button>` : ""}<button class="pill" data-act="deletePl">${ic("trash")} Delete</button></div></div>`;
   if (!n) return html + '<div class="empty">Empty. Add songs and videos with ＋ in Search, Folders and Videos.</div>';
+  if (n > 1) html += `<label class="search">${ic("search")}<input type="search" id="plq" placeholder="Search this playlist" value="${esc(plQuery)}" autocomplete="off"><span class="note" id="plcount"></span></label>`;
   return html + group(p.items.map((it, i) => {
     const row = it.missing
       ? `<div class="row missing"><span class="th">${ic("x")}</span><div class="meta"><div class="t">${esc(it.title)}</div><div class="s">file was deleted or moved</div></div></div>`
@@ -1017,6 +1048,8 @@ document.addEventListener("click", (e) => {
   else if (act === "remove") cmd("remove", { index: +b.dataset.index });
   else if (act === "clear") cmd("clear");
   else if (act === "playFolder" || act === "shuffleFolder") cmd("play_collection", { collection: "folder", root: b.dataset.root, folder: b.dataset.folder, shuffle: act === "shuffleFolder" });
+  else if (act === "searchFolder") { scope = { root: b.dataset.root, folder: b.dataset.folder }; query = ""; tab = "search"; selectTab(); window.scrollTo(0, 0); }
+  else if (act === "clearScope") { scope = null; render(); }
   else if (act === "toggleFolder") { const k = b.dataset.key; openFolders.has(k) ? openFolders.delete(k) : openFolders.add(k); render(); }
   else if (act === "addFolder") addToPlaylist({ folder: { root: b.dataset.root, folder: b.dataset.folder, recursive: true } }, `folder "${b.dataset.folder || b.dataset.root}" (incl. subfolders)`);
   else if (act === "addOne") { const it = byId.get(+b.dataset.id); addToPlaylist({ ids: [it.id] }, `"${it.title}"`); }
@@ -1027,8 +1060,8 @@ document.addEventListener("click", (e) => {
   }
   else if (act === "saveQueue") newPlaylist({ queue: true, session }).then((p) => { if (p) { tab = "playlists"; openPl = p; selectTab(); loadPlaylists(); } });
   else if (act === "newPl") newPlaylist().then((p) => { if (p) { openPl = p; loadPlaylists(); } });
-  else if (act === "openPl") api("GET", `/api/playlists/${b.dataset.pl}`).then((p) => { openPl = p; render(); $("tabs").scrollIntoView({ block: "start" }); });
-  else if (act === "closePl") { openPl = null; render(); }
+  else if (act === "openPl") plQuery = "", api("GET", `/api/playlists/${b.dataset.pl}`).then((p) => { openPl = p; render(); $("tabs").scrollIntoView({ block: "start" }); });
+  else if (act === "closePl") { openPl = null; plQuery = ""; render(); }
   else if (act === "playPl" || act === "shufflePl") cmd("play_collection", { collection: "playlist", playlist: +b.dataset.pl, shuffle: act === "shufflePl" });
   else if (act === "playFrom") cmd("play_collection", { collection: "playlist", playlist: openPl.id, start_index: +b.dataset.index });
   else if (act === "renamePl") { const name = prompt("Rename playlist:", openPl.name); if (name && name.trim()) api("PUT", `/api/playlists/${openPl.id}`, { name }).then((p) => { openPl = p; loadPlaylists(); }); }

@@ -20,14 +20,14 @@ struct PhoneHome: View {
                 if let item = engine.current {
                     nowPlaying(item)
                 }
-                shuffleTiles
-                if !videos.isEmpty {
-                    shelf("Music videos") { videoShelf }
-                }
                 if !playlists.isEmpty {
                     shelf("Playlists") { playlistShelf }
                 }
                 shelf("Browse") { browseRows }
+                shuffleTiles
+                if !videos.isEmpty {
+                    shelf("Music videos") { videoShelf }
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(connection.connected ? "Connected to \(Config.remoteAddress)" : "Connecting to \(Config.remoteAddress)…")
                     Text("This iPhone has its own queue; the Apple TV's is separate.")
@@ -189,12 +189,12 @@ struct PhoneHome: View {
 
     private var browseRows: some View {
         VStack(spacing: 0) {
-            NavigationLink { PhoneVideoListView() } label: {
-                BrowseRow(title: "All music videos", symbol: "play.rectangle", detail: videos.isEmpty ? "" : "\(videos.count)")
-            }
-            Divider().opacity(0.4).padding(.leading, 52)
             NavigationLink { PhoneFolderRootsView() } label: {
                 BrowseRow(title: "Folders", symbol: "folder", detail: "")
+            }
+            Divider().opacity(0.4).padding(.leading, 52)
+            NavigationLink { PhoneVideoListView() } label: {
+                BrowseRow(title: "All music videos", symbol: "play.rectangle", detail: videos.isEmpty ? "" : "\(videos.count)")
             }
         }
         .buttonStyle(.plain)
