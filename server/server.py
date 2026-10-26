@@ -40,7 +40,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -155,6 +155,7 @@ class Session:
         # an edit of that playlist rebuilds the upcoming part of the queue (follow_playlist).
         self.source = None
         self.source_items: list[int] = []
+        self.noted = None  # item whose current start is already in the play history
 
     @property
     def players(self):
@@ -215,6 +216,63 @@ class Session:
 
 
 SESSIONS = {kind: Session(kind) for kind in KINDS}
+
+
+# ---------------------------------------------------------------- play history (shuffle with memory)
+# A plain random.shuffle forgets what played before: every new "Shuffle ..." and every repeat-all lap was a fresh
+# permutation, so recently heard songs came back far too often (user report 2026-10-26). The server remembers when each
+# item last started playing (shared by all sessions, DATA/history.json, entries expire after HISTORY_DAYS) and every
+# shuffle puts the least recently heard items first.
+
+HISTORY_FILE = DATA / "history.json"
+HISTORY_DAYS = 30
+PLAYED: dict[int, float] = {}  # item id -> time it last started playing
+
+
+def load_history():
+    try:
+        data = json.loads(HISTORY_FILE.read_text())
+    except (OSError, ValueError):
+        return
+    cutoff = time.time() - HISTORY_DAYS * 86400
+    PLAYED.clear()
+    PLAYED.update({int(k): float(v) for k, v in data.get("played", {}).items() if float(v) > cutoff})
+
+
+def save_history():
+    tmp = HISTORY_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"played": {str(k): round(v, 1) for k, v in PLAYED.items()}}))
+    tmp.replace(HISTORY_FILE)
+
+
+def note_played(item_id):
+    now = time.time()
+    PLAYED[item_id] = now
+    cutoff = now - HISTORY_DAYS * 86400
+    for k in [k for k, v in PLAYED.items() if v <= cutoff]:
+        del PLAYED[k]
+    try:
+        save_history()
+    except OSError as e:
+        log.warning("history not saved: %s", e)
+
+
+def smart_shuffle(ids):
+    """Shuffled copy of ids that keeps recently heard items away from the front: items not played within HISTORY_DAYS
+    first (random order), then the recently played ones split by age into an older and a newer half, each half shuffled.
+    The items heard last therefore come last, also on a repeat-all lap, while a small, often played playlist still gets a
+    different order every time."""
+    cutoff = time.time() - HISTORY_DAYS * 86400
+    fresh, recent = [], []
+    for i in ids:
+        (recent if PLAYED.get(i, 0) > cutoff else fresh).append(i)
+    random.shuffle(fresh)
+    recent.sort(key=lambda i: PLAYED[i])
+    half = len(recent) // 2
+    older, newer = recent[:half], recent[half:]
+    random.shuffle(older)
+    random.shuffle(newer)
+    return fresh + older + newer
 
 
 def session_for(kind):
@@ -299,7 +357,7 @@ def follow_playlist(s, pl_id):
         for i in played + ([cur] if cur is not None else []):
             if i in rest:
                 rest.remove(i)
-        random.shuffle(rest)
+        rest = smart_shuffle(rest)
         s.queue = played + ([cur] if cur is not None else []) + rest
         s.index = len(played) if cur is not None else 0
     elif cur in new:
@@ -406,6 +464,7 @@ async def start_current(s, position=0.0, autoplay=True, present=False):
     s.duration = (s.current or {}).get("duration") or 0.0
     s.want_play = autoplay
     s.playing = False
+    s.noted = None  # the next "playing" status of this start goes into the play history
     s.save()
     await to_players(s, load_message(s, autoplay, position, present))
     await broadcast_state(s)
@@ -427,8 +486,7 @@ async def set_queue(s, ids, start_index=None, shuffle=False):
         start_index = min(max(int(start_index), 0), len(ids) - 1)
     s.original = list(ids)
     if shuffle:
-        rest = [i for n, i in enumerate(ids) if n != start_index]
-        random.shuffle(rest)
+        rest = smart_shuffle([i for n, i in enumerate(ids) if n != start_index])
         s.queue = ([ids[start_index]] if start_index is not None else []) + rest
         s.index = 0
     else:
@@ -447,8 +505,8 @@ async def advance(s, user):
     elif s.index + 1 < len(s.queue):
         s.index += 1
     elif s.repeat == "all":
-        if s.shuffle:
-            random.shuffle(s.queue)
+        if s.shuffle:  # new lap: the items just heard go to the back, not straight to the front again
+            s.queue = smart_shuffle(s.queue)
         s.index = 0
     else:
         s.index = len(s.queue) - 1
@@ -525,8 +583,7 @@ async def handle_cmd(s, msg):
         on = bool(msg.get("on", not s.shuffle))
         cur = s.current_id
         if on and not s.shuffle:
-            rest = s.queue[s.index + 1:]
-            random.shuffle(rest)
+            rest = smart_shuffle(s.queue[s.index + 1:])
             s.queue = s.queue[:s.index + 1] + rest
         elif not on and s.shuffle and s.original:
             s.queue = list(s.original)
@@ -576,6 +633,9 @@ async def on_message(s, data, role):
             s.duration = float(data["duration"])
         if s.playing:
             s.errors = 0
+            if s.noted != s.current_id:
+                s.noted = s.current_id
+                note_played(s.current_id)
         await broadcast_state(s)
     elif role == "player" and kind == "log":
         log.info("player[%s]: %s", s.kind, str(data.get("message"))[:1500])  # seek trace lines are ~700 chars
@@ -727,6 +787,15 @@ async def api_item(request):
 
 async def api_state(request):
     return web.json_response(session_for(request.query.get("session")).to_dict())
+
+
+async def api_history(request):
+    """Play history behind the shuffle: count and the most recently started items (?limit=N, default 20)."""
+    limit = min(max(int(request.query.get("limit", 20)), 0), 500)
+    latest = sorted(PLAYED.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return web.json_response({"days": HISTORY_DAYS, "count": len(PLAYED), "recent": [
+        {"id": i, "at": at, "title": LIB[i]["title"] if i in LIB else None,
+         "artist": LIB[i].get("artist") if i in LIB else None} for i, at in latest]})
 
 
 # Playlist API. Bodies are JSON. Item lists are library ids; unknown ids are rejected on add.
@@ -1229,6 +1298,7 @@ async def on_startup(app):
     for s in SESSIONS.values():
         s.load()
     load_playlists()
+    load_history()
     asyncio.create_task(run_scan())
     await advertise(app)
 
@@ -1245,6 +1315,7 @@ def make_app():
     app.router.add_get("/api/browse", api_browse)
     app.router.add_get("/api/item/{id:\\d+}", api_item)
     app.router.add_get("/api/state", api_state)
+    app.router.add_get("/api/history", api_history)
     app.router.add_get("/api/playlists", api_playlists)
     app.router.add_post("/api/playlists", api_playlist_create)
     app.router.add_get("/api/playlists/{id:\\d+}", api_playlist_get)
