@@ -92,6 +92,9 @@ struct SettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // The whole left half is one focus area: ◀ from any row (also the top ones, above the card) reaches the card.
+            // Without it the card was reachable only from rows level with it (UI test, 0.18.21).
+            .focusSection()
             pages
                 .frame(width: 960)
                 .padding(.trailing, 60)
@@ -139,6 +142,7 @@ struct SettingsView: View {
             if let title {
                 Text(title)
                     .font(.system(size: 40, weight: .semibold))
+                    .accessibilityIdentifier("settings.pageTitle")
                     .padding(.leading, 24)
                     .padding(.top, 20)
             }

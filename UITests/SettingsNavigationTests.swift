@@ -30,12 +30,14 @@ final class SettingsNavigationTests: XCTestCase {
         return label.isEmpty ? "<\(element.elementType.rawValue) without label>" : label
     }
 
-    /// Rows only on the first Settings page / only on a sub-page (hidden pages are accessibility-hidden).
-    private var onRoot: Bool { app.staticTexts["About"].exists && app.staticTexts["Playback"].exists }
+    /// Settings is shown (its first page stays mounted under the others) and no page is open over it
+    /// (every page above the first one has a title with this identifier; closed pages are removed).
+    private var inSettings: Bool { app.staticTexts["About"].exists }
+    private var onRoot: Bool { inSettings && !app.staticTexts["settings.pageTitle"].exists }
 
     private func report(_ step: String) {
         let line = "\(step): app \(app.state == .runningForeground ? "foreground" : "NOT foreground (\(app.state.rawValue))"), "
-            + "settings root \(onRoot), focus '\(focused)'"
+            + "in settings \(inSettings), root \(onRoot), focus '\(focused)'"
         print("UITEST: \(line)")
         if let dir = ProcessInfo.processInfo.environment["UI_SHOTS"] {
             let name = step.replacingOccurrences(of: " ", with: "-").filter { $0.isLetter || $0.isNumber || $0 == "-" }
@@ -51,7 +53,7 @@ final class SettingsNavigationTests: XCTestCase {
         press(.menu)
         report("1b after Back")
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertFalse(onRoot, "Back should leave Settings")
+        XCTAssertFalse(inSettings, "Back should leave Settings")
     }
 
     /// Back with the focus on the Now Playing card returns to the menu (the app stays open).
@@ -59,11 +61,11 @@ final class SettingsNavigationTests: XCTestCase {
         launch("settings")
         press(.left)
         report("2a after left")
-        XCTAssertFalse(focused.contains("Theme"), "left should reach the Now Playing card")
+        XCTAssertTrue(focused.contains("Harbor Lights"), "left from the top row should reach the Now Playing card")
         press(.menu)
         report("2b after Back")
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertFalse(onRoot, "Back should leave Settings")
+        XCTAssertFalse(inSettings, "Back should leave Settings")
     }
 
     /// Page -> choice list -> pick -> Back -> Back: every Back goes one level up, the last one to the menu.
@@ -75,6 +77,7 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Look"].exists, "Theme page should show 'Look'")
         press(.select)
         report("3b look choices")
+        XCTAssertTrue(focused.contains("Aurora"), "the choice list should start on the current value")
         press(.menu)
         report("3c back to theme page")
         XCTAssertTrue(app.staticTexts["Look"].exists)
@@ -84,7 +87,7 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground)
         press(.menu)
         report("3e back to the menu")
-        XCTAssertFalse(onRoot)
+        XCTAssertFalse(inSettings)
         XCTAssertEqual(app.state, .runningForeground)
     }
 
@@ -93,6 +96,8 @@ final class SettingsNavigationTests: XCTestCase {
         launch("sound")
         press(.left)
         report("4a sound page, after left")
+        XCTAssertTrue(focused.contains("Harbor Lights"), "left should reach the Now Playing card")
+        XCTAssertFalse(onRoot)
         press(.menu)
         report("4b after Back")
         XCTAssertTrue(onRoot, "Back on a page should return to the Settings root")
