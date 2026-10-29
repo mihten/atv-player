@@ -1,6 +1,6 @@
 import XCTest
 
-/// Siri Remote checks of the Apple TV Settings screen on the simulator (CI, design workflow with ui_test=true).
+/// Siri Remote checks of the Apple TV Settings screen on the simulator (CI, design workflow with ui_test=true; all pass at 0.18.21).
 /// Needs the throwaway demo server on 127.0.0.1:8080 with something in the TV queue (Now Playing card).
 /// Every step prints a "UITEST:" line (focus, visible page, app state) and saves a screenshot to $UI_SHOTS.
 final class SettingsNavigationTests: XCTestCase {
