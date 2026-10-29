@@ -7,7 +7,6 @@ struct HomeView: View {
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.appTheme) private var theme
-    @Environment(\.openSettings) private var openSettings
     @State private var videos: [MediaItem] = []
     @State private var playlists: [PlaylistInfo] = []
     @State private var covers: [Int: [MediaItem]] = [:]  // playlist id → first items, for the mosaic
@@ -145,7 +144,7 @@ struct HomeView: View {
             NavigationLink { VideoListView() } label: {
                 BrowseTileLabel(title: "Music videos", symbol: "play.rectangle", size: size)
             }
-            Button { openSettings() } label: {
+            NavigationLink { SettingsView() } label: {
                 BrowseTileLabel(title: "Settings", symbol: "gearshape", size: size)
             }
         }

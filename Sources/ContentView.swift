@@ -7,26 +7,8 @@ struct ContentView: View {
     @Environment(\.appTheme) private var theme
     @State private var showPlayer = false
     @State private var demoPush = false
-    @State private var settingsOpen = false
-    @State private var settingsStart: SettingsRoute?
 
     var body: some View {
-        ZStack {
-            menus
-                .disabled(settingsOpen)  // focus stays in Settings
-            if settingsOpen {
-                SettingsPanel(start: settingsStart) {
-                    settingsOpen = false
-                    settingsStart = nil
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeOut(duration: 0.25), value: settingsOpen)
-        .environment(\.openSettings, { settingsOpen = true })
-    }
-
-    private var menus: some View {
         NavigationStack {
             Group {
                 if theme.isClassic {
@@ -35,17 +17,21 @@ struct ContentView: View {
                     HomeView()
                 }
             }
-            .navigationDestination(isPresented: $demoPush) { DemoDestination() }
+            .navigationDestination(isPresented: $demoPush) {
+                // CI screenshots only: a list screen, or Settings (optionally on a page)
+                if let route = SettingsRoute.demo(DemoRoute.screen) {
+                    SettingsView(start: route)
+                } else {
+                    DemoDestination()
+                }
+            }
         }
         .onAppear {
             if DemoRoute.is("player") {
                 DemoRoute.whenLoaded(engine) { showPlayer = true }
             } else if DemoRoute.is("open-player") {
                 DemoRoute.whenLoaded(engine, after: 5) { showPlayer = true }
-            } else if let route = SettingsRoute.demo(DemoRoute.screen) {
-                settingsStart = route
-                settingsOpen = true
-            } else if DemoDestination.pushes {
+            } else if DemoDestination.pushes || SettingsRoute.demo(DemoRoute.screen) != nil {
                 demoPush = true
             }
         }
@@ -85,7 +71,9 @@ struct ContentView: View {
                 } label: {
                     Label("Music videos", systemImage: "play.rectangle")
                 }
-                Button { settingsOpen = true } label: {
+                NavigationLink {
+                    SettingsView()
+                } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
             }

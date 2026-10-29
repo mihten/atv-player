@@ -1,18 +1,74 @@
 import SwiftUI
 import TVVLCKit
 
-/// Layout shared by the Settings sub-pages inside the Settings panel: a list, pickers as "Name .... Value >" rows
-/// that open their own list in the panel.
+/// Layout shared by the Settings pages in the right half of the Settings screen.
 struct SettingsPage<Content: View>: View {
-    let title: String
     @ViewBuilder var content: Content
 
     var body: some View {
         List { content }
-            .pickerStyle(.navigationLink)
             .font(.system(size: 30))
             .environment(\.defaultMinListRowHeight, 66)
-            .navigationTitle(title)
+    }
+}
+
+/// "Name ........ Value >" row; its choices open as a list in the right half of Settings (a system Picker would push a
+/// full-screen list on the main navigation stack). Picking a value goes back.
+struct ChoiceRow<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [(label: String, value: Value)]
+    @Environment(\.settingsNav) private var nav
+
+    init(_ title: String, selection: Binding<Value>, options: [(label: String, value: Value)]) {
+        self.title = title
+        _selection = selection
+        self.options = options
+    }
+
+    var body: some View {
+        Button {
+            nav.push(SettingsScreen(title: title, content: AnyView(ChoiceList(selection: $selection, options: options))))
+        } label: {
+            HStack(spacing: 20) {
+                Text(title)
+                Spacer()
+                Text(options.first { $0.value == selection }?.label ?? "").foregroundStyle(.secondary).lineLimit(1)
+                Image(systemName: "chevron.right").font(.system(size: 24, weight: .semibold)).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+struct ChoiceList<Value: Hashable>: View {
+    @Binding var selection: Value
+    let options: [(label: String, value: Value)]
+    @Environment(\.settingsNav) private var nav
+    @FocusState private var focused: Int?
+
+    var body: some View {
+        SettingsPage {
+            ForEach(options.indices, id: \.self) { index in
+                Button {
+                    selection = options[index].value
+                    nav.pop()
+                } label: {
+                    HStack {
+                        Text(options[index].label)
+                        Spacer()
+                        if options[index].value == selection {
+                            Image(systemName: "checkmark").font(.system(size: 26, weight: .semibold))
+                        }
+                    }
+                }
+                .focused($focused, equals: index)
+            }
+        }
+        .onAppear {
+            // start on the current value, like the tvOS picker
+            let current = options.firstIndex { $0.value == selection } ?? 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { focused = current }
+        }
     }
 }
 
@@ -23,19 +79,12 @@ struct ThemeSettingsView: View {
     @AppStorage(PlayerSettings.listTextSizeKey) private var listTextSize = ListTextSize.compact.rawValue
 
     var body: some View {
-        SettingsPage(title: "Theme") {
+        SettingsPage {
             Section {
-                Picker("Look", selection: $themeRaw) {
-                    ForEach(AppTheme.allCases) { look in
-                        Text(look.name).tag(look.rawValue)
-                    }
-                }
+                ChoiceRow("Look", selection: $themeRaw, options: AppTheme.allCases.map { ($0.name, $0.rawValue) })
                 Toggle("Moving background and spinning record", isOn: $motion)
-                Picker("Text size in music & folder lists", selection: $listTextSize) {
-                    ForEach(ListTextSize.allCases, id: \.rawValue) { size in
-                        Text(size.label).tag(size.rawValue)
-                    }
-                }
+                ChoiceRow("Text size in music & folder lists", selection: $listTextSize,
+                          options: ListTextSize.allCases.map { ($0.label, $0.rawValue) })
             }
         }
     }
@@ -48,7 +97,7 @@ struct ServerSettingsView: View {
     @State private var addressInvalid = false
 
     var body: some View {
-        SettingsPage(title: "Server") {
+        SettingsPage {
             Section {
                 TextField("Server address (empty = find automatically)", text: $serverAddress)
                     .autocorrectionDisabled()
@@ -68,15 +117,13 @@ struct PlaybackSettingsView: View {
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
 
     var body: some View {
-        SettingsPage(title: "Playback") {
+        SettingsPage {
             Section {
                 Toggle("Keep music playing after leaving the app", isOn: $keepMusic)
-                Picker("Left button jumps back", selection: $seekBack) {
-                    ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) seconds").tag($0) }
-                }
-                Picker("Right button jumps forward", selection: $seekForward) {
-                    ForEach([10, 15, 30, 60], id: \.self) { Text("\($0) seconds").tag($0) }
-                }
+                ChoiceRow("Left button jumps back", selection: $seekBack,
+                          options: [5, 10, 15, 30].map { ("\($0) seconds", $0) })
+                ChoiceRow("Right button jumps forward", selection: $seekForward,
+                          options: [10, 15, 30, 60].map { ("\($0) seconds", $0) })
                 Toggle("Fast seek", isOn: $fastSeek)
             }
         }
@@ -103,55 +150,55 @@ struct LyricsSettingsView: View {
     }
 
     var body: some View {
-        SettingsPage(title: "Lyrics") {
+        SettingsPage {
             Section {
                 Toggle("Show lyrics / subtitles", isOn: $subsOn)
-                Picker("Language", selection: $subLang) {
-                    Text("Default (as set in the file)").tag("")
-                    Text("English").tag("eng")
-                    Text("Croatian").tag("hrv")
-                }
+                ChoiceRow("Language", selection: $subLang, options: [
+                    ("Default (as set in the file)", ""),
+                    ("English", "eng"),
+                    ("Croatian", "hrv"),
+                ])
             }
             Section {
-                Picker("Text size", selection: $size) {
-                    Text("Default").tag(0)
-                    Text("Small").tag(20)
-                    Text("Medium").tag(16)
-                    Text("Large").tag(12)
-                    Text("Extra large").tag(9)
-                }
-                Picker("Font", selection: $font) {
-                    Text("Default").tag("")
-                    Text("Helvetica Neue").tag("Helvetica Neue")
-                    Text("Avenir Next").tag("Avenir Next")
-                    Text("Futura").tag("Futura")
-                    Text("Georgia").tag("Georgia")
-                    Text("Menlo").tag("Menlo")
-                }
-                Picker("Text colour", selection: $color) {
-                    Text("White").tag(0xFFFFFF)
-                    Text("Yellow").tag(0xFFFF00)
-                    Text("Light grey").tag(0xC8C8C8)
-                    Text("Cyan").tag(0x00FFFF)
-                }
+                ChoiceRow("Text size", selection: $size, options: [
+                    ("Default", 0),
+                    ("Small", 20),
+                    ("Medium", 16),
+                    ("Large", 12),
+                    ("Extra large", 9),
+                ])
+                ChoiceRow("Font", selection: $font, options: [
+                    ("Default", ""),
+                    ("Helvetica Neue", "Helvetica Neue"),
+                    ("Avenir Next", "Avenir Next"),
+                    ("Futura", "Futura"),
+                    ("Georgia", "Georgia"),
+                    ("Menlo", "Menlo"),
+                ])
+                ChoiceRow("Text colour", selection: $color, options: [
+                    ("White", 0xFFFFFF),
+                    ("Yellow", 0xFFFF00),
+                    ("Light grey", 0xC8C8C8),
+                    ("Cyan", 0x00FFFF),
+                ])
                 Toggle("Bold text", isOn: $bold)
-                Picker("Text outline", selection: $outline) {
-                    Text("None").tag(0)
-                    Text("Thin").tag(2)
-                    Text("Normal").tag(4)
-                    Text("Thick").tag(6)
-                }
-                Picker("Background box", selection: $background) {
-                    Text("None").tag(0)
-                    Text("Light").tag(96)
-                    Text("Dark").tag(176)
-                    Text("Solid").tag(255)
-                }
-                Picker("Position on screen", selection: $margin) {
-                    Text("Bottom").tag(0)
-                    Text("Slightly higher").tag(40)
-                    Text("Higher").tag(100)
-                }
+                ChoiceRow("Text outline", selection: $outline, options: [
+                    ("None", 0),
+                    ("Thin", 2),
+                    ("Normal", 4),
+                    ("Thick", 6),
+                ])
+                ChoiceRow("Background box", selection: $background, options: [
+                    ("None", 0),
+                    ("Light", 96),
+                    ("Dark", 176),
+                    ("Solid", 255),
+                ])
+                ChoiceRow("Position on screen", selection: $margin, options: [
+                    ("Bottom", 0),
+                    ("Slightly higher", 40),
+                    ("Higher", 100),
+                ])
             } header: {
                 Text("Style")
             }

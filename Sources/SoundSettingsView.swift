@@ -4,48 +4,41 @@ import TVVLCKit
 /// Settings → Sound.
 struct SoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @Environment(\.settingsNav) private var nav
     @AppStorage(SoundSettings.presetKey) private var preset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
 
+    private var equalizerOptions: [(label: String, value: String)] {
+        [("Off", "off")]
+            + SoundSettings.appPresets.map { ($0.name, "a:\($0.id)") }
+            + SoundSettings.presets.map { ($0.name, "p:\($0.index)") }
+            + [("Custom", "custom")]
+    }
+
     var body: some View {
-        List {
+        SettingsPage {
             Section {
-                Picker("Loudness", selection: $loudness) {
-                    ForEach(SoundSettings.Loudness.allCases, id: \.rawValue) { mode in
-                        Text(mode.name).tag(mode.rawValue)
-                    }
-                }
+                ChoiceRow("Loudness", selection: $loudness,
+                          options: SoundSettings.Loudness.allCases.map { ($0.name, $0.rawValue) })
             } header: {
                 Text("Loudness")
             }
             Section {
-                Picker("Equalizer", selection: $preset) {
-                    Text("Off").tag("off")
-                    ForEach(SoundSettings.appPresets, id: \.id) { p in
-                        Text(p.name).tag("a:\(p.id)")
-                    }
-                    ForEach(SoundSettings.presets, id: \.index) { p in
-                        Text(p.name).tag("p:\(p.index)")
-                    }
-                    Text("Custom").tag("custom")
-                }
-                NavigationLink {
-                    CustomEqualizerView()
+                ChoiceRow("Equalizer", selection: $preset, options: equalizerOptions)
+                Button {
+                    nav.push(.page(.equalizer))
                 } label: {
-                    HStack {
+                    HStack(spacing: 20) {
                         Text("Edit custom equalizer")
                         Spacer()
                         Text(preset == "custom" ? "In use" : "").foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.system(size: 24, weight: .semibold)).foregroundStyle(.secondary)
                     }
                 }
             } header: {
                 Text("Equalizer")
             }
         }
-        .pickerStyle(.navigationLink)
-        .font(.system(size: 30))
-        .environment(\.defaultMinListRowHeight, 66)
-        .navigationTitle("Sound")
         .onChange(of: "\(preset)|\(loudness)") {
             engine.applySettings()
         }
@@ -75,6 +68,51 @@ struct CustomEqualizerView: View {
     }
 
     var body: some View {
+        Group {
+            if showPresets {
+                // Inside the editor (not a pushed page), so the edit survives choosing a preset.
+                PresetPickerList { tag in
+                    if let (pre, bands) = SoundSettings.presetValues(tag) {
+                        values = [pre.rounded()] + bands.map { $0.rounded() }
+                        changed = true
+                        loadedFrom = SoundSettings.presetName(tag)
+                    }
+                    showPresets = false
+                }
+            } else {
+                editor
+            }
+        }
+        // Back in the preset list returns to the bands; in the bands the Settings screen closes the page (saves).
+        .onExitCommand(perform: presetsBack)
+        .onChange(of: showPresets) {
+            if !showPresets { DispatchQueue.main.async { focus = .bands } }
+        }
+        .onAppear {
+            focus = .bands
+            guard values.isEmpty else { return }
+            var pre: Float, bands: [Float]
+            if UserDefaults.standard.string(forKey: SoundSettings.customKey) == nil,
+               let fromPreset = SoundSettings.presetValues(SoundSettings.preset) {
+                (pre, bands) = fromPreset
+            } else {
+                (pre, bands) = SoundSettings.customValues()
+            }
+            values = [pre.rounded()] + bands.map { $0.rounded() }
+        }
+        .onDisappear {
+            guard changed, !values.isEmpty else { return }
+            SoundSettings.saveCustom(preamp: values[0], bands: Array(values.dropFirst()))
+            UserDefaults.standard.set("custom", forKey: SoundSettings.presetKey)
+            engine.applySettings()
+        }
+    }
+
+    private var presetsBack: (() -> Void)? {
+        showPresets ? { showPresets = false } : nil
+    }
+
+    private var editor: some View {
         VStack(spacing: 24) {
             Text("◀ ▶ band    ▲ ▼ ±1 dB    ◀ from Pre = presets    Back = save")
                 .font(.system(size: 22))
@@ -124,43 +162,11 @@ struct CustomEqualizerView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Custom equalizer")
-        // A pushed full-screen list like the other pickers in Settings. A .sheet is a fixed-size card on
-        // tvOS and clipped the list (build 19, user's photo).
-        .navigationDestination(isPresented: $showPresets) {
-            PresetPickerList { tag in
-                if let (pre, bands) = SoundSettings.presetValues(tag) {
-                    values = [pre.rounded()] + bands.map { $0.rounded() }
-                    changed = true
-                    loadedFrom = SoundSettings.presetName(tag)
-                }
-                showPresets = false
-            }
-        }
-        .onAppear {
-            focus = .bands  // also when coming back from the preset list
-            guard values.isEmpty else { return }  // coming back from the preset list: keep the edit
-            var pre: Float, bands: [Float]
-            if UserDefaults.standard.string(forKey: SoundSettings.customKey) == nil,
-               let fromPreset = SoundSettings.presetValues(SoundSettings.preset) {
-                (pre, bands) = fromPreset
-            } else {
-                (pre, bands) = SoundSettings.customValues()
-            }
-            values = [pre.rounded()] + bands.map { $0.rounded() }
-        }
-        .onDisappear {
-            guard !showPresets else { return }  // the preset sheet is opening, not leaving the editor
-            guard changed, !values.isEmpty else { return }
-            SoundSettings.saveCustom(preamp: values[0], bands: Array(values.dropFirst()))
-            UserDefaults.standard.set("custom", forKey: SoundSettings.presetKey)
-            engine.applySettings()
-        }
     }
 }
 
 /// Built-in curves to start the custom equalizer from: the app's own presets, then VLC's (Flat first).
-/// Opens inside the Settings panel, laid out like Settings → Sound.
+/// Shown inside the equalizer editor, laid out like Settings → Sound.
 struct PresetPickerList: View {
     let pick: (String) -> Void
 
@@ -182,7 +188,6 @@ struct PresetPickerList: View {
             }
         }
         .font(.system(size: 30))
-        .navigationTitle("Load preset")
     }
 }
 
