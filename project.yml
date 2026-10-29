@@ -15,7 +15,8 @@ targets:
   AtvPlayer:
     type: application
     platform: tvOS
-    scheme: {}
+    scheme:
+      testTargets: [AtvPlayerUITests]
     sources:
       - Sources
       - Shared
@@ -83,3 +84,17 @@ targets:
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
         CODE_SIGN_IDENTITY: ""
+
+  # Siri Remote checks on the tvOS simulator (design workflow, ui_test=true). Not part of the app or the IPA.
+  AtvPlayerUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources:
+      - UITests
+    dependencies:
+      - target: AtvPlayer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.mihten.atvplayer.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TARGETED_DEVICE_FAMILY: "3"

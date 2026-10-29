@@ -18,6 +18,9 @@ on:
       remote_test:
         description: "Also run the remote-access check (iPhone app through a basic-auth proxy)"
         default: "false"
+      ui_test:
+        description: "Also run the Siri Remote UI tests on the tvOS simulator (UITests/)"
+        default: "false"
 
 permissions:
   contents: write
@@ -34,6 +37,7 @@ jobs:
       BUILD_NUMBER: ${{ github.run_number }}
       THEMES: ${{ github.event.inputs.themes || 'aurora noir vinyl' }}
       REMOTE_TEST: ${{ github.event.inputs.remote_test || 'false' }}
+      UI_TEST: ${{ github.event.inputs.ui_test || 'false' }}
       EXTRA_ROUTES: ${{ github.event.inputs.extra_routes || '' }}
       PLATFORMS: ${{ github.event.inputs.platforms || (contains(github.event.head_commit.message, '[release]') && 'none' || 'tv,phone') }}
     steps:
@@ -77,14 +81,14 @@ jobs:
           test -f build-sim/Build/Products/Debug-iphonesimulator/AtvPlayerPhone.app/AtvPlayerPhone
 
       - name: Cache demo library
-        if: env.PLATFORMS != 'none' || env.REMOTE_TEST == 'true'
+        if: env.PLATFORMS != 'none' || env.REMOTE_TEST == 'true' || env.UI_TEST == 'true'
         uses: actions/cache@v4
         with:
           path: ~/demo-library
           key: demo-library-${{ hashFiles('tools/demo_library.py') }}
 
       - name: Demo library + throwaway media server
-        if: env.PLATFORMS != 'none' || env.REMOTE_TEST == 'true'
+        if: env.PLATFORMS != 'none' || env.REMOTE_TEST == 'true' || env.UI_TEST == 'true'
         run: |
           command -v ffmpeg || brew install ffmpeg
           python3 -m venv /tmp/venv
@@ -109,6 +113,34 @@ jobs:
             shots "$PLATFORMS" $THEMES
           cp server.log shots/server.log
 
+      - name: Siri Remote UI tests (tvOS simulator)
+        if: env.UI_TEST == 'true'
+        timeout-minutes: 30
+        run: |
+          export PATH="/tmp/venv/bin:$PATH"
+          TV=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          runtimes = sorted((r for r in data if ".tvOS-" in r), key=lambda r: [int(x) for x in r.split("-")[1:] if x.isdigit()])
+          for runtime in reversed(runtimes):
+              devices = data[runtime]
+              for pref in ("Apple TV 4K (3rd generation) (at 1080p)", "Apple TV 4K (3rd generation)", "Apple TV"):
+                  for d in devices:
+                      if d["name"] == pref:
+                          print(d["udid"]); sys.exit()
+              if devices:
+                  print(devices[0]["udid"]); sys.exit()
+          ')
+          echo "tvOS simulator $TV"
+          python3 tools/design_driver.py play tv music "Harbor Lights"
+          mkdir -p ui-shots
+          TEST_RUNNER_UI_SHOTS="$PWD/ui-shots" xcodebuild test -workspace AtvPlayer.xcworkspace -scheme AtvPlayer \
+            -destination "id=$TV" -derivedDataPath build-sim \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
+            > ui-test.log 2>&1; rc=$?
+          grep -E "UITEST:|Test Case .*(passed|failed)|error:|\*\* TEST" ui-test.log | head -80
+          exit $rc
+
       - name: Remote-access check (iPhone app -> basic-auth proxy -> media server)
         if: env.REMOTE_TEST == 'true'
         timeout-minutes: 15
@@ -126,6 +158,8 @@ jobs:
             shots
             shots-remote
             remote-check.log
+            ui-shots
+            ui-test.log
             server.log
             xcodebuild-sim-*.log
           retention-days: 14

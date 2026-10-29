@@ -90,6 +90,7 @@ struct CustomEqualizerView: View {
         }
         .onAppear {
             focus = .bands
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { if focus == nil { focus = .bands } }
             guard values.isEmpty else { return }
             var pre: Float, bands: [Float]
             if UserDefaults.standard.string(forKey: SoundSettings.customKey) == nil,
@@ -133,7 +134,8 @@ struct CustomEqualizerView: View {
                 // always-focusable button here stole every ◀ (build 19). Only focusable while "Pre"
                 // (leftmost) is selected or it already has focus; disabled = unreachable (seen on the
                 // TV in build 11), so ◀ on other bands reaches onMoveCommand again.
-                .disabled(focus == .bands && selected != 0)
+                // Also disabled while nothing has the focus yet (the page is opening), so tvOS starts on the bands.
+                .disabled(focus != .load && selected != 0)
                 HStack(alignment: .bottom, spacing: 10) {
                     ForEach(values.indices, id: \.self) { i in
                         BandColumn(label: i < labels.count ? labels[i] : "", value: values[i], range: range,
