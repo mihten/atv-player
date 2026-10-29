@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Apple TV Settings: a full screen split in half (0.18.20) - Now Playing on the left, the settings on the right. Every page and
+/// Apple TV Settings (0.18.20): a full screen split in half - Now Playing on the left, the settings on the right. Every page and
 /// picker opens in the right half; Back goes one level up and leaves Settings from the first page.
 enum SettingsRoute: Hashable {
     case theme, server, sound, playback, lyrics, about, equalizer
