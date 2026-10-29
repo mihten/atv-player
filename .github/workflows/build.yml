@@ -83,10 +83,6 @@ jobs:
           }
           package Release-appletvos AtvPlayer AtvPlayer.ipa
           package Release-iphoneos AtvPlayerPhone AtvPlayer-iOS.ipa
-          # Widener hack needs these libVLC symbols exported (see Shared/VLCInternals.swift).
-          for bin in Payload/AtvPlayerPhone.app/Frameworks/MobileVLCKit.framework/MobileVLCKit Payload/AtvPlayerPhone.app/AtvPlayerPhone; do
-            [ -f "$bin" ] && echo "$bin: $(nm -gU "$bin" 2>/dev/null | grep -cE ' _(var_SetChecked|vlc_list_children|vlc_list_release)$') of 3 VLC symbols exported"
-          done
 
       - uses: actions/upload-artifact@v4
         if: always()

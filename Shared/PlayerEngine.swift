@@ -95,7 +95,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         connection?.send(["type": "log", "message": message])
     }
 
-    /// Equalizer + widener on a fresh player, before its first playback creates the audio output.
+    /// Equalizer on a fresh player, before its first playback creates the audio output.
     private func configureAudio() {
         levelGain = SoundSettings.levelGain(for: current)
         let eq = SoundSettings.makeEqualizer(extraGain: levelGain)
@@ -103,28 +103,18 @@ final class PlayerEngine: NSObject, ObservableObject {
             vlc.equalizer = eq
         }
         let gainNote = levelGain != 0 ? String(format: ", loudness %+.1f dB", levelGain) : ""
-        if let chain = SoundSettings.filterChain(withEqualizer: eq != nil) {
-            audioReport = "audio filters '\(chain)': \(VLCInternals.setAudioFilter(vlc, chain))\(gainNote)"
-        } else {
-            audioReport = "audio: \(SoundSettings.summary)\(gainNote)"
-        }
+        audioReport = "audio: \(SoundSettings.summary)\(gainNote)"
     }
 
-    /// Per-track loudness gain for the item that is about to load. Without the widener the equalizer's
-    /// preamp is changed on the running player (that is what VLC's own equalizer sliders do); with the
-    /// widener the filter chain depends on whether an equalizer exists, so the player is rebuilt (the same
-    /// path as a settings change). Called before the new media is set.
+    /// Per-track loudness gain for the item that is about to load: the equalizer's preamp is changed on the
+    /// running player (that is what VLC's own equalizer sliders do). Called before the new media is set.
     private func applyLevel(for item: MediaItem) {
         let gain = SoundSettings.levelGain(for: item)
         guard gain != levelGain else { return }
         let before = levelGain
-        if SoundSettings.widen > 0 {
-            rebuildPlayer("loudness")  // configureAudio picks up the gain of `current`
-        } else {
-            levelGain = gain
-            vlc.equalizer = SoundSettings.makeEqualizer(extraGain: gain)
-            audioReport = "audio: \(SoundSettings.summary), loudness \(String(format: "%+.1f", gain)) dB"
-        }
+        levelGain = gain
+        vlc.equalizer = SoundSettings.makeEqualizer(extraGain: gain)
+        audioReport = "audio: \(SoundSettings.summary), loudness \(String(format: "%+.1f", gain)) dB"
         log(String(format: "loudness gain %+.1f -> %+.1f dB for '%@' (%@ LUFS, peak %@ dBFS)", before, gain, item.title,
                    item.lufs.map { String(format: "%.1f", $0) } ?? "?", item.tpeak.map { String(format: "%.1f", $0) } ?? "?"))
     }
@@ -153,7 +143,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         launchNote = "app started; previous run ended in the \(UserDefaults.standard.string(forKey: Self.lastStateKey) ?? "unknown state")"
         UserDefaults.standard.set("foreground", forKey: Self.lastStateKey)
         SoundSettings.migrate()
-        let options = PlayerSettings.vlcOptions() + SoundSettings.widenerOptions()
+        let options = PlayerSettings.vlcOptions()
         vlcOptions = options
         appliedSound = SoundSettings.configKey
         vlc = Self.makePlayer(options)
@@ -852,7 +842,7 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     /// Re-read Settings. Subtitle style options need a new VLC instance; playback resumes at the same position.
     func applySettings() {
-        let options = PlayerSettings.vlcOptions() + SoundSettings.widenerOptions()
+        let options = PlayerSettings.vlcOptions()
         let sound = SoundSettings.configKey
         guard options != vlcOptions || sound != appliedSound else {
             tracksApplied = false
@@ -870,7 +860,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
     }
 
-    /// Fresh VLC instance with the current options (subtitle style, EQ, widener).
+    /// Fresh VLC instance with the current options (subtitle style, EQ).
     private func rebuildPlayer(_ why: String) {
         vlc.delegate = nil
         vlc.stop()

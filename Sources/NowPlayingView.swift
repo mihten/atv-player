@@ -17,8 +17,8 @@ struct NowPlayingView: View {
     /// Lyrics instead of cover / video; remembered on this device, switched with the remote's click button.
     @AppStorage("lyricsMode") private var lyricsMode = false
     @State private var panel = false
-    /// The current press already opened the panel, so its release is not a click.
-    @State private var heldOpen = false
+    /// When the current press of the centre button began (nil = not pressed).
+    @State private var pressStart: Date?
 
     var body: some View {
         ZStack {
@@ -105,21 +105,24 @@ struct NowPlayingView: View {
             engine.togglePlay(source: "player-screen")
             flash()
         }
-        // One handler for both, so a hold never also counts as a click: released before 0.5 s = click (lyrics),
-        // held 0.5 s = quick panel.
+        // One handler for both. tvOS reports "pressing ended" at the moment the hold is recognised, BEFORE the
+        // long-press action runs and while the button is still down (server log 2026-10-28/29: "click -> lyrics"
+        // and "held -> quick panel" in the same millisecond). So a click is decided by how long the press lasted:
+        // under 0.4 s = click (lyrics), longer = hold (quick panel only).
         .onLongPressGesture(minimumDuration: 0.5) {
-            heldOpen = true
             panel = true
             remoteLog("remote: centre held -> quick panel open")
         } onPressingChanged: { pressing in
-            guard !pressing else { return }
-            if heldOpen {
-                heldOpen = false
-            } else if !panel {
-                lyricsMode.toggle()
-                remoteLog("remote: centre click -> lyrics \(lyricsMode ? "on" : "off")")
-                flash()
+            if pressing {
+                pressStart = Date()
+                return
             }
+            guard let start = pressStart else { return }
+            pressStart = nil
+            guard Date().timeIntervalSince(start) < 0.4, !panel else { return }
+            lyricsMode.toggle()
+            remoteLog("remote: centre click -> lyrics \(lyricsMode ? "on" : "off")")
+            flash()
         }
         .onExitCommand { dismiss() }
         .onChange(of: engine.current?.id) {
@@ -146,7 +149,6 @@ struct NowPlayingView: View {
     private func closePanel() {
         remoteLog("remote: quick panel closed")
         panel = false
-        heldOpen = false
         focused = true
         flash()
     }

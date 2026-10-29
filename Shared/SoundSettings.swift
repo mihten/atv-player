@@ -5,11 +5,10 @@ import TVVLCKit
 import MobileVLCKit
 #endif
 
-/// Equalizer + stereo widener settings (stored in UserDefaults, applied by PlayerEngine).
+/// Equalizer + loudness settings (stored in UserDefaults, applied by PlayerEngine).
 enum SoundSettings {
     static let presetKey = "eqPreset"      // "off" | "custom" | "p:<VLC preset index>"
     static let customKey = "eqCustom"      // "preamp;b0,b1,…,b9" in dB
-    static let widenKey = "stereoWiden"    // 0 off, 1 light, 2 normal, 3 strong
     static let loudnessKey = "loudnessMode" // "off" | "raise" | "level"
 
     private static var defaults: UserDefaults { .standard }
@@ -21,7 +20,6 @@ enum SoundSettings {
     static let customFormatKey = "eqCustomFormat"  // "2" = preamp stored relative to the offset
 
     static var preset: String { defaults.string(forKey: presetKey) ?? "off" }
-    static var widen: Int { defaults.integer(forKey: widenKey) }
 
     static var presets: [VLCAudioEqualizer.Preset] { VLCAudioEqualizer.presets }
 
@@ -100,6 +98,7 @@ enum SoundSettings {
         if let old = defaults.string(forKey: presetKey), let new = renamed[old] {
             defaults.set(new, forKey: presetKey)
         }
+        defaults.removeObject(forKey: "stereoWiden")  // the stereo widener was removed in 0.18.20
     }
 
     static func appPreset(_ value: String) -> AppPreset? {
@@ -182,39 +181,14 @@ enum SoundSettings {
         return eq
     }
 
-    /// Audio filter chain to force on the player when the widener is on (nil = leave VLC's own).
-    /// `withEqualizer`: the player has an equalizer (preset or loudness gain), which must stay in the chain.
-    static func filterChain(withEqualizer: Bool) -> String? {
-        guard widen > 0 else { return nil }
-        return (withEqualizer ? "equalizer:" : "") + "stereo_widen"
-    }
-
-    /// stereo_widen parameters per strength (VLC defaults = Normal).
-    static func widenerOptions() -> [String] {
-        let params: (Int, Double, Double, Double)
-        switch widen {
-        case 1: params = (12, 0.2, 0.2, 0.9)
-        case 3: params = (25, 0.5, 0.4, 0.7)
-        default: params = (20, 0.3, 0.3, 0.8)
-        }
-        guard widen > 0 else { return [] }
-        return [
-            "--stereowiden-delay=\(params.0)",
-            "--stereowiden-feedback=\(params.1)",
-            "--stereowiden-crossfeed=\(params.2)",
-            "--stereowiden-dry-mix=\(params.3)",
-        ]
-    }
-
     /// Changes in this key mean the player must be rebuilt.
     static var configKey: String {
-        "\(preset)|\(preset == "custom" ? defaults.string(forKey: customKey) ?? "" : "")|\(widen)|\(loudness.rawValue)"
+        "\(preset)|\(preset == "custom" ? defaults.string(forKey: customKey) ?? "" : "")|\(loudness.rawValue)"
     }
 
     static var summary: String {
         var parts: [String] = []
         if preset != "off" { parts.append("EQ \(presetName(preset))") }
-        if widen > 0 { parts.append("widener " + ["", "light", "normal", "strong"][min(max(widen, 0), 3)]) }
         if loudness != .off { parts.append(loudness == .raise ? "loudness" : "leveling") }
         guard !parts.isEmpty else { return "Off (unprocessed)" }
         parts[0] = parts[0].prefix(1).uppercased() + String(parts[0].dropFirst())

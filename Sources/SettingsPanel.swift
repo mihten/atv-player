@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Apple TV Settings (since 0.18.19): a panel in the lower-left corner over the current screen (not a full-screen page). Every page and
-/// picker opens inside the panel; Back goes one level up and closes the panel from its first page.
+/// Apple TV Settings: a full screen split in half (0.18.20) - Now Playing on the left, the settings on the right. Every page and
+/// picker opens in the right half; Back goes one level up and leaves Settings from the first page.
 enum SettingsRoute: Hashable {
     case theme, server, sound, playback, lyrics, about, equalizer
 
@@ -39,40 +39,63 @@ struct SettingsPanel: View {
     @EnvironmentObject var engine: PlayerEngine
     @Environment(\.appTheme) private var theme
     @State private var path: [SettingsRoute] = []
-
-    static let size = CGSize(width: 860, height: 760)
+    /// The Now Playing card is disabled (= not focusable) while the screen opens, so tvOS puts the initial focus on the
+    /// first setting; then it is enabled and ◀ reaches it (the pattern of the menus, proven on the TV).
+    @State private var cardReady = false
 
     var body: some View {
-        NavigationStack(path: $path) {
-            SettingsRootView(close: close)
-                .navigationDestination(for: SettingsRoute.self) { route in
-                    switch route {
-                    case .theme: ThemeSettingsView()
-                    case .server: ServerSettingsView()
-                    case .sound: SoundSettingsView()
-                    case .playback: PlaybackSettingsView()
-                    case .lyrics: LyricsSettingsView()
-                    case .about: AboutSettingsView()
-                    case .equalizer: CustomEqualizerView()
+        // Half and half: Now Playing (or a big symbol) on the left, the settings on the right. Pages and pickers
+        // open inside the right half; Back goes one level up and leaves Settings from the first page.
+        ZStack {
+            Color.black.ignoresSafeArea()
+            HStack(alignment: .top, spacing: 0) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Settings").font(.system(size: 64, weight: .bold))
+                    if engine.current != nil {
+                        NowPlayingSidebar(enabled: cardReady)
+                    } else {
+                        VStack(spacing: 30) {
+                            Image(systemName: "gearshape.fill")
+                                .font(.system(size: 300, weight: .regular))
+                                .foregroundStyle(.secondary)
+                            Text("ATV Player").font(.title3).foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 60)
                     }
                 }
-        }
-        .frame(width: Self.size.width, height: Self.size.height)
-        .fontDesign(theme.fontDesign)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 36, style: .continuous).fill(.thickMaterial)
-                RoundedRectangle(cornerRadius: 36, style: .continuous).fill(Color.black.opacity(0.45))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 60)
+                NavigationStack(path: $path) {
+                    SettingsRootView(close: close)
+                        .navigationDestination(for: SettingsRoute.self) { route in
+                            switch route {
+                            case .theme: ThemeSettingsView()
+                            case .server: ServerSettingsView()
+                            case .sound: SoundSettingsView()
+                            case .playback: PlaybackSettingsView()
+                            case .lyrics: LyricsSettingsView()
+                            case .about: AboutSettingsView()
+                            case .equalizer: CustomEqualizerView()
+                            }
+                        }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.trailing, 40)
+                .focusSection()
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-        .shadow(color: .black.opacity(0.5), radius: 40, y: 12)
-        .focusSection()
+        .themedScreen(intensity: 0.55)
+        .fontDesign(theme.fontDesign)
         .onPlayPauseCommand {
             if engine.current != nil { engine.togglePlay(source: "settings") }
         }
         .onAppear {
             if let start { path = start == .equalizer ? [.sound, .equalizer] : [start] }
+            cardReady = false
+            Task {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                cardReady = true
+            }
         }
     }
 }
@@ -86,7 +109,6 @@ struct SettingsRootView: View {
     @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
-    @AppStorage(SoundSettings.widenKey) private var widen = 0
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
 
@@ -101,7 +123,7 @@ struct SettingsRootView: View {
         }
         .font(.system(size: 30))
         .environment(\.defaultMinListRowHeight, 70)
-        .navigationTitle("Settings")
+        .toolbar(.hidden, for: .navigationBar)
         .onExitCommand { close() }
     }
 
@@ -117,7 +139,7 @@ struct SettingsRootView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = widen; _ = loudness  // refresh when any changes
+        _ = eqPreset; _ = loudness  // refresh when any changes
         return SoundSettings.summary
     }
 
@@ -169,7 +191,6 @@ struct AboutSettingsView: View {
             }
             Section("Good to know") {
                 info("Loudness", "The server measures each file once; new files play unchanged until then")
-                info("Stereo widener", "For speakers; on headphones it sounds hollow")
                 info("Sound and lyrics style", "A playing video restarts at the same position")
                 info("Leaving the app", "Music videos pause; music keeps playing if set")
             }

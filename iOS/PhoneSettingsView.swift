@@ -7,7 +7,6 @@ struct PhoneSettingsView: View {
     @EnvironmentObject var locator: ServerLocator
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
-    @AppStorage(SoundSettings.widenKey) private var widen = 0
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
@@ -53,7 +52,7 @@ struct PhoneSettingsView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = widen; _ = loudness  // refresh when any changes
+        _ = eqPreset; _ = loudness  // refresh when any changes
         return SoundSettings.summary
     }
 
@@ -186,7 +185,6 @@ struct PhoneServerSettingsView: View {
 struct PhoneSoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
-    @AppStorage(SoundSettings.widenKey) private var widen = 0
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
 
     var body: some View {
@@ -209,20 +207,11 @@ struct PhoneSoundSettingsView: View {
                 NavigationLink("Edit custom equalizer") { PhoneEqualizerView() }
             }
             .themedRow()
-            Section {
-                Picker("Stereo widener", selection: $widen) {
-                    Text("Off").tag(0)
-                    Text("Light").tag(1)
-                    Text("Normal").tag(2)
-                    Text("Strong").tag(3)
-                }
-            }
-            .themedRow()
         }
         .phoneThemed()
         .navigationTitle("Sound")
         .withMiniPlayer()
-        .onChange(of: "\(eqPreset)|\(widen)|\(loudness)") {
+        .onChange(of: "\(eqPreset)|\(loudness)") {
             engine.applySettings()
         }
     }
@@ -435,7 +424,6 @@ struct PhoneAboutView: View {
             Section("Good to know") {
                 Text("This iPhone has its own queue; the Apple TV's is separate.")
                 Text("Loudness: the server measures each file once; new files play unchanged until then.")
-                Text("The stereo widener is meant for speakers; on headphones it sounds hollow.")
                 Text("Away from home, Audio only plays music videos as sound and uses far less data.")
                 Text("Fast seek jumps to the nearest keyframe, so a jump can land a few seconds off.")
             }

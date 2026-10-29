@@ -110,11 +110,14 @@ final class LyricsStore: ObservableObject {
 struct LyricsPanel: View {
     let item: MediaItem
     @ObservedObject var store: LyricsStore
+    /// `LyricsResponse.chosen` reads this setting while the view renders; without observing it here a change made in
+    /// the quick panel (or Settings) did not redraw the lyrics until the next song.
+    @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
 
     var body: some View {
         ZStack {
             content
-                .id(item.id)
+                .id("\(item.id)|\(subLang)")
                 .transition(.opacity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

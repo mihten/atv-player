@@ -11,19 +11,15 @@ struct ContentView: View {
     @State private var settingsStart: SettingsRoute?
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
             menus
-                .disabled(settingsOpen)  // focus stays in the panel
+                .disabled(settingsOpen)  // focus stays in Settings
             if settingsOpen {
-                Color.black.opacity(0.4).ignoresSafeArea()
-                    .transition(.opacity)
                 SettingsPanel(start: settingsStart) {
                     settingsOpen = false
                     settingsStart = nil
                 }
-                .padding(.leading, 60)
-                .padding(.bottom, 50)
-                .transition(.move(edge: .leading).combined(with: .opacity))
+                .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.25), value: settingsOpen)

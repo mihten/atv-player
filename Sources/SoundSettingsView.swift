@@ -5,7 +5,6 @@ import TVVLCKit
 struct SoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @AppStorage(SoundSettings.presetKey) private var preset = "off"
-    @AppStorage(SoundSettings.widenKey) private var widen = 0
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
 
     var body: some View {
@@ -42,22 +41,12 @@ struct SoundSettingsView: View {
             } header: {
                 Text("Equalizer")
             }
-            Section {
-                Picker("Stereo widener", selection: $widen) {
-                    Text("Off").tag(0)
-                    Text("Light").tag(1)
-                    Text("Normal").tag(2)
-                    Text("Strong").tag(3)
-                }
-            } header: {
-                Text("Stereo widener")
-            }
         }
         .pickerStyle(.navigationLink)
         .font(.system(size: 30))
         .environment(\.defaultMinListRowHeight, 66)
         .navigationTitle("Sound")
-        .onChange(of: "\(preset)|\(widen)|\(loudness)") {
+        .onChange(of: "\(preset)|\(loudness)") {
             engine.applySettings()
         }
     }
