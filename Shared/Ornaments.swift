@@ -32,10 +32,10 @@ extension MediaItem {
     /// nil when the server has no art for this item (saves a request that would 404).
     var artURLIfAny: URL? { art == false ? nil : artURL }
     var symbol: String { isVideo ? "film" : "music.note" }
-    /// "FLAC · 2021" style facts for the player.
+    /// "FLAC · 2021" style facts for the player. Codecs as in `codecBadges`: a video shows video + audio
+    /// codec ("AV1", "FLAC"), a song its audio codec once.
     var facts: [String] {
-        var out: [String] = []
-        if let codec, !codec.isEmpty { out.append(codec.uppercased()) }
+        var out = codecBadges
         if lossless == true { out.append("Lossless") }
         if let year, year.count >= 4 { out.append(String(year.prefix(4))) }
         return out

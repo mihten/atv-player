@@ -90,6 +90,13 @@ enum SoundSettings {
     static let appPresets: [AppPreset] = [
         AppPreset(id: "momentum4", name: "Momentum 4", vlcPreamp: 13,
                   bands: [-1, -1, 0, 1, 1, 2, 4, 2, 0, -1]),
+        // "Amplify": flat (a pure gain, no filtering) as loud as Momentum 4. Momentum 4's real combined
+        // response (eq_fit.py model, +1 preamp, peak +5.5 dB near 2 kHz), power-averaged over music spectra
+        // with K-weighting (BS.1770 loudness): +1.6…+2.4 dB; power mean of the band gains +2.0; pink noise
+        // +2.4…+2.8 (too bright for music). +2.0 dB (VLC 14): mid-range, and whole dB so the custom
+        // editor (1 dB steps) keeps it when loaded from this preset.
+        AppPreset(id: "amplify", name: "Amplify", vlcPreamp: 14,
+                  bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     ]
 
     /// Renamed app presets: old stored tag → new tag. Run once at startup, before anything reads the preset.
