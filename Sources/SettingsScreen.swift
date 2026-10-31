@@ -193,7 +193,8 @@ struct SettingsRootView: View {
         List {
             row(.theme, "Theme", "paintpalette", (AppTheme(rawValue: themeRaw) ?? .aurora).name)
                 .prefersDefaultFocus(true, in: scope)
-            row(.server, "Server", "server.rack", locator.isManual ? Config.remoteAddress : "Automatic")
+            row(.server, "Server", "server.rack",
+                locator.localMode ? "No server" : (locator.isManual ? Config.remoteAddress : "Automatic"))
             row(.sound, "Sound", "speaker.wave.2", soundSummary)
             row(.playback, "Playback", "play.circle", "\(seekBack) s / \(seekForward) s")
             row(.lyrics, "Lyrics", "captions.bubble", lyricsSummary)
@@ -247,19 +248,30 @@ enum AppInfo {
 struct AboutSettingsView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var locator: ServerLocator
+    @ObservedObject private var library = LocalLibrary.shared
 
     var body: some View {
         SettingsPage {
             Section("ATV Player") {
                 info("Version", "\(AppInfo.version) (build \(AppInfo.build))")
-                info("Plays", "Songs and music videos from your own server, original files")
+                info("Plays", locator.localMode
+                     ? "Songs and music videos from an SMB share, original files"
+                     : "Songs and music videos from your own server, original files")
             }
-            Section("Server") {
-                info("Address", Config.remoteAddress)
-                info("Status", connection.connected
-                     ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
-                info("Web remote", "\(Config.remoteAddress) on a phone or PC")
-                info("Queues", "The Apple TV and the iPhone each have their own")
+            if locator.localMode {
+                Section("Server") {
+                    info("Library", "No server: files from " + (LocalSettings.smbName ?? "an SMB share (not set up yet)"))
+                    info("Status", "No server · \(library.status)")
+                    info("Not available", "Playlists, lyrics lookup, loudness levelling, web remote")
+                }
+            } else {
+                Section("Server") {
+                    info("Address", Config.remoteAddress)
+                    info("Status", connection.connected
+                         ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
+                    info("Web remote", "\(Config.remoteAddress) on a phone or PC")
+                    info("Queues", "The Apple TV and the iPhone each have their own")
+                }
             }
             Section("Siri Remote in the player") {
                 info("▼  ▲", "Next / previous")
@@ -269,7 +281,9 @@ struct AboutSettingsView: View {
                 info("⏯", "Pause / resume, also in the menus")
             }
             Section("Good to know") {
-                info("Loudness", "The server measures each file once; new files play unchanged until then")
+                info("Loudness", locator.localMode
+                     ? "Not levelled without the server"
+                     : "The server measures each file once; new files play unchanged until then")
                 info("Sound and lyrics style", "A playing video restarts at the same position")
                 info("Leaving the app", "Music videos pause; music keeps playing if set")
             }

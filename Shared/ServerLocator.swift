@@ -20,10 +20,53 @@ final class ServerLocator: ObservableObject {
     @Published private(set) var searching = false
     /// The internet address is in use (HTTPS + login) instead of the home server.
     @Published private(set) var isRemote = false
+    /// No-server mode (Settings → Server → Library): no server is searched; `url` is LocalAPI.baseURL.
+    @Published private(set) var localMode = LocalSettings.enabled
     private var browser: NWBrowser?
     private var fallbackTask: Task<Void, Never>?
 
     init() {
+        if LocalSettings.enabled {
+            useLocal()
+            return
+        }
+        startSearching()
+    }
+
+    /// Settings: switch no-server mode on or off.
+    func setLocalMode(_ on: Bool) {
+        LocalSettings.setEnabled(on)
+        if on {
+            stopBrowsing()
+            fallbackTask?.cancel()
+            useLocal()
+        } else {
+            guard localMode else { return }
+            Config.localMode = false
+            localMode = false
+            url = nil
+            status = "Looking for the ATV Player server…"
+            startSearching()
+        }
+    }
+
+    private func useLocal() {
+        Config.localMode = true
+        Config.isRemote = false
+        Config.credentials = nil
+        Config.serverURL = LocalAPI.baseURL
+        isRemote = false
+        localMode = true
+        url = LocalAPI.baseURL
+        #if os(iOS)
+        status = "No server: playing from this iPhone and the SMB share"
+        #else
+        status = "No server: playing from the SMB share"
+        #endif
+    }
+
+    /// Typed address, else the last address found (checked again), else Bonjour (+ the internet address after 4 s).
+    private func startSearching() {
         if let manual = Self.manualURL {
             use(manual, "Address from Settings")
         } else if let found = UserDefaults.standard.string(forKey: Self.foundKey).flatMap(URL.init(string:)) {
@@ -40,7 +83,7 @@ final class ServerLocator: ObservableObject {
 
     /// The home server we use does not answer within 2.5 s (phone on mobile data): use the internet address.
     func checkReachable() {
-        guard !isRemote, remoteAvailable, let current = url else { return }
+        guard !localMode, !isRemote, remoteAvailable, let current = url else { return }
         Task {
             var request = URLRequest(url: current.appendingPathComponent("api/state"))
             request.timeoutInterval = 2.5
@@ -54,13 +97,14 @@ final class ServerLocator: ObservableObject {
         fallbackTask?.cancel()
         fallbackTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard let self, !Task.isCancelled, self.url == nil, self.remoteAvailable else { return }
+            guard let self, !Task.isCancelled, !self.localMode, self.url == nil, self.remoteAvailable else { return }
             self.useRemote()
         }
     }
 
     /// Settings changed the internet address or login: apply it (reconnects when it is the one in use).
     func remoteSettingsChanged() {
+        guard !localMode else { return }
         if isRemote {
             if remoteAvailable { useRemote() } else { fallbackToHome() }
         } else if url == nil {
@@ -79,7 +123,7 @@ final class ServerLocator: ObservableObject {
     }
 
     private func useRemote() {
-        guard let remote = RemoteSettings.configuredURL else { return }
+        guard !localMode, let remote = RemoteSettings.configuredURL else { return }
         fallbackTask?.cancel()
         use(remote, "Away from home (internet address)", remote: true)
         browse()  // keep looking for the home server
@@ -106,6 +150,7 @@ final class ServerLocator: ObservableObject {
     }
 
     /// Settings: empty text = automatic (Bonjour). Returns false if the text is not an address.
+    /// In no-server mode the address is only stored (used when the mode is switched off).
     @discardableResult
     func setManual(_ raw: String) -> Bool {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -116,6 +161,7 @@ final class ServerLocator: ObservableObject {
         }
         guard let manual = Self.normalize(text) else { return false }
         UserDefaults.standard.set(text, forKey: Self.manualKey)
+        guard !localMode else { return true }
         stopBrowsing()
         use(manual, "Address from Settings")
         return true
@@ -123,7 +169,7 @@ final class ServerLocator: ObservableObject {
 
     /// The connection failed several times in a row.
     func serverUnreachable() {
-        guard !isManual else { return }
+        guard !localMode, !isManual else { return }
         if !isRemote && remoteAvailable {
             useRemote()
             return
@@ -133,7 +179,7 @@ final class ServerLocator: ObservableObject {
     }
 
     func browse() {
-        guard browser == nil else { return }
+        guard !localMode, browser == nil else { return }
         let parameters = NWParameters()
         parameters.includePeerToPeer = false
         let newBrowser = NWBrowser(for: .bonjourWithTXTRecord(type: Self.serviceType, domain: nil), using: parameters)
@@ -171,7 +217,7 @@ final class ServerLocator: ObservableObject {
     }
 
     private func found(_ urls: [URL]) {
-        guard !isManual, let first = urls.first else { return }
+        guard !localMode, !isManual, let first = urls.first else { return }
         stopBrowsing()
         fallbackTask?.cancel()
         UserDefaults.standard.set(first.absoluteString, forKey: Self.foundKey)

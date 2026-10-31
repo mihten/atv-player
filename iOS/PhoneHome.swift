@@ -6,6 +6,7 @@ struct PhoneHome: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
+    @EnvironmentObject var locator: ServerLocator
     @Environment(\.appTheme) private var theme
     @Environment(\.showPlayer) private var showPlayer
     @AppStorage(AppTheme.motionKey) private var motion = true
@@ -19,6 +20,9 @@ struct PhoneHome: View {
             VStack(alignment: .leading, spacing: 26) {
                 if let item = engine.current {
                     nowPlaying(item)
+                }
+                if locator.localMode {
+                    LocalLibraryHint(card: true)
                 }
                 if !playlists.isEmpty {
                     shelf("Playlists") { playlistShelf }
@@ -38,6 +42,11 @@ struct PhoneHome: View {
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
         .task { await loadVideos() }
         .task(id: connection.playlistsVersion) { await loadPlaylists() }
+        // No-server mode: the on-device library changed (scan, tags read).
+        .onReceive(LocalLibrary.shared.$version.dropFirst()) { _ in
+            guard locator.localMode else { return }
+            Task { await loadVideos() }
+        }
     }
 
     // MARK: - Now playing
@@ -218,6 +227,42 @@ struct PhoneHome: View {
                   let detail = try? JSONDecoder.server().decode(PlaylistDetail.self, from: d) else { continue }
             covers[playlist.id] = detail.items.filter { !$0.isMissing }.prefix(4).map(\.asMediaItem)
         }
+    }
+}
+
+/// No-server mode: shown on the library screens while the on-device library is empty or being scanned.
+struct LocalLibraryHint: View {
+    var card = false
+    @ObservedObject private var local = LocalLibrary.shared
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        if local.scanning || local.items.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                if local.scanning {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text(progressText)
+                    }
+                }
+                if local.items.isEmpty && !local.scanning {
+                    Text("No files yet. Set up the SMB share in Settings → Server, or copy files into Files › On My iPhone › ATV Player.")
+                    Text(local.status).font(.footnote).opacity(0.7)
+                }
+            }
+            .padding(card ? 14 : 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                if card { HeroBackground() }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: card ? (theme == .noir ? 6 : 18) : 0, style: .continuous))
+        }
+    }
+
+    /// "Scanning… 412 files" / "Reading tags 120 / 1,234" from the library, else just "Scanning…".
+    private var progressText: String {
+        let status = local.status
+        return status.hasPrefix("Scanning") || status.hasPrefix("Reading tags") ? status : "Scanning…"
     }
 }
 

@@ -15,6 +15,7 @@ final class KeyframeStore {
     private var cache: [Int: [Double]] = [:]
     private var order: [Int] = []
     private var inflight: Set<Int> = []
+    private var generation = 0
 
     func prefetch(_ item: MediaItem?) {
         guard let item, item.isVideo, cache[item.id] == nil, !inflight.contains(item.id) else { return }
@@ -28,10 +29,21 @@ final class KeyframeStore {
         return times.first(where: { $0 > seconds }) ?? .infinity
     }
 
+    /// Forgets everything (server and no-server item ids overlap): called when the library mode changes.
+    func reset() {
+        generation += 1
+        cache = [:]
+        order = []
+        inflight = []
+    }
+
     private func fetch(_ id: Int) async {
-        defer { inflight.remove(id) }
+        let gen = generation
+        defer { if gen == generation { inflight.remove(id) } }
         let url = Config.serverURL.appendingPathComponent("api/keyframes/\(id)")
-        guard let (data, response) = try? await Net.data(from: url),
+        let result = try? await Net.data(from: url)
+        guard gen == generation else { return }
+        guard let (data, response) = result,
               (response as? HTTPURLResponse)?.statusCode == 200,
               let reply = try? JSONDecoder().decode(Reply.self, from: data) else { return }
         cache[id] = reply.times

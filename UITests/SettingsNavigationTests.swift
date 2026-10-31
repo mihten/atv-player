@@ -91,6 +91,29 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground)
     }
 
+    /// Server page: the Library choice (media server / no server) is the first row and opens its own choice list.
+    /// Only looks, never picks "No server" (that would leave the demo server for the following tests).
+    func test5ServerLibraryChoice() {
+        launch("settings")
+        press(.down)
+        report("5a server row")
+        XCTAssertTrue(focused.contains("Server"), "down from Theme should reach Server, has '\(focused)'")
+        press(.select)
+        report("5b server page")
+        XCTAssertTrue(app.staticTexts["Library"].exists, "Server page should show 'Library'")
+        XCTAssertTrue(focused.contains("Library"), "the Library row should have the focus, has '\(focused)'")
+        press(.select)
+        report("5c library choices")
+        XCTAssertTrue(focused.contains("Media server"), "the choice list should start on the current value")
+        press(.menu)
+        report("5d back to server page")
+        XCTAssertTrue(app.staticTexts["Library"].exists)
+        press(.menu)
+        report("5e back to settings root")
+        XCTAssertTrue(onRoot)
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     /// On a page, Back with the focus on the Now Playing card closes the page (not Settings, not the app).
     func test4BackFromCardOnPage() {
         launch("sound")

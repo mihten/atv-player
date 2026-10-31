@@ -144,11 +144,13 @@ final class ArtworkStore: ObservableObject {
     @Published private(set) var palette: Palette = .fallback
     private var cache: [Int: (UIImage?, Palette)] = [:]
     private var order: [Int] = []
+    private var generation = 0
 
     func follow(_ item: MediaItem?) {
         guard let item, item.id != itemID else { return }
         itemID = item.id
-        if let hit = cache[item.id] {
+        // A miss cached before the cover was known (no-server mode reads tags later) is fetched again.
+        if let hit = cache[item.id], hit.0 != nil || item.art != true {
             image = hit.0
             palette = hit.1
             return
@@ -157,7 +159,7 @@ final class ArtworkStore: ObservableObject {
             store(item.id, nil, .forItem(item.id))
             return
         }
-        let url = item.artURL, id = item.id
+        let url = item.artURL, id = item.id, gen = generation
         Task {
             var result: (UIImage?, Palette) = (nil, .forItem(id))
             if let (data, response) = try? await Net.data(from: url),
@@ -168,8 +170,19 @@ final class ArtworkStore: ObservableObject {
                 }.value
                 result = (decoded, palette ?? .forItem(id))
             }
+            guard gen == generation else { return }  // reset meanwhile: the cover belongs to the other library
             store(id, result.0, result.1)
         }
+    }
+
+    /// Forgets everything (server and no-server item ids overlap): called when the library mode changes.
+    func reset() {
+        generation += 1
+        cache = [:]
+        order = []
+        itemID = nil
+        image = nil
+        palette = .fallback
     }
 
     /// Art/palette of any recently shown item (a song that is animating out keeps its own cover).

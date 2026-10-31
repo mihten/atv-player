@@ -31,6 +31,19 @@ struct AtvPlayerApp: App {
             .onChange(of: locator.url) { _, url in
                 if url != nil { connection.restart() }
             }
+            // Switching no-server mode on is handled by the url change above (restart starts the local queue).
+            .onChange(of: locator.localMode) { _, on in
+                if !on {
+                    connection.stopLocal()
+                    engine.unload()
+                }
+                // Server and no-server item ids overlap: drop covers, lyrics and keyframes cached by id.
+                artwork.reset()
+                LyricsStore.shared.reset()
+                KeyframeStore.shared.reset()
+                let store = artwork, player = engine
+                Task { store.follow(player.current) }  // after this update, when the new mode's item is loaded
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background {
                     engine.appDidEnterBackground()

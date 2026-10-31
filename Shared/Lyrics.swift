@@ -82,6 +82,7 @@ final class LyricsStore: ObservableObject {
     @Published private(set) var failed: Set<Int> = []
     private var order: [Int] = []
     private var inflight: Set<Int> = []
+    private var generation = 0
 
     func prefetch(_ item: MediaItem?) {
         guard let item, item.lyr != 0, cache[item.id] == nil, !inflight.contains(item.id) else { return }
@@ -90,10 +91,22 @@ final class LyricsStore: ObservableObject {
         Task { await fetch(item.id) }
     }
 
+    /// Forgets everything (server and no-server item ids overlap): called when the library mode changes.
+    func reset() {
+        generation += 1
+        cache = [:]
+        failed = []
+        order = []
+        inflight = []
+    }
+
     private func fetch(_ id: Int) async {
-        defer { inflight.remove(id) }
+        let gen = generation
+        defer { if gen == generation { inflight.remove(id) } }
         let url = Config.serverURL.appendingPathComponent("api/lyrics/\(id)")
-        guard let (data, response) = try? await Net.data(from: url),
+        let result = try? await Net.data(from: url)
+        guard gen == generation else { return }  // reset meanwhile: the reply belongs to the other library
+        guard let (data, response) = result,
               (response as? HTTPURLResponse)?.statusCode == 200,
               let parsed = try? JSONDecoder.server().decode(LyricsResponse.self, from: data) else {
             failed.insert(id)

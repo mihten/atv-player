@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.18.26"
+    MARKETING_VERSION: "0.18.27"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   # Apple TV app (TVVLCKit). Shared/ = engine, server connection, models, settings models.
@@ -75,6 +75,9 @@ targets:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: ATV Player finds your home media server on the Wi-Fi and streams music and videos from it.
         NSBonjourServices: [_atvmedia._tcp]
+        # No-server mode: the Documents folder shows in the Files app (On My iPhone › ATV Player).
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.mihten.atvplayer.phone

@@ -38,6 +38,14 @@ struct ServerSearchView: View {
                 }
             }
             .frame(maxWidth: 700)
+            VStack(spacing: 10) {
+                Button("Use without a server") { locator.setLocalMode(true) }
+                Text(noServerHint)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: 700)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -51,6 +59,14 @@ struct ServerSearchView: View {
         return 76
         #else
         return 38
+        #endif
+    }
+
+    private var noServerHint: String {
+        #if os(tvOS)
+        return "Plays files straight from an SMB share (set it up in Settings → Server)."
+        #else
+        return "Plays files from this iPhone (Files app) or an SMB share (Settings → Server)."
         #endif
     }
 

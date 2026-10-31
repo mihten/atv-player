@@ -303,6 +303,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         position = startAt
         let media = VLCMedia(url: item.mediaURL)
         media.addOption(":network-caching=1500")
+        if item.localPath != nil, item.mediaURL.scheme == "smb" {
+            for option in LocalSettings.smbOptions { media.addOption(option) }  // login for the share (never logged)
+        }
         loadedFastSeek = PlayerSettings.fastSeek
         if loadedFastSeek {
             // Seek to the nearest keyframe instead of decoding up to it (AV1 keyframes are 2-7 s apart).
@@ -322,6 +325,28 @@ final class PlayerEngine: NSObject, ObservableObject {
         clock.duration = duration
         scheduleDiagnostics(for: item)
         fetchArtwork(for: item)
+        updateNowPlaying()
+    }
+
+    /// Nothing loaded any more (switching between server and no-server mode).
+    func unload() {
+        loadGeneration += 1  // cancels the start / seek watchdogs of the old item
+        startCheck?.cancel()
+        startTimeout?.cancel()
+        diagTask?.cancel()
+        seekWatch?.cancel()
+        traceTask?.cancel()
+        wantPlaying = false
+        pendingToggle = nil
+        vlc.stop()
+        current = nil
+        setPlaying(false)
+        position = 0
+        duration = 0
+        clock.position = 0
+        clock.duration = 0
+        artwork = nil
+        artworkFor = nil
         updateNowPlaying()
     }
 

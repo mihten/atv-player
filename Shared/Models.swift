@@ -8,6 +8,8 @@ enum Config {
     nonisolated(unsafe) static var isRemote = false
     /// Login for the remote address (HTTP Basic, checked by the reverse proxy).
     nonisolated(unsafe) static var credentials: (user: String, password: String)? = nil
+    /// No-server mode (Settings → Server → Library): queue, library and files on the device. Set by ServerLocator.
+    nonisolated(unsafe) static var localMode = false
     /// Away from home with "audio only": music videos are streamed as audio and shown like songs.
     static var streamAudioOnly: Bool { isRemote && RemoteSettings.audioOnly }
 
@@ -50,6 +52,11 @@ struct MediaItem: Codable, Identifiable, Hashable {
     var lyr: Int? = nil
     /// Codec of the default audio track (server 0.16.1+; nil from older servers). Songs: same as `codec`.
     var acodec: String? = nil
+    /// No-server mode only (never sent by the server): where the file is. `smb://...` URL string, or a path relative
+    /// to LocalSettings.deviceFolder (the iPhone app's Documents folder, whose absolute path changes with app updates).
+    var localPath: String? = nil
+    /// No-server mode only: file name of the cover image in LocalMedia.artFolder (nil = no cover).
+    var localArt: String? = nil
 
     /// A video that is shown and played as a video (not when only its audio is streamed).
     var isVideo: Bool { kind == "video" && !Config.streamAudioOnly }
@@ -58,9 +65,13 @@ struct MediaItem: Codable, Identifiable, Hashable {
         [artist, album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
-    var artURL: URL { Config.serverURL.appendingPathComponent("art/\(id)") }
+    var artURL: URL {
+        if let localArt { return LocalMedia.artFolder.appendingPathComponent(localArt) }
+        return Config.serverURL.appendingPathComponent("art/\(id)")
+    }
     /// The stream. Remote: the login goes in the URL (VLC sends it), and music videos can be audio only.
     var mediaURL: URL {
+        if let localPath, let local = LocalMedia.url(for: localPath) { return local }
         var components = URLComponents(url: Config.serverURL.appendingPathComponent("media/\(id)"), resolvingAgainstBaseURL: false)!
         if Config.isRemote, let login = Config.credentials {
             components.user = login.user

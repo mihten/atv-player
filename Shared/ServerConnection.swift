@@ -14,17 +14,22 @@ final class ServerConnection: ObservableObject {
     weak var engine: PlayerEngine?
     /// Called after a few failed connection attempts in a row (the server may have a new address).
     var onUnreachable: (() -> Void)?
+    /// No-server mode: the queue lives on the device and answers commands and player reports.
+    private(set) var local: LocalQueue?
 
     private var task: URLSessionWebSocketTask?
     private var retryDelay: Double = 1
     private var failures = 0
 
     func start() {
+        if Config.localMode { startLocal(); return }
         if task == nil { connect() }
     }
 
     /// New server address (or a dead socket after the app was suspended).
     func restart() {
+        if Config.localMode { startLocal(); return }
+        stopLocal()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connected = false
@@ -34,6 +39,7 @@ final class ServerConnection: ObservableObject {
 
     /// Foreground again: iOS may have suspended the app with the socket open; check it is alive.
     func resume() {
+        guard !Config.localMode else { return }
         guard let task else { connect(); return }
         task.sendPing { [weak self] error in
             guard error != nil else { return }
@@ -44,7 +50,34 @@ final class ServerConnection: ObservableObject {
         }
     }
 
+    /// No-server mode: no socket; LocalQueue plays the saved queue and the library is scanned on the device.
+    func startLocal() {
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        retryDelay = 1
+        failures = 0
+        connected = true
+        state = nil
+        let queue = LocalQueue(engine: engine, publish: { [weak self] in self?.state = $0 })
+        local = queue
+        LocalLibrary.shared.start()
+        queue.start()
+        if !launchReported {
+            launchReported = true
+            engine?.reportLaunch()
+        }
+    }
+
+    /// Leaving no-server mode (the app also unloads the player).
+    func stopLocal() {
+        guard local != nil else { return }
+        local = nil
+        connected = false
+        state = nil
+    }
+
     private func connect() {
+        guard !Config.localMode else { return }
         var components = URLComponents(url: Config.serverURL, resolvingAgainstBaseURL: false)!
         components.scheme = Config.serverURL.scheme == "https" ? "wss" : "ws"
         components.path = "/ws"
@@ -117,6 +150,14 @@ final class ServerConnection: ObservableObject {
     }
 
     func send(_ object: [String: Any]) {
+        if let local {
+            if (object["type"] as? String) == "cmd" {
+                local.handleCommand(object)
+            } else {
+                local.playerMessage(object)
+            }
+            return
+        }
         guard let task,
               let data = try? JSONSerialization.data(withJSONObject: object),
               let text = String(data: data, encoding: .utf8) else { return }

@@ -166,6 +166,7 @@ extension View {
 struct LibraryTab: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var locator: ServerLocator
     @State private var query = ""
 
     @Environment(\.appTheme) private var theme
@@ -191,6 +192,9 @@ struct LibraryTab: View {
     private var classicList: some View {
             List {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    if locator.localMode {
+                        Section { LocalLibraryHint() }
+                    }
                     Section("Browse") {
                         NavigationLink { PhoneFolderRootsView() } label: {
                             Label("Folders", systemImage: "folder")
@@ -219,14 +223,20 @@ struct LibraryTab: View {
 struct SearchResults: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var locator: ServerLocator
     let query: String
+
+    private var emptyText: String {
+        guard library.items.isEmpty else { return "Nothing found." }
+        return locator.localMode ? "No files yet." : "Loading the library…"
+    }
 
     var body: some View {
         let results = Array(library.search(query).prefix(300))
         if let error = library.errorText {
             Text(error).foregroundStyle(.secondary)
         } else if results.isEmpty {
-            Text(library.items.isEmpty ? "Loading the library…" : "Nothing found.").foregroundStyle(.secondary)
+            Text(emptyText).foregroundStyle(.secondary)
         } else {
             Section("\(results.count == 300 ? "First 300" : "\(results.count)") results") {
                 ForEach(Array(results.enumerated()), id: \.element.id) { index, item in
@@ -309,6 +319,7 @@ struct PhoneVideoListView: View {
     @EnvironmentObject var connection: ServerConnection
     @State private var items: [MediaItem] = []
     @State private var errorText: String?
+    @State private var libraryVersion = LocalLibrary.shared.version
 
     var body: some View {
         List {
@@ -331,10 +342,12 @@ struct PhoneVideoListView: View {
         .phoneThemed()
         .navigationTitle("Music videos")
         .withMiniPlayer()
-        .task {
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: libraryVersion) {
             do {
                 let (data, _) = try await Net.data(from: .api("api/collection/videos"))
                 items = try JSONDecoder.server().decode(ItemList.self, from: data).items
+                errorText = nil
             } catch {
                 errorText = error.localizedDescription
             }
@@ -345,6 +358,7 @@ struct PhoneVideoListView: View {
 struct PhoneFolderRootsView: View {
     @State private var roots: [RootInfo] = []
     @State private var errorText: String?
+    @State private var libraryVersion = LocalLibrary.shared.version
 
     var body: some View {
         List {
@@ -361,10 +375,12 @@ struct PhoneFolderRootsView: View {
         .phoneThemed()
         .navigationTitle("Folders")
         .withMiniPlayer()
-        .task {
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: libraryVersion) {
             do {
                 let (data, _) = try await Net.data(from: .api("api/browse"))
                 roots = try JSONDecoder.server().decode(RootList.self, from: data).roots
+                errorText = nil
             } catch {
                 errorText = error.localizedDescription
             }
@@ -380,6 +396,7 @@ struct PhoneFolderView: View {
     let title: String
     @State private var result: BrowseResult?
     @State private var errorText: String?
+    @State private var libraryVersion = LocalLibrary.shared.version
 
     var body: some View {
         List {
@@ -428,10 +445,12 @@ struct PhoneFolderView: View {
         .phoneThemed()
         .navigationTitle(title)
         .withMiniPlayer()
-        .task {
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: libraryVersion) {
             do {
                 let (data, _) = try await Net.data(from: .api("api/browse", ["root": root, "folder": folder]))
                 result = try JSONDecoder.server().decode(BrowseResult.self, from: data)
+                errorText = nil
             } catch {
                 errorText = error.localizedDescription
             }
@@ -451,6 +470,7 @@ struct PhoneFolderView: View {
 
 struct PhonePlaylistsView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
     @Environment(\.appTheme) private var theme
     @State private var playlists: [PlaylistInfo]?
     @State private var covers: [Int: [MediaItem]] = [:]
@@ -458,30 +478,10 @@ struct PhonePlaylistsView: View {
 
     var body: some View {
         List {
-            if let errorText { Text(errorText).foregroundStyle(.secondary) }
-            if let playlists {
-                if playlists.isEmpty {
-                    Text("No playlists yet. Create them in the web remote: \(Config.remoteAddress) → Playlists.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(playlists) { playlist in
-                    NavigationLink {
-                        PhonePlaylistView(playlistID: playlist.id, title: playlist.name)
-                    } label: {
-                        HStack(spacing: 12) {
-                            if !theme.isClassic {
-                                PlaylistMosaic(playlistID: playlist.id, items: covers[playlist.id] ?? [])
-                                    .frame(width: 52, height: 52)
-                                    .clipShape(RoundedRectangle(cornerRadius: theme == .noir ? 2 : 8))
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(playlist.name)
-                                Text(playlist.detail).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                .themedRow()
+            if locator.localMode {
+                Text("Playlists need the media server.").foregroundStyle(.secondary).themedRow()
+            } else {
+                serverList
             }
         }
         .phoneThemed()
@@ -491,7 +491,36 @@ struct PhonePlaylistsView: View {
         .task(id: connection.playlistsVersion) { await load() }
     }
 
+    @ViewBuilder private var serverList: some View {
+        if let errorText { Text(errorText).foregroundStyle(.secondary) }
+        if let playlists {
+            if playlists.isEmpty {
+                Text("No playlists yet. Create them in the web remote: \(Config.remoteAddress) → Playlists.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(playlists) { playlist in
+                NavigationLink {
+                    PhonePlaylistView(playlistID: playlist.id, title: playlist.name)
+                } label: {
+                    HStack(spacing: 12) {
+                        if !theme.isClassic {
+                            PlaylistMosaic(playlistID: playlist.id, items: covers[playlist.id] ?? [])
+                                .frame(width: 52, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: theme == .noir ? 2 : 8))
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(playlist.name)
+                            Text(playlist.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .themedRow()
+        }
+    }
+
     private func load() async {
+        guard !locator.localMode else { return }
         do {
             let (data, _) = try await Net.data(from: .api("api/playlists"))
             let list = try JSONDecoder.server().decode(PlaylistList.self, from: data).playlists

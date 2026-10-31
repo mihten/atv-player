@@ -47,6 +47,7 @@ struct PhoneSettingsView: View {
     }
 
     private var serverSummary: String {
+        if locator.localMode { return "No server" }
         if locator.isRemote { return "Internet" }
         return locator.isManual ? Config.remoteAddress : "Automatic"
     }
@@ -95,11 +96,22 @@ struct PhoneThemeSettingsView: View {
     }
 }
 
-/// Settings → Server: home server address and the internet address for away from home.
+/// Settings → Server: library source (media server or no server), home server address and the internet address
+/// for away from home; in no-server mode the SMB share and the iPhone's own folder.
 struct PhoneServerSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var locator: ServerLocator
     @EnvironmentObject var connection: ServerConnection
+    @ObservedObject private var localLibrary = LocalLibrary.shared
+    @State private var smbAddress = LocalSettings.smbAddress
+    @State private var smbUser = LocalSettings.smbUser
+    @State private var smbPassword = LocalSettings.smbPassword
+    /// The stored password (Keychain), so the page does not read the Keychain on every redraw.
+    @State private var savedSMBPassword = LocalSettings.smbPassword
+    @State private var smbDomain = LocalSettings.smbDomain
+    @State private var smbInvalid = false
+    @State private var smbTest = ""
+    @State private var smbTesting = false
     @State private var serverAddress = ServerLocator.manualAddress
     @State private var addressInvalid = false
     @AppStorage(RemoteSettings.urlKey) private var remoteURL = ""
@@ -116,68 +128,193 @@ struct PhoneServerSettingsView: View {
         if locator.isRemote { connection.restart() }
     }
 
+    private var libraryMode: Binding<Bool> {
+        Binding(get: { locator.localMode }, set: { locator.setLocalMode($0) })
+    }
+
+    private var smbChanged: Bool {
+        smbAddress.trimmingCharacters(in: .whitespacesAndNewlines) != LocalSettings.smbAddress
+            || smbUser.trimmingCharacters(in: .whitespaces) != LocalSettings.smbUser
+            || smbDomain.trimmingCharacters(in: .whitespaces) != LocalSettings.smbDomain
+            || smbPassword != savedSMBPassword
+    }
+
+    /// Stores the share and login; a changed share starts a fresh index. Returns false for an invalid address.
+    @discardableResult
+    private func saveSMB() -> Bool {
+        let address = smbAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !address.isEmpty && LocalSettings.normalizeSMB(address) == nil {
+            smbInvalid = true
+            return false
+        }
+        smbInvalid = false
+        guard smbChanged else { return true }
+        let newSource = LocalSettings.normalizeSMB(address) != LocalSettings.smbURL
+        let defaults = UserDefaults.standard
+        defaults.set(address, forKey: LocalSettings.smbKey)
+        defaults.set(smbUser.trimmingCharacters(in: .whitespaces), forKey: LocalSettings.smbUserKey)
+        defaults.set(smbDomain.trimmingCharacters(in: .whitespaces), forKey: LocalSettings.smbDomainKey)
+        LocalSettings.setSMBPassword(smbPassword)
+        savedSMBPassword = smbPassword
+        smbTest = ""
+        // Only a new share needs a fresh index; a new login keeps ids, tags, covers and the queue.
+        if newSource { LocalLibrary.shared.reset() } else { LocalLibrary.shared.scan() }
+        return true
+    }
+
     var body: some View {
         Form {
             Section {
-                TextField("Address (empty = automatic)", text: $serverAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .submitLabel(.done)
-                    .onSubmit { addressInvalid = !locator.setManual(serverAddress) }
-                LabeledContent("Using", value: Config.remoteAddress)
-                Text(addressInvalid ? "That is not an address." : locator.status)
-                    .font(.footnote)
-                    .foregroundStyle(addressInvalid ? .red : .secondary)
-            } header: {
-                Text("Home network")
+                Picker("Library", selection: libraryMode) {
+                    Text("Media server").tag(false)
+                    Text("No server").tag(true)
+                }
+            } footer: {
+                Text(locator.localMode
+                     ? "Plays files from this iPhone and an SMB share. No playlists, lyrics search, loudness levelling or web remote."
+                     : "Songs, videos, queues and playlists come from the ATV Player server.")
             }
             .themedRow()
 
-            Section {
-                TextField("Internet address (e.g. music.example.org)", text: $remoteURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .submitLabel(.next)
-                TextField("User name", text: $remoteUser)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.next)
-                SecureField("Password", text: $remotePassword)
-                    .submitLabel(.done)
-                    .onSubmit { applyRemote() }
-                Picker("Music videos when away", selection: $remoteMode) {
-                    Text("Audio only").tag("audio")
-                    Text("Audio + video").tag("video")
-                }
-                Button {
-                    applyRemote()
-                    testing = true
-                    Task {
-                        remoteTest = await RemoteSettings.test()
-                        testing = false
-                    }
-                } label: {
-                    HStack {
-                        Text(testing ? "Testing…" : "Test connection")
-                        if testing { ProgressView() }
-                    }
-                }
-                if !remoteTest.isEmpty {
-                    Text(remoteTest).font(.footnote).foregroundStyle(.secondary)
-                }
-                LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
-            } header: {
-                Text("Away from home")
+            if locator.localMode {
+                localSections
+            } else {
+                serverSections
             }
-            .themedRow()
         }
         .phoneThemed()
         .navigationTitle("Server")
         .withMiniPlayer()
-        .onDisappear { applyRemote() }
+        .onDisappear {
+            applyRemote()
+            if locator.localMode { saveSMB() }
+        }
         .onChange(of: remoteMode) { engine.streamChanged() }
+    }
+
+    @ViewBuilder private var localSections: some View {
+        Section {
+            TextField("smb://nas/music or nas/music", text: $smbAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .submitLabel(.next)
+            TextField("User name", text: $smbUser)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.next)
+            SecureField("Password", text: $smbPassword)
+                .submitLabel(.done)
+                .onSubmit { saveSMB() }
+            TextField("Domain (optional)", text: $smbDomain)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .onSubmit { saveSMB() }
+            Button("Save") { saveSMB() }
+                .disabled(!smbChanged)
+            Button {
+                guard saveSMB() else { return }
+                smbTesting = true
+                Task {
+                    smbTest = await SMBBrowser.test()
+                    smbTesting = false
+                }
+            } label: {
+                HStack {
+                    Text(smbTesting ? "Testing…" : "Test")
+                    if smbTesting { ProgressView() }
+                }
+            }
+            .disabled(smbTesting)
+            if smbInvalid {
+                Text("That is not an SMB address.").font(.footnote).foregroundStyle(.red)
+            } else if !smbTest.isEmpty {
+                Text(smbTest).font(.footnote).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("SMB share")
+        } footer: {
+            Text("A shared folder on a NAS or computer, e.g. nas/music. Leave the user name empty for guest access.")
+        }
+        .themedRow()
+
+        Section {
+            Button {
+                LocalLibrary.shared.scan()
+            } label: {
+                HStack {
+                    Text(localLibrary.scanning ? "Scanning…" : "Scan again")
+                    if localLibrary.scanning { ProgressView() }
+                }
+            }
+            .disabled(localLibrary.scanning)
+            Text(localLibrary.status)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Library")
+        } footer: {
+            Text("Files app › On My iPhone › ATV Player: copy songs and videos there, then tap Scan again. They show under Folders › On this iPhone.")
+        }
+        .themedRow()
+    }
+
+    @ViewBuilder private var serverSections: some View {
+        Section {
+            TextField("Address (empty = automatic)", text: $serverAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .submitLabel(.done)
+                .onSubmit { addressInvalid = !locator.setManual(serverAddress) }
+            LabeledContent("Using", value: Config.remoteAddress)
+            Text(addressInvalid ? "That is not an address." : locator.status)
+                .font(.footnote)
+                .foregroundStyle(addressInvalid ? .red : .secondary)
+        } header: {
+            Text("Home network")
+        }
+        .themedRow()
+
+        Section {
+            TextField("Internet address (e.g. music.example.org)", text: $remoteURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .submitLabel(.next)
+            TextField("User name", text: $remoteUser)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.next)
+            SecureField("Password", text: $remotePassword)
+                .submitLabel(.done)
+                .onSubmit { applyRemote() }
+            Picker("Music videos when away", selection: $remoteMode) {
+                Text("Audio only").tag("audio")
+                Text("Audio + video").tag("video")
+            }
+            Button {
+                applyRemote()
+                testing = true
+                Task {
+                    remoteTest = await RemoteSettings.test()
+                    testing = false
+                }
+            } label: {
+                HStack {
+                    Text(testing ? "Testing…" : "Test connection")
+                    if testing { ProgressView() }
+                }
+            }
+            if !remoteTest.isEmpty {
+                Text(remoteTest).font(.footnote).foregroundStyle(.secondary)
+            }
+            LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
+        } header: {
+            Text("Away from home")
+        }
+        .themedRow()
     }
 }
 
@@ -405,25 +542,41 @@ enum AppVersion {
 struct PhoneAboutView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var locator: ServerLocator
+    @ObservedObject private var localLibrary = LocalLibrary.shared
 
     var body: some View {
         Form {
             Section("ATV Player") {
                 LabeledContent("Version", value: "\(AppVersion.short) (build \(AppVersion.build))")
-                LabeledContent("Plays", value: "Songs and music videos from your own server")
+                LabeledContent("Plays", value: locator.localMode
+                               ? "Songs and music videos from this iPhone and an SMB share"
+                               : "Songs and music videos from your own server")
             }
             .themedRow()
-            Section("Server") {
-                LabeledContent("Address", value: Config.remoteAddress)
-                LabeledContent("Status", value: connection.connected
-                               ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
-                LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
-                LabeledContent("Web remote", value: Config.remoteAddress)
+            if locator.localMode {
+                Section("Server") {
+                    LabeledContent("Status", value: "No server · " + localLibrary.status)
+                    LabeledContent("SMB share", value: LocalSettings.smbName ?? "Not set up")
+                    LabeledContent("Not available", value: "Playlists, lyrics lookup, loudness levelling, web remote")
+                }
+                .themedRow()
+            } else {
+                Section("Server") {
+                    LabeledContent("Address", value: Config.remoteAddress)
+                    LabeledContent("Status", value: connection.connected
+                                   ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
+                    LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
+                    LabeledContent("Web remote", value: Config.remoteAddress)
+                }
+                .themedRow()
             }
-            .themedRow()
             Section("Good to know") {
                 Text("This iPhone has its own queue; the Apple TV's is separate.")
-                Text("Loudness: the server measures each file once; new files play unchanged until then.")
+                if locator.localMode {
+                    Text("Loudness: files play unchanged without the server (no levelling).")
+                } else {
+                    Text("Loudness: the server measures each file once; new files play unchanged until then.")
+                }
                 Text("Away from home, Audio only plays music videos as sound and uses far less data.")
                 Text("Fast seek jumps to the nearest keyframe, so a jump can land a few seconds off.")
             }

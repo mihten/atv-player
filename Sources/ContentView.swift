@@ -55,6 +55,7 @@ struct ContentView: View {
     /// The original main menu (Classic look).
     private var classicMenu: some View {
         List {
+            LocalLibraryHint()
             Section("Browse") {
                 NavigationLink {
                     PlaylistsView()
@@ -100,6 +101,7 @@ struct ContentView: View {
 
 struct VideoListView: View {
     @EnvironmentObject var connection: ServerConnection
+    @State private var libraryVersion = LocalLibrary.shared.version
     @State private var items: [MediaItem] = []
     @State private var errorText: String?
 
@@ -108,6 +110,7 @@ struct VideoListView: View {
             if let errorText {
                 Text(errorText).foregroundStyle(.secondary)
             }
+            LocalLibraryHint()
             Button {
                 connection.startPlayback(["collection": "videos"])
             } label: {
@@ -125,7 +128,9 @@ struct VideoListView: View {
         .withNowPlaying()
         .themedScreen()
         .navigationTitle("Music videos")
-        .task { await load() }
+        .task(id: libraryVersion) { await load() }
+        // no-server mode: reload after a rescan (only the version is observed, not every status change)
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
     }
 
     private func load() async {
@@ -133,6 +138,7 @@ struct VideoListView: View {
             let url = Config.serverURL.appendingPathComponent("api/collection/videos")
             let (data, _) = try await Net.data(from: url)
             items = try JSONDecoder.server().decode(ItemList.self, from: data).items
+            errorText = nil
         } catch {
             errorText = error.localizedDescription
         }
@@ -312,6 +318,7 @@ extension View {
 
 /// Folders → library roots (as configured on the server).
 struct FolderRootsView: View {
+    @State private var libraryVersion = LocalLibrary.shared.version
     @State private var roots: [RootInfo] = []
     @State private var errorText: String?
 
@@ -320,6 +327,7 @@ struct FolderRootsView: View {
             if let errorText {
                 Text(errorText).foregroundStyle(.secondary)
             }
+            LocalLibraryHint()
             ForEach(roots) { root in
                 NavigationLink {
                     FolderView(root: root.root, folder: "", title: root.name)
@@ -332,10 +340,12 @@ struct FolderRootsView: View {
         .withNowPlaying()
         .themedScreen()
         .navigationTitle("Folders")
-        .task {
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: libraryVersion) {
             do {
                 let (data, _) = try await Net.data(from: .api("api/browse"))
                 roots = try JSONDecoder.server().decode(RootList.self, from: data).roots
+                errorText = nil
             } catch {
                 errorText = error.localizedDescription
             }
@@ -346,6 +356,7 @@ struct FolderRootsView: View {
 /// One folder: Play / Shuffle (everything below it), subfolders, then its own files.
 struct FolderView: View {
     @EnvironmentObject var connection: ServerConnection
+    @State private var libraryVersion = LocalLibrary.shared.version
     let root: String
     let folder: String
     let title: String
@@ -406,7 +417,8 @@ struct FolderView: View {
         .withNowPlaying()
         .themedScreen()
         .navigationTitle(title)
-        .task { await load() }
+        .task(id: libraryVersion) { await load() }
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
     }
 
     /// Starts shuffled with repeat all (startPlayback); a picked file plays first.
@@ -421,9 +433,31 @@ struct FolderView: View {
             let url = URL.api("api/browse", ["root": root, "folder": folder])
             let (data, _) = try await Net.data(from: url)
             result = try JSONDecoder.server().decode(BrowseResult.self, from: data)
+            errorText = nil
         } catch {
             errorText = error.localizedDescription
         }
+    }
+}
+
+/// No-server mode with an empty library: what to do, or how far the scan is.
+struct LocalLibraryHint: View {
+    @EnvironmentObject var locator: ServerLocator
+    @ObservedObject private var library = LocalLibrary.shared
+
+    var body: some View {
+        if locator.localMode && library.items.isEmpty {
+            Text(Self.text(library)).foregroundStyle(.secondary)
+        }
+    }
+
+    @MainActor
+    static func text(_ library: LocalLibrary) -> String {
+        if library.scanning { return library.status }
+        guard let name = LocalSettings.smbName else {
+            return "No files yet. Set up the SMB share in Settings → Server."
+        }
+        return "No songs or videos found in \(name) · \(library.status)"
     }
 }
 

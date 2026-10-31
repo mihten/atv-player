@@ -84,8 +84,17 @@ enum Net {
         return request
     }
 
+    /// Also serves no-server mode: local covers (file URLs) and the API answered on the device (LocalAPI).
+    /// Callers check for HTTP 200, so file reads answer with an HTTPURLResponse too.
     static func data(from url: URL) async throws -> (Data, URLResponse) {
-        try await URLSession.shared.data(for: request(url))
+        if url.isFileURL {
+            let data = try? Data(contentsOf: url)
+            return (data ?? Data(), LocalAPI.response(url, data == nil ? 404 : 200))
+        }
+        if Config.localMode, url.host == LocalAPI.baseURL.host {
+            return await LocalAPI.respond(to: url)
+        }
+        return try await URLSession.shared.data(for: request(url))
     }
 }
 

@@ -4,6 +4,9 @@ import SwiftUI
 /// Classic keeps the original list (ContentView.classicMenu).
 struct HomeView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
+    /// No-server mode: only the library version is observed here (its status changes per file while tags are read).
+    @State private var libraryVersion = LocalLibrary.shared.version
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.appTheme) private var theme
@@ -31,8 +34,10 @@ struct HomeView: View {
         .foregroundStyle(theme.ink)
         .themedScreen(intensity: 0.9)
         .toolbar(.hidden, for: .navigationBar)
-        .task { await loadVideos() }
-        .task(id: connection.playlistsVersion) { await loadPlaylists() }
+        // No-server mode: reload after a rescan, and when the mode changes
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: "\(locator.localMode)|\(libraryVersion)") { await loadVideos() }
+        .task(id: "\(locator.localMode)|\(connection.playlistsVersion)") { await loadPlaylists() }
     }
 
     // MARK: - Header
@@ -41,15 +46,7 @@ struct HomeView: View {
         HStack(alignment: .firstTextBaseline) {
             wordmark
             Spacer()
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(connection.connected ? Color.green : Color.orange)
-                    .frame(width: 14, height: 14)
-                    .shadow(color: connection.connected ? .green : .orange, radius: 6)
-                Text(connection.connected ? "Connected" : "Connecting…")
-                    .font(theme.font(24, .medium))
-                    .opacity(0.75)
-            }
+            StatusPill()
         }
     }
 
@@ -95,10 +92,7 @@ struct HomeView: View {
                         .font(.system(size: 90, weight: .semibold))
                         .foregroundStyle(theme.accent(artwork.palette))
                         .frame(width: 200, height: 200)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Nothing playing yet").font(theme.display(54))
-                        Text("Select to shuffle everything").font(theme.font(28)).opacity(0.7)
-                    }
+                    IdleHeroText()
                     Spacer(minLength: 0)
                 }
                 .padding(36)
@@ -193,11 +187,18 @@ struct HomeView: View {
 
     private func loadVideos() async {
         guard let (data, _) = try? await Net.data(from: .api("api/collection/videos")),
-              let list = try? JSONDecoder.server().decode(ItemList.self, from: data) else { return }
+              let list = try? JSONDecoder.server().decode(ItemList.self, from: data) else {
+            videos = []  // no ids from the other source (mode switch)
+            return
+        }
         videos = list.items
     }
 
     private func loadPlaylists() async {
+        if locator.localMode {  // playlists need the media server
+            playlists = []
+            return
+        }
         guard let (data, _) = try? await Net.data(from: .api("api/playlists")),
               let list = try? JSONDecoder.server().decode(PlaylistList.self, from: data) else { return }
         playlists = list.playlists
@@ -205,6 +206,47 @@ struct HomeView: View {
             guard let (d, _) = try? await Net.data(from: .api("api/playlists/\(playlist.id)")),
                   let detail = try? JSONDecoder.server().decode(PlaylistDetail.self, from: d) else { continue }
             covers[playlist.id] = detail.items.filter { !$0.isMissing }.prefix(4).map(\.asMediaItem)
+        }
+    }
+}
+
+/// "Connected" / "Connecting…", or "No server" in no-server mode.
+private struct StatusPill: View {
+    @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
+    @ObservedObject private var library = LocalLibrary.shared
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(connection.connected ? Color.green : Color.orange)
+                .frame(width: 14, height: 14)
+                .shadow(color: connection.connected ? .green : .orange, radius: 6)
+            Text(text)
+                .font(theme.font(24, .medium))
+                .opacity(0.75)
+        }
+    }
+
+    private var text: String {
+        if locator.localMode { return library.scanning ? "No server · scanning" : "No server" }
+        return connection.connected ? "Connected" : "Connecting…"
+    }
+}
+
+/// Hero text while nothing is loaded. No-server mode with nothing found (yet): what to do instead of offering to shuffle.
+private struct IdleHeroText: View {
+    @EnvironmentObject var locator: ServerLocator
+    @ObservedObject private var library = LocalLibrary.shared
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        let empty = locator.localMode && library.items.isEmpty
+        VStack(alignment: .leading, spacing: 12) {
+            Text(empty ? "No files yet" : "Nothing playing yet").font(theme.display(54))
+            Text(empty ? LocalLibraryHint.text(library) : "Select to shuffle everything")
+                .font(theme.font(28)).opacity(0.7).lineLimit(2)
         }
     }
 }

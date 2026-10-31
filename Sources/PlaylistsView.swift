@@ -5,6 +5,7 @@ import SwiftUI
 /// (connection.playlistsVersion), never on a timer.
 struct PlaylistsView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
     @State private var playlists: [PlaylistInfo]?
     @State private var errorText: String?
 
@@ -15,7 +16,8 @@ struct PlaylistsView: View {
             }
             if let playlists {
                 if playlists.isEmpty {
-                    Text("No playlists yet. Create them in the web remote: \(Config.remoteAddress) → Playlists.")
+                    Text(locator.localMode ? "Playlists need the media server."
+                         : "No playlists yet. Create them in the web remote: \(Config.remoteAddress) → Playlists.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(playlists) { playlist in

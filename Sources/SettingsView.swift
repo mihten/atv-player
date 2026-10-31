@@ -90,21 +90,104 @@ struct ThemeSettingsView: View {
     }
 }
 
-/// Settings → Server.
+/// Settings → Server: the media server, or no server (files straight from an SMB share).
 struct ServerSettingsView: View {
     @EnvironmentObject var locator: ServerLocator
+    @ObservedObject private var library = LocalLibrary.shared
     @State private var serverAddress = ServerLocator.manualAddress
     @State private var addressInvalid = false
+    @State private var smbAddress = LocalSettings.smbAddress
+    @State private var smbUser = LocalSettings.smbUser
+    @State private var smbPassword = LocalSettings.smbPassword
+    @State private var testResult: String?
+    @State private var testing = false
 
     var body: some View {
+        // The class reference, not the environment wrapper: the choice list keeps this binding after the page re-renders.
+        let locator = self.locator
+        let mode = Binding<Bool>(get: { locator.localMode }, set: { locator.setLocalMode($0) })
         SettingsPage {
             Section {
-                TextField("Server address (empty = find automatically)", text: $serverAddress)
-                    .autocorrectionDisabled()
-                    .onSubmit { addressInvalid = !locator.setManual(serverAddress) }
-                Text("Using \(Config.remoteAddress) · \(locator.status)\(addressInvalid ? " · that is not an address" : "")")
-                    .foregroundStyle(.secondary)
+                ChoiceRow("Library", selection: mode, options: [
+                    ("Media server", false),
+                    ("No server (SMB share)", true),
+                ])
             }
+            if locator.localMode {
+                Section {
+                    TextField("Share address, e.g. smb://nas/music or nas/music", text: $smbAddress)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit { save() }
+                    TextField("User name (empty = guest)", text: $smbUser)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit { save() }
+                    SecureField("Password", text: $smbPassword)
+                        .onSubmit { save() }
+                    Button { test() } label: {
+                        Label(testing ? "Testing…" : "Test the connection", systemImage: "network")
+                    }
+                    Button {
+                        save()
+                        library.scan()
+                    } label: {
+                        Label(library.scanning ? "Scanning…" : "Scan again", systemImage: "arrow.clockwise")
+                    }
+                    Text(localStatus).foregroundStyle(.secondary)
+                } header: {
+                    Text("SMB share")
+                }
+            } else {
+                Section {
+                    TextField("Server address (empty = find automatically)", text: $serverAddress)
+                        .autocorrectionDisabled()
+                        .onSubmit { addressInvalid = !locator.setManual(serverAddress) }
+                    Text("Using \(Config.remoteAddress) · \(locator.status)\(addressInvalid ? " · that is not an address" : "")")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        // Leaving the page keeps what was typed even when the keyboard was closed without Done.
+        .onDisappear { if locator.localMode { save() } }
+    }
+
+    private var localStatus: String {
+        var parts: [String] = []
+        let address = smbAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !address.isEmpty && LocalSettings.normalizeSMB(address) == nil {
+            parts.append("That is not a share address (host/share).")
+        }
+        if let testResult { parts.append(testResult) }
+        parts.append(library.status)
+        return parts.joined(separator: " · ")
+    }
+
+    /// Stores changed share settings; a new share starts a fresh index (reset also rescans), a new login only rescans.
+    /// An invalid address is not stored (the status line says so).
+    private func save() {
+        let address = smbAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = smbUser.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !address.isEmpty && LocalSettings.normalizeSMB(address) == nil { return }
+        guard address != LocalSettings.smbAddress || user != LocalSettings.smbUser
+                || smbPassword != LocalSettings.smbPassword else { return }
+        let newSource = LocalSettings.normalizeSMB(address) != LocalSettings.smbURL
+        UserDefaults.standard.set(address, forKey: LocalSettings.smbKey)
+        UserDefaults.standard.set(user, forKey: LocalSettings.smbUserKey)
+        LocalSettings.setSMBPassword(smbPassword)
+        testResult = nil
+        if newSource { library.reset() } else { library.scan() }
+    }
+
+    private func test() {
+        guard !testing else { return }
+        save()
+        testing = true
+        testResult = nil
+        Task {
+            let result = await SMBBrowser.test()
+            testResult = result
+            testing = false
         }
     }
 }
