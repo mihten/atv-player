@@ -4,6 +4,7 @@ import SwiftUI
 /// the server are shared.
 @main
 struct PhoneApp: App {
+    @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
     @StateObject private var locator = ServerLocator()
     @StateObject private var connection = ServerConnection()
     @StateObject private var engine = PlayerEngine()
@@ -30,6 +31,7 @@ struct PhoneApp: App {
             .onAppear {
                 engine.connection = connection
                 connection.engine = engine
+                OrientationLock.shared.log = { [weak engine] in engine?.diag($0) }
                 connection.onUnreachable = { [weak locator] in locator?.serverUnreachable() }
                 if locator.url != nil { connection.start() }
             }

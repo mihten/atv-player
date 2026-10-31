@@ -3,15 +3,21 @@ import SwiftUI
 /// Tabs: Library (shuffle, search, music videos, folders), Playlists, Queue, Settings.
 /// A mini player sits above the tab bar whenever something is in the queue.
 struct PhoneRootView: View {
+    @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.appTheme) private var theme
     @Namespace private var playerNS
     @State private var showPlayer = false
-    /// Full-screen video. The cover is presented FROM INSIDE the player sheet (PhoneNowPlayingView), so
-    /// leaving full screen simply uncovers the sheet with its controls: no dismiss-then-present dance.
+    /// Full-screen video while the player sheet is up: the cover is presented FROM INSIDE the sheet
+    /// (PhoneNowPlayingView), so leaving full screen simply uncovers the sheet with its controls.
     @State private var fullScreen = false
+    /// Full-screen video while the sheet is closed (mini player / library): presented here, so landscape
+    /// never shows the sheet first. When it closes in portrait, the sheet opens (cover's onDismiss).
+    @State private var rootFullScreen = false
+    /// A cover can only be presented from the sheet once its own presentation has finished.
+    @State private var sheetShownAt = Date.distantPast
     @State private var tab = PhoneDemo.initialTab
 
     /// iPhones have a compact vertical size class exactly in landscape (follows the rotation lock too).
@@ -44,41 +50,95 @@ struct PhoneRootView: View {
             if DemoRoute.is("open-player") { DemoRoute.whenLoaded(engine, after: 5) { showPlayer = true } }
         }
         .sheet(isPresented: $showPlayer) {
-            PhoneNowPlayingView(fullScreen: $fullScreen)
+            PhoneNowPlayingView(fullScreen: $fullScreen, leaveFullScreen: leaveFullScreen)
                 .environmentObject(artwork)
                 .environment(\.appTheme, theme)
                 .environment(\.playerNamespace, playerNS)
         }
-        // A video picked here starts on this iPhone: the player sheet, and full screen on top of it when the
-        // phone is already in landscape.
+        .fullScreenCover(isPresented: $rootFullScreen, onDismiss: {
+            if !landscape, engine.current != nil { showPlayer = true }
+        }) {
+            FullScreenVideo(transport: Transport(connection: connection, engine: engine), leave: leaveFullScreen)
+                .environmentObject(engine)
+                .onAppear { engine.setLyricsCover(false) }  // the closed sheet may have left the lyrics cover on
+        }
+        // A video picked here starts on this iPhone: in landscape straight in full screen, in portrait the
+        // player sheet.
         .onChange(of: engine.startCounter) {
             guard hasVideo else { return }
-            openPlayer(fullScreen: landscape)
+            OrientationLock.shared.release("video started")
+            if landscape {
+                openFullScreen()
+            } else if OrientationLock.shared.rotatingToLandscape {
+                engine.diag("full screen: video started with the phone sideways, waiting for the rotation")
+            } else if !rootFullScreen {
+                showPlayer = true
+            }
         }
-        // Rotate to landscape with a video loaded: full screen. Back to portrait: the full-screen cover goes
-        // away and the sheet underneath shows the player controls.
-        // (Closing it with the X while in landscape stays closed until the next rotation or video.)
+        // In landscape a video is only ever shown full screen. Back to portrait: the cover goes away and the
+        // portrait player sheet shows the controls.
         .onChange(of: verticalSizeClass) {
             if landscape {
-                if hasVideo { openPlayer(fullScreen: true) }
+                if hasVideo { openFullScreen() }
             } else {
+                let wasRootCover = rootFullScreen
                 fullScreen = false
-                if hasVideo { showPlayer = true }
+                rootFullScreen = false
+                if hasVideo, !wasRootCover { showPlayer = true }  // root cover: its onDismiss opens the sheet
             }
+        }
+        .onChange(of: showPlayer) {
+            if showPlayer { sheetShownAt = Date() }
+        }
+        // next / previous / auto-advance (no startCounter), and the same item turning audio only
+        .onChange(of: engine.current?.id) { itemChanged() }
+        .onChange(of: hasVideo) { itemChanged() }
+    }
+
+    private func itemChanged() {
+        guard let item = engine.current else { return }
+        if item.isVideo {
+            OrientationLock.shared.release("video changed")
+            if landscape { openFullScreen() }  // e.g. a song in landscape moved on to a video
+        } else if fullScreen || rootFullScreen {
+            leaveFullScreen("no picture (song or audio only) in full screen, back to portrait")
         }
     }
 
-    private func openPlayer(fullScreen wantFull: Bool) {
+    private func openFullScreen() {
+        guard hasVideo, !fullScreen, !rootFullScreen else { return }
         if showPlayer {
-            if wantFull { fullScreen = true }
-        } else {
-            showPlayer = true
-            if wantFull {
-                // the cover lives inside the sheet: present it once the sheet is up
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    if hasVideo, landscape { fullScreen = true }
+            let wait = 0.6 - Date().timeIntervalSince(sheetShownAt)
+            if wait > 0 {
+                // the sheet is still sliding up: UIKit would refuse the cover and the flag would stay set
+                engine.diag("full screen: waiting \(Int(wait * 1000)) ms for the player sheet")
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+                    if landscape { openFullScreen() }
                 }
+                return
             }
+            fullScreen = true
+        } else {
+            rootFullScreen = true
+        }
+    }
+
+    /// Portrait button in full screen, or a song reached in full screen: rotate to portrait and hold it
+    /// while the phone is still sideways; the rotation closes the cover (onChange of verticalSizeClass).
+    private func leaveFullScreen(_ reason: String) {
+        engine.diag("full screen: \(reason)")
+        guard landscape else {
+            // full screen opened in portrait (button in the sheet): just close it
+            fullScreen = false
+            rootFullScreen = false
+            return
+        }
+        OrientationLock.shared.holdPortrait()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard fullScreen || rootFullScreen else { return }
+            engine.diag("full screen: still \(landscape ? "landscape" : "portrait") after the portrait request, closing")
+            fullScreen = false
+            rootFullScreen = false
         }
     }
 }

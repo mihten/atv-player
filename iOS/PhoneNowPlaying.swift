@@ -207,6 +207,8 @@ struct PhoneNowPlayingView: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.playerNamespace) private var ns
     @Binding var fullScreen: Bool
+    /// Portrait button in full screen (PhoneRootView: rotate to portrait and hold it).
+    let leaveFullScreen: @MainActor (String) -> Void
     @State private var scrubbing = false
     @State private var scrubStarted = Date.distantPast
     @State private var shown: Double = 0           // position shown by the slider
@@ -232,7 +234,7 @@ struct PhoneNowPlayingView: View {
         .interactiveDismissDisabled(scrubbing)
         .zoomDestination(theme.isClassic ? nil : ns)
         .fullScreenCover(isPresented: $fullScreen) {
-            FullScreenVideo(transport: transport)
+            FullScreenVideo(transport: transport, leave: leaveFullScreen)
         }
         .onAppear {
             shown = min(transport.position, max(transport.duration, 1))
@@ -571,11 +573,13 @@ struct PhoneNowPlayingView: View {
     }
 }
 
-/// Landscape-friendly full-screen video; tap shows/hides the controls.
+/// Landscape-friendly full-screen video; tap shows/hides the controls. The top-left button goes back to the
+/// portrait player (PhoneRootView rotates the interface and keeps it portrait while the phone is sideways).
 struct FullScreenVideo: View {
     @EnvironmentObject var engine: PlayerEngine
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     let transport: Transport
+    let leave: @MainActor (String) -> Void
     @State private var controls = true
     @State private var hideTask: Task<Void, Never>?
     // Progress slider (same approach as the player sheet: a stable Slider bound to `shown`, a timer moves
@@ -606,9 +610,12 @@ struct FullScreenVideo: View {
             if controls {
                 VStack {
                     HStack {
-                        Button { dismiss() } label: {
-                            Image(systemName: "xmark").padding(12).background(.ultraThinMaterial, in: Circle())
+                        Button { leave("portrait button") } label: {
+                            Image(systemName: verticalSizeClass == .compact
+                                  ? "rectangle.portrait.rotate" : "arrow.down.right.and.arrow.up.left")
+                                .padding(12).background(.ultraThinMaterial, in: Circle())
                         }
+                        .accessibilityLabel("Back to portrait")
                         Spacer()
                     }
                     Spacer()
@@ -652,9 +659,7 @@ struct FullScreenVideo: View {
             engine.diag("full screen: item changed")
             showControls()
         }
-        .onChange(of: engine.current?.isVideo == true) { _, isVideo in
-            if !isVideo { dismiss() }  // the queue moved on to a song
-        }
+        // A song (no picture): PhoneRootView leaves full screen and goes to portrait.
     }
 
     /// Slider with elapsed / remaining time. The controls stay up while the finger is on it.
