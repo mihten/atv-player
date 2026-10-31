@@ -11,8 +11,9 @@ extension ServerConnection {
     }
 }
 
-/// Quick panel over the player: shuffle, repeat and the lyrics / subtitle track. Opens on a click-and-hold of the
-/// centre button; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps pausing / resuming.
+/// Quick panel over the player: shuffle, repeat, the lyrics / subtitle track, equalizer and fast seek. Opens on a
+/// click-and-hold of the centre button; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps
+/// pausing / resuming.
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -20,10 +21,16 @@ struct QuickPanel: View {
     @Environment(\.appTheme) private var theme
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
+    @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
+    @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @FocusState private var focus: Row?
     let close: () -> Void
 
-    enum Row: Hashable { case shuffle, repeatMode, subtitles }
+    enum Row: String { case shuffle, repeatMode, subtitles, equalizer, fastSeek }
+
+    /// Equalizer choices in click order (same values as Settings → Sound). Any other preset (a VLC one chosen in
+    /// Settings) is shown by name and the next click goes to the first of these.
+    private static let equalizerChoices = ["a:momentum4", "custom", "a:amplify", "off"]
 
     /// Lyrics / subtitle choices in click order: (shown, subsOn, language).
     private static let subtitleChoices: [(String, Bool, String)] = [
@@ -55,6 +62,19 @@ struct QuickPanel: View {
                 subLang = next.2
                 engine.applySettings()  // switches the track without restarting the video
             }
+            row(.equalizer, "Equalizer", "slider.vertical.3", SoundSettings.presetName(eqPreset)) {
+                let choices = Self.equalizerChoices
+                let next = choices.firstIndex(of: eqPreset).map { choices[($0 + 1) % choices.count] } ?? choices[0]
+                // "custom" without a saved curve plays flat at unity gain (SoundSettings.customValues), as in Settings.
+                eqPreset = next
+                connection.send(["type": "log", "message": "quick panel: equalizer -> \(next)"])
+                engine.applySettings()  // rebuilds the VLC player and resumes at the same position
+            }
+            row(.fastSeek, "Fast seek", "hare", fastSeek ? "On" : "Off") {
+                fastSeek.toggle()
+                connection.send(["type": "log", "message": "quick panel: fast seek -> \(fastSeek ? "on" : "off")"])
+                // PlayerEngine applies it at the next seek (VLC reads it only when an item starts).
+            }
             Text("Click changes  ·  Back closes  ·  ⏯ pauses").font(theme.font(20)).opacity(0.5).padding(.top, 6)
         }
         .padding(44)
@@ -81,6 +101,9 @@ struct QuickPanel: View {
             .frame(maxWidth: .infinity)
         }
         .focused($focus, equals: id)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityIdentifier("quickPanel.\(id.rawValue)")  // UI tests
     }
 }
 

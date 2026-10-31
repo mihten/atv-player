@@ -85,6 +85,13 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// iPhone lyrics view: the lyrics replace the picture, so a video's picture track is switched off
     /// (the sound keeps playing and nothing is decoded for a picture nobody sees).
     private var lyricsCover = false
+    /// Fast seek setting the current VLC input was opened with: VLC 3 reads `input-fast-seek` only when an input
+    /// starts (input.c, Init), so a change made during an item is applied at its next seek (see seek(to:)).
+    private var loadedFastSeek = false
+    /// The current input was reopened by a seek (fast seek changed) and has not started yet; a seek made meanwhile
+    /// waits in `seekAfterStart` (a jump queued before the input opens would be merged with its start-time seek).
+    private var reopenedForSeek = false
+    private var seekAfterStart: Double?
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -286,6 +293,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         pendingToggle = nil
         wantPlaying = autoplay
         startedPlaying = false
+        reopenedForSeek = false
+        seekAfterStart = nil
         if !retry { retriedStart = false }
         loadGeneration += 1
         startCheck?.cancel()
@@ -294,7 +303,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         position = startAt
         let media = VLCMedia(url: item.mediaURL)
         media.addOption(":network-caching=1500")
-        if PlayerSettings.fastSeek {
+        loadedFastSeek = PlayerSettings.fastSeek
+        if loadedFastSeek {
             // Seek to the nearest keyframe instead of decoding up to it (AV1 keyframes are 2-7 s apart).
             media.addOption(":input-fast-seek")
         }
@@ -470,6 +480,26 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func seek(to seconds: Double) {
         let target = max(0, seconds)
+        if reopenedForSeek, !startedPlaying {
+            log("seek to \(Int(target)) s: input still opening after the fast-seek reopen, jumping once it starts")
+            seekAfterStart = target
+            position = target
+            clock.position = target
+            report()
+            updateNowPlaying()
+            return
+        }
+        if wantPlaying, let item = current, vlc.media != nil, PlayerSettings.fastSeek != loadedFastSeek {
+            // Fast seek was switched during this item: reopen it at the target so the jump uses the new setting
+            // (one reload, at a moment that already has a seek gap; later seeks are plain seeks again). Paused: plain
+            // seek, the setting applies at the next load (a reopen without play would drop the paused picture).
+            log("seek to \(Int(target)) s: fast seek now \(PlayerSettings.fastSeek ? "on" : "off"), reopening '\(item.title)' at the target")
+            load(item, position: target, autoplay: true, present: false, force: true)
+            reopenedForSeek = true
+            report()
+            updateNowPlaying()
+            return
+        }
         log("seek to \(Int(target)) s requested: seekable \(vlc.isSeekable), state \(VLCMediaPlayerStateToString(vlc.state))")
         watchSeek(to: target)
         traceSeek(to: target)
@@ -932,6 +962,14 @@ final class PlayerEngine: NSObject, ObservableObject {
             startedPlaying = true
             startCheck?.cancel()
             startTimeout?.cancel()
+            if let target = seekAfterStart {
+                seekAfterStart = nil
+                log("seek to \(Int(target)) s after the fast-seek reopen started")
+                vlc.time = VLCTime(int: Int32(target * 1000))
+                position = target
+                clock.position = target
+                return
+            }
         }
         position = Double(vlc.time.intValue) / 1000
         if let length = vlc.media?.length, length.intValue > 0 {

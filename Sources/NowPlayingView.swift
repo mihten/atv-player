@@ -3,7 +3,7 @@ import UIKit
 
 /// Full-screen player. Siri Remote: down = next, up = previous, left/right = jump back/forward
 /// (Settings), play/pause = toggle, click = lyrics on/off (and show the info), click-and-hold = quick panel (shuffle,
-/// repeat, lyrics / subtitle track), Back = close the panel / return to the menu.
+/// repeat, lyrics / subtitle track, equalizer, fast seek), Back = close the panel / return to the menu.
 struct NowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -82,6 +82,7 @@ struct NowPlayingView: View {
         .onAppear {
             focused = true
             if DemoRoute.argument("lyricsMode") != nil { lyricsMode = true }  // CI screenshots only
+            if DemoRoute.argument("quickPanel") != nil { panel = true }  // CI screenshots only
             syncLyrics()
             flash()
         }
