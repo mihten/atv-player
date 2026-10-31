@@ -70,7 +70,7 @@ struct QuickPanel: View {
                 connection.send(["type": "log", "message": "quick panel: equalizer -> \(next)"])
                 engine.applySettings()  // rebuilds the VLC player and resumes at the same position
             }
-            row(.fastSeek, "Fast seek", "hare", fastSeek ? "On" : "Off") {
+            row(.fastSeek, "Fast seek", "forward", fastSeek ? "On" : "Off") {
                 fastSeek.toggle()
                 connection.send(["type": "log", "message": "quick panel: fast seek -> \(fastSeek ? "on" : "off")"])
                 // PlayerEngine applies it at the next seek (VLC reads it only when an item starts).
