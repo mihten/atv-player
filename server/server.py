@@ -40,7 +40,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.0"
+VERSION = "0.16.1"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -58,7 +58,7 @@ REMOTES: dict = {}  # ws -> session kind the web remote controls
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
-                "codec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak", "lyr")
+                "codec", "acodec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak", "lyr")
 FULL_KEYS = SUMMARY_KEYS + ("audio_track", "audio_ord", "sub_track", "sub_ord", "channels", "bitrate")
 
 
@@ -66,6 +66,7 @@ def summary(it, keys=SUMMARY_KEYS):
     d = {k: it.get(k) for k in keys}
     d["lossless"] = bool(it.get("lossless"))
     d["hidden"] = bool(it.get("hidden"))
+    d["acodec"] = it.get("acodec") or None  # "" = video without audio
     d["art"] = bool(it.get("has_art"))
     return d
 

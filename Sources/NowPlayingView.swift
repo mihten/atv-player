@@ -168,14 +168,18 @@ struct NowPlayingView: View {
 struct InfoBar: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let item = engine.current {
-                Text(item.title)
-                    .font(.title2)
-                    .bold()
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 18) {
+                    Text(item.title)
+                        .font(.title2)
+                        .bold()
+                        .lineLimit(1)
+                    CodecBadges(item: item, theme: theme)
+                }
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
                         .font(.headline)

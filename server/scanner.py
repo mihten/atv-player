@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS items (
   year TEXT,
   duration REAL,
   codec TEXT,
+  acodec TEXT,
   lossless INTEGER NOT NULL DEFAULT 0,
   channels INTEGER,
   bitrate INTEGER,
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS lyrics (item_id INTEGER PRIMARY KEY, data TEXT NOT NU
 
 COLUMNS = (
     "root", "relpath", "folder", "kind", "title", "artist", "album", "albumartist", "track", "disc",
-    "year", "duration", "codec", "lossless", "channels", "bitrate", "width", "height", "size", "mtime",
+    "year", "duration", "codec", "acodec", "lossless", "channels", "bitrate", "width", "height", "size", "mtime",
     "has_art", "audio_track", "audio_ord", "sub_track", "sub_ord", "subs", "added",
 )
 
@@ -89,6 +90,10 @@ def connect(db_path):
         con.commit()
     if "lyr" not in cols:  # added 2026-10-20 (embedded lyrics; filled by lyrics.py). NULL = not looked at yet
         con.execute("ALTER TABLE items ADD COLUMN lyr INTEGER")
+        con.commit()
+    if "acodec" not in cols:  # added 2026-10-31 (codec badges). Songs: = codec; videos: NULL = re-probed once
+        con.execute("ALTER TABLE items ADD COLUMN acodec TEXT")
+        con.execute("UPDATE items SET acodec = codec WHERE kind = 'audio'")
         con.commit()
     return con
 
@@ -133,7 +138,9 @@ def read_audio(path):
         return None
     info, tags = f.info, f.tags
     ext = os.path.splitext(path)[1].lower()
-    codec = getattr(info, "codec", None) or ext.lstrip(".")
+    # Ogg info classes have no codec attribute: the container class tells Opus / FLAC / Vorbis apart
+    ogg = {"OggOpus": "opus", "OggFLAC": "flac", "OggVorbis": "vorbis"}.get(type(f).__name__)
+    codec = getattr(info, "codec", None) or ogg or ext.lstrip(".")
     return {
         "title": _first(tags, "title"),
         "artist": _first(tags, "artist"),
@@ -146,6 +153,7 @@ def read_audio(path):
         "channels": getattr(info, "channels", None),
         "bitrate": getattr(info, "bitrate", None) or None,
         "codec": str(codec),
+        "acodec": str(codec),
         "lossless": 1 if ext in LOSSLESS_EXT or str(codec).lower() == "alac" else 0,
     }
 
@@ -240,6 +248,8 @@ def probe_video(path):
         "year": tags.get("date") or tags.get("year"),
         "duration": duration,
         "codec": (video or {}).get("codec_name"),
+        # Codec of the audio track the app plays; "" = no audio (so the file is not re-probed again).
+        "acodec": (audio_def or {}).get("codec_name") or "",
         "width": (video or {}).get("width"),
         "height": (video or {}).get("height"),
         "channels": (audio_def or {}).get("channels"),
@@ -364,7 +374,7 @@ def scan(db_path, roots, force=False):
     started = time.time()
     con = connect(db_path)
     existing = {(r["root"], r["relpath"]): r for r in con.execute(
-        "SELECT id, root, relpath, folder, kind, size, mtime, duration, subs FROM items")}
+        "SELECT id, root, relpath, folder, kind, size, mtime, duration, subs, acodec FROM items")}
     seen, added, updated, failed = set(), 0, 0, 0
     new_keys = []
     found = {root: 0 for root in roots}
@@ -393,8 +403,10 @@ def scan(db_path, roots, force=False):
                 except OSError:
                     continue
                 old = existing.get(key)
-                if not force and old and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1 \
-                        and not (kind == "video" and old["subs"] is None):  # one-time re-probe for "subs"
+                unchanged = old is not None and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1
+                # one-time re-probe of unchanged videos scanned before "subs" / "acodec" existed
+                backfill = unchanged and kind == "video" and (old["subs"] is None or old["acodec"] is None)
+                if not force and unchanged and not backfill:
                     continue
                 try:
                     rec = build_record(root, base, full, st, kind)
@@ -403,15 +415,17 @@ def scan(db_path, roots, force=False):
                     failed += 1
                     continue
                 con.execute(sql, [rec[c] for c in COLUMNS])
-                if old:
+                if old is None:
+                    added += 1
+                    new_keys.append(key)
+                elif unchanged and not force:
+                    updated += 1  # backfill re-probe: same file, its loudness and lyrics stay valid
+                else:
                     # the file changed: its measured loudness is stale
                     con.execute("UPDATE items SET lufs = NULL, tpeak = NULL, loud_fail = 0, lyr = NULL "
                                 "WHERE root = ? AND relpath = ?", key)
                     con.execute("DELETE FROM lyrics WHERE item_id = (SELECT id FROM items WHERE root = ? AND relpath = ?)", key)
                     updated += 1
-                else:
-                    added += 1
-                    new_keys.append(key)
     # A root with no media files at all is a missing/unmounted share, not an empty library: keep its
     # rows (and their ids, which queues and playlists point at) until the files are visible again.
     offline = sorted(root for root, n in found.items() if n == 0 and any(k[0] == root for k in existing))

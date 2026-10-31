@@ -274,6 +274,20 @@ struct Facts: View {
     }
 }
 
+/// Video + audio codec badges ("AV1" "OPUS") for the info bar over a music video.
+struct CodecBadges: View {
+    let item: MediaItem
+    let theme: AppTheme
+    var size: CGFloat = 18
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(item.codecBadges, id: \.self) { FactChip(text: $0, theme: theme, size: size) }
+        }
+        .fixedSize()
+    }
+}
+
 /// Big progress bar with times. Styles: glow (Aurora), hairline (Noir), needle (Vinyl).
 struct PlayerProgress: View {
     enum Style { case glow, hairline, needle }
@@ -398,6 +412,7 @@ struct ThemedInfoBar: View {
                         if let artist = item.artist {
                             Text(artist).font(theme.font(30)).opacity(0.7).lineLimit(1)
                         }
+                        CodecBadges(item: item, theme: theme)
                     }
                     PlayerProgress(clock: engine.clock, accent: accent, style: theme == .vinyl ? .needle : .glow)
                     HStack(spacing: 26) {

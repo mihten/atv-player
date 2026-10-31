@@ -48,6 +48,8 @@ struct MediaItem: Codable, Identifiable, Hashable {
     var tpeak: Double? = nil
     /// Embedded lyrics (server 0.13.0+): nil = not looked at yet, 0 = none, 1 = plain text, 2 = synced.
     var lyr: Int? = nil
+    /// Codec of the default audio track (server 0.16.1+; nil from older servers). Songs: same as `codec`.
+    var acodec: String? = nil
 
     /// A video that is shown and played as a video (not when only its audio is streamed).
     var isVideo: Bool { kind == "video" && !Config.streamAudioOnly }
@@ -68,6 +70,44 @@ struct MediaItem: Codable, Identifiable, Hashable {
             components.queryItems = [URLQueryItem(name: "audio", value: "1")]
         }
         return components.url!
+    }
+}
+
+extension MediaItem {
+    /// Short codec badges for the player, e.g. ["AV1", "OPUS"]; a song shows its codec once.
+    var codecBadges: [String] {
+        if kind == "video" {
+            let video = isVideo ? codec.flatMap(CodecName.label) : nil  // audio-only stream: no video codec
+            return [video, acodec.flatMap(CodecName.label)].compactMap { $0 }
+        }
+        return [(acodec ?? codec).flatMap(CodecName.label)].compactMap { $0 }
+    }
+}
+
+/// ffmpeg codec names (and the scanner's file-extension fallbacks for songs) -> short display labels.
+enum CodecName {
+    static func label(_ name: String) -> String? {
+        let n = name.trimmingCharacters(in: .whitespaces).lowercased()
+        if n.isEmpty { return nil }
+        if n.hasPrefix("pcm_") || ["wav", "aiff", "aif"].contains(n) { return "PCM" }
+        if n.hasPrefix("mp4a") { return "AAC" }  // MP4 audio as mutagen reports it ("mp4a.40.2")
+        switch n {
+        case "av1": return "AV1"
+        case "vp9": return "VP9"
+        case "vp8": return "VP8"
+        case "h264", "avc1": return "H.264"
+        case "hevc", "h265": return "HEVC"
+        case "opus": return "OPUS"
+        case "flac": return "FLAC"
+        case "aac": return "AAC"
+        case "mp3": return "MP3"
+        case "vorbis": return "VORBIS"
+        case "alac": return "ALAC"
+        case "ac3": return "AC3"
+        case "eac3": return "E-AC3"
+        case "wavpack", "wv": return "WAVPACK"
+        default: return n.uppercased()
+        }
     }
 }
 
