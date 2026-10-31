@@ -2,7 +2,7 @@ name: Design builds + simulator screenshots
 
 on:
   push:
-    branches: [design]
+    branches: [design, "test/**"]
     paths-ignore: ["**.md", "infra/**"]
   workflow_dispatch:
     inputs:
@@ -183,7 +183,9 @@ jobs:
             zip -qry "$5" Payload
             shasum -a 256 "$5" | tee "$5.sha256"
           done
-          TAG="design-$BUILD_NUMBER"
+          # test/** branches (a change under test) publish test-N, design publishes design-N
+          KIND=design; [[ "$GITHUB_REF_NAME" == test/* ]] && KIND=test
+          TAG="$KIND-$BUILD_NUMBER"
           gh release create "$TAG" AtvPlayer.ipa AtvPlayer.ipa.sha256 AtvPlayer-iOS.ipa AtvPlayer-iOS.ipa.sha256 \
-            --title "ATV Player design preview $BUILD_NUMBER" --prerelease --latest=false \
-            --notes "Design preview from commit ${GITHUB_SHA::7} (branch design). Prerelease: not picked up by release-tracking auto-update."
+            --title "ATV Player $KIND build $BUILD_NUMBER" --prerelease --latest=false \
+            --notes "$KIND build from commit ${GITHUB_SHA::7} (branch $GITHUB_REF_NAME). Prerelease: not picked up by release-tracking auto-update."
