@@ -26,7 +26,8 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
     private let window = OSAllocatedUnfairLock(initialState: Window())
 
     /// Audio filter modules VLC loaded (`using audio filter module "…"`) since `watchFilters`, for one diag line
-    /// after the limiter's filter chain was set (PlayerEngine.watchFilterModules).
+    /// after the limiter's filter chain was set (PlayerEngine.watchFilterModules); the same for `removing module "…"`
+    /// after a gain change (PlayerEngine.watchFilterRestart).
     private struct FilterWatch {
         var id = 0
         var open = false
@@ -34,6 +35,7 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
     }
 
     private let filters = OSAllocatedUnfairLock(initialState: FilterWatch())
+    private let removals = OSAllocatedUnfairLock(initialState: FilterWatch())
     private static let maxEntries = 45
     private static let keywords = ["flush", "silence", "late", "early", "toggling", "avaudiosession", "route", "latency",
                                    "deadlock", "discontinuity", "resampl", "underrun", "pause", "resum", "audiounit",
@@ -45,6 +47,11 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
         if message.hasPrefix("using audio filter module") {
             let name = message.split(separator: "\"").dropFirst().first.map(String.init) ?? message
             filters.withLock { w in
+                if w.open, w.names.count < 12 { w.names.append(name) }
+            }
+        } else if message.hasPrefix("removing module \"equalizer\"") || message.hasPrefix("removing module \"compressor\"") {
+            let name = message.split(separator: "\"").dropFirst().first.map(String.init) ?? message
+            removals.withLock { w in
                 if w.open, w.names.count < 12 { w.names.append(name) }
             }
         }
@@ -75,6 +82,26 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
     /// The modules seen since `watchFilters(id)`; nil if a newer watch replaced it.
     func takeFilters(_ id: Int) -> [String]? {
         filters.withLock { w in
+            guard w.open, w.id == id else { return nil }
+            w.open = false
+            return w.names
+        }
+    }
+
+    /// Starts collecting removed modules; returns the id for `takeRemovals`. A still-open watch (an earlier change
+    /// not reported yet) keeps its names, so the last of quick changes reports them all.
+    func watchRemovals() -> Int {
+        removals.withLock { w in
+            w.id += 1
+            if !w.open { w.names = [] }
+            w.open = true
+            return w.id
+        }
+    }
+
+    /// The modules removed since `watchRemovals(id)`; nil if a newer watch replaced it.
+    func takeRemovals(_ id: Int) -> [String]? {
+        removals.withLock { w in
             guard w.open, w.id == id else { return nil }
             w.open = false
             return w.names

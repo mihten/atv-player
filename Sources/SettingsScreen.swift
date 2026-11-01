@@ -187,8 +187,7 @@ struct SettingsRootView: View {
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
-    @AppStorage(SoundSettings.preampKey) private var preamp = 0
-    @AppStorage(SoundSettings.limiterKey) private var limiter = false
+    @AppStorage(SoundSettings.boostKey) private var boost = 0
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
 
     var body: some View {
@@ -221,7 +220,7 @@ struct SettingsRootView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = loudness; _ = preamp; _ = limiter  // refresh when any changes
+        _ = eqPreset; _ = loudness; _ = boost  // refresh when any changes
         return SoundSettings.summary
     }
 
@@ -286,7 +285,8 @@ struct AboutSettingsView: View {
                 info("Loudness", locator.localMode
                      ? "Not levelled without the server"
                      : "The server measures each file once; new files play unchanged until then")
-                info("Sound and lyrics style", "A playing video restarts at the same position")
+                info("Lyrics style, sound on / off", "A playing video restarts at the same position")
+                info("Sound", "Equalizer, Boost and Loudness changes apply at once")
                 info("Leaving the app", "Music videos pause; music keeps playing if set")
             }
         }

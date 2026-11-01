@@ -35,7 +35,7 @@ final class QuickPanelTests: XCTestCase {
     private func report(_ step: String) {
         let line = "\(step): app \(app.state == .runningForeground ? "foreground" : "NOT foreground (\(app.state.rawValue))"), "
             + "focus '\(focused)', equalizer '\(value("equalizer"))', "
-            + "limiter '\(value("limiter"))', fast seek '\(value("fastSeek"))', "
+            + "boost '\(value("boost"))', fast seek '\(value("fastSeek"))', "
             + "version '\(value("version"))', prefer videos '\(value("preferVideos"))', love '\(value("love"))'"
         print("UITEST: \(line)")
         if let dir = ProcessInfo.processInfo.environment["UI_SHOTS"] {
@@ -46,22 +46,23 @@ final class QuickPanelTests: XCTestCase {
 
     /// One launch: hold centre in the player; the panel opens on Love (first row: a click toggles, a second restores),
     /// then the Equalizer row (a click goes to the next of Momentum 4 → Custom → Amplify → Off, four clicks come back),
-    /// Limiter (a click toggles, a second restores), Fast seek (same), Prefer videos (same) and Version last ("—" for the queued song,
-    /// which has no music video: a click does nothing); every row is on screen; Back closes the panel and the app stays
-    /// open.
+    /// Boost (0 → +2 → +4 → +6 → +8 → 0 dB, five clicks come back), Fast seek and Prefer videos (a click toggles, a second
+    /// restores) and Version last ("—" for the queued song, which has no music video: a click does nothing); every row is
+    /// on screen; Back closes the panel and the app stays open.
     func testQuickPanelRows() {
         app.launchArguments = ["-serverAddress", "127.0.0.1:8080", "-appTheme", "aurora", "-demoRoute", "player"]
         app.launch()
         sleep(10)  // the player opens once the queue has loaded
         remote.press(.select, forDuration: 1.2)
         XCTAssertTrue(row("equalizer").waitForExistence(timeout: 5), "the panel should have an Equalizer row")
-        XCTAssertTrue(row("limiter").exists, "the panel should have a Limiter row")
+        XCTAssertTrue(row("boost").exists, "the panel should have a Boost row")
+        XCTAssertFalse(row("limiter").exists, "the Limiter row is gone (the limiter is always on)")
         XCTAssertTrue(row("fastSeek").exists, "the panel should have a Fast seek row")
         report("q1 panel open")
         XCTAssertTrue(focused.contains("Love"), "the panel should open on Love, has '\(focused)'")
 
         let screen = app.windows.firstMatch.frame
-        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "limiter", "fastSeek", "preferVideos",
+        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "boost", "fastSeek", "preferVideos",
                      "version"]
         var lastY = -CGFloat.infinity
         for id in order {
@@ -85,7 +86,7 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertTrue(focused.contains("Equalizer"), "three more ▼ should reach Equalizer, has '\(focused)'")
         let cycle = ["Momentum 4", "Custom", "Amplify", "Off"]
         let eqStart = value("equalizer")
-        press(.select, wait: 3)  // rebuilds the VLC player
+        press(.select, wait: 3)  // new curve (rebuilds the player only to / from unprocessed)
         report("q3 equalizer clicked")
         let expected = cycle.firstIndex(of: eqStart).map { cycle[($0 + 1) % cycle.count] } ?? cycle[0]
         XCTAssertEqual(value("equalizer"), expected, "a click should go from '\(eqStart)' to '\(expected)'")
@@ -95,13 +96,17 @@ final class QuickPanelTests: XCTestCase {
         }
 
         press(.down, wait: 1)
-        XCTAssertTrue(focused.contains("Limiter"), "▼ should reach Limiter, has '\(focused)'")
-        let limiterStart = value("limiter")
-        press(.select, wait: 3)  // new filter chain: rebuilds the VLC player
-        report("q4 limiter clicked")
-        XCTAssertEqual(value("limiter"), limiterStart == "On" ? "Off" : "On", "a click should toggle '\(limiterStart)'")
-        press(.select, wait: 3)
-        XCTAssertEqual(value("limiter"), limiterStart, "a second click should restore '\(limiterStart)'")
+        XCTAssertTrue(focused.contains("Boost"), "▼ should reach Boost, has '\(focused)'")
+        let boostCycle = ["0 dB", "+2 dB", "+4 dB", "+6 dB", "+8 dB"]
+        let boostStart = value("boost")
+        press(.select, wait: 2)  // new gain on the running player
+        report("q4 boost clicked")
+        if let at = boostCycle.firstIndex(of: boostStart) {
+            let next = boostCycle[(at + 1) % boostCycle.count]
+            XCTAssertEqual(value("boost"), next, "a click should go from '\(boostStart)' to '\(next)'")
+            for _ in 0..<4 { press(.select, wait: 2) }
+            XCTAssertEqual(value("boost"), boostStart, "five clicks should come back to '\(boostStart)'")
+        }
 
         press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Fast seek"), "▼ should reach Fast seek, has '\(focused)'")

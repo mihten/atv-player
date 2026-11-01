@@ -5,13 +5,13 @@ import TVVLCKit
 import MobileVLCKit
 #endif
 
-/// Equalizer + preamp + limiter + loudness settings (stored in UserDefaults, applied by PlayerEngine).
+/// Equalizer + Boost + loudness settings (stored in UserDefaults, applied by PlayerEngine). Whenever the sound is
+/// processed a limiter runs after the equalizer.
 enum SoundSettings {
     static let presetKey = "eqPreset"      // "off" | "custom" | "p:<VLC preset index>"
     static let customKey = "eqCustom"      // "preamp;b0,b1,…,b9" in dB
     static let loudnessKey = "loudnessMode" // "off" | "raise" | "level"
-    static let preampKey = "soundPreamp"   // Int dB, added to any equalizer choice (also Off)
-    static let limiterKey = "soundLimiter" // Bool, VLC's compressor as a limiter after the equalizer
+    static let boostKey = "soundPreamp"    // Int dB 0…8, added to any equalizer choice (0.18.32 "Preamp", same key)
 
     private static var defaults: UserDefaults { .standard }
 
@@ -25,13 +25,18 @@ enum SoundSettings {
 
     static var presets: [VLCAudioEqualizer.Preset] { VLCAudioEqualizer.presets }
 
-    // MARK: Preamp and limiter
+    // MARK: Boost, limiter, gain split
 
-    static let preampRange = -6...8
+    static let boostRange = 0...8
 
-    /// Settings → Sound → Preamp (dB). Independent of the preset: the presets keep their own preamp.
-    static var preamp: Int { min(preampRange.upperBound, max(preampRange.lowerBound, defaults.integer(forKey: preampKey))) }
-    static var limiter: Bool { defaults.bool(forKey: limiterKey) }
+    /// Settings → Sound → Boost (dB), on top of the preset's own gain and the loudness gain.
+    static var boost: Int { min(boostRange.upperBound, max(boostRange.lowerBound, defaults.integer(forKey: boostKey))) }
+
+    /// Equalizer Off + Boost 0 + Loudness Off = no audio filters at all. Anything else runs the fixed chain
+    /// equalizer → limiter, and every later change only sets values on it (see PlayerEngine.applySound).
+    static var processed: Bool { preset != "off" || boost > 0 || loudness != .off }
+
+    static let filterChain = "equalizer:compressor"
 
     /// "+3 dB", "0 dB", "−2 dB" (half dB shown as "+4.5 dB").
     static func dbLabel(_ value: Float) -> String {
@@ -41,30 +46,67 @@ enum SoundSettings {
         return rounded > 0 ? "+\(number) dB" : rounded < 0 ? "\u{2212}\(number) dB" : "0 dB"
     }
 
-    /// Limiter = VLC 3's compressor (modules/audio_filter/compressor.c) set up as a peak limiter. Values to be tuned
-    /// by ear; VLC's ranges: rms-peak 0…1, attack 1.5…400 ms, release 2…800 ms, threshold −30…0 dB, ratio 1…20,
-    /// knee 1…10 dB, makeup gain 0…24 dB (its default is +7, so it must be set to 0 here).
+    /// Limiter = VLC 3's compressor (modules/audio_filter/compressor.c, 10 ms look-ahead) set up as a peak limiter.
+    /// VLC's ranges: rms-peak 0…1, attack 1.5…400 ms, release 2…800 ms, threshold −30…0 dB, ratio 1…20,
+    /// knee 1…10 dB, makeup gain 0…24 dB (its default is +7, so it must be set here). Threshold and makeup are the
+    /// base values; GainPlan moves them with the gain above the equalizer's +8 dB.
     private static let limiterParameters: [(String, String)] = [
         ("rms-peak", "1.0"),    // 1 = peak detection (0 = RMS)
         ("attack", "1.5"),      // ms, VLC's fastest
         ("release", "100"),     // ms
-        ("threshold", "-1"),    // dBFS
+        ("threshold", "-1"),    // dBFS = limiterCeiling
         ("ratio", "20"),
         ("knee", "1"),          // dB, VLC's hardest
         ("makeup-gain", "0"),   // dB
     ]
+    /// Output ceiling of the limiter (dBFS).
+    static let limiterCeiling: Float = -1
 
     /// Player options for the limiter (read by the compressor when VLC creates it, inherited from the instance).
+    /// Always the same, so they never cause a player rebuild.
     static func limiterOptions() -> [String] {
-        guard limiter else { return [] }
-        return limiterParameters.map { "--compressor-\($0.0)=\($0.1)" }
+        limiterParameters.map { "--compressor-\($0.0)=\($0.1)" }
     }
 
-    /// Audio filter chain to force on the player when the limiter is on (nil = leave VLC's own). The compressor runs
-    /// after the equalizer; `withEqualizer`: the player has one (preset, preamp or loudness gain).
-    static func filterChain(withEqualizer: Bool) -> String? {
-        guard limiter else { return nil }
-        return (withEqualizer ? "equalizer:" : "") + "compressor"
+    /// The equalizer's preamp reaches +8 dB at most (raw 20, libvlc's clamp); the limiter's makeup gain carries up
+    /// to `maxOverflow` more, with its threshold lowered by the same amount so the output ceiling stays put.
+    static let maxEqualizerGain: Float = 8
+    static let maxOverflow: Float = 6
+
+    /// How the total gain is split between the equalizer's preamp and the limiter (app scale: 0 = equalizer off).
+    struct GainPlan: Equatable {
+        var preset: Float
+        var boost: Float
+        var loudness: Float
+
+        var requested: Float { preset + boost + loudness }
+        var total: Float { min(SoundSettings.maxEqualizerGain + SoundSettings.maxOverflow, requested) }
+        var equalizer: Float { min(SoundSettings.maxEqualizerGain, total) }
+        var makeup: Float { max(0, total - SoundSettings.maxEqualizerGain) }
+        var threshold: Float { SoundSettings.limiterCeiling - makeup }
+        /// Raw VLC preamp (libvlc clamps to ±20).
+        var vlcPreamp: Float { max(-20, SoundSettings.vlcPreampOffset + equalizer) }
+
+        /// "gain: preset +4, boost +2, loudness +3.0 = +9.0 dB (EQ +8.0, limiter makeup +1.0, threshold -2.0)"
+        var logText: String {
+            func db(_ v: Float) -> String { String(format: v == v.rounded() ? "%+.0f" : "%+.1f", v) }
+            var text = String(format: "gain: preset %@, boost %@, loudness %+.1f = %+.1f dB (EQ %+.1f, limiter makeup %+.1f, threshold %.1f)",
+                              db(preset), db(boost), loudness, total, equalizer, makeup, threshold)
+            if requested > total + 0.01 { text += String(format: ", %+.1f asked, max %+.0f", requested, total) }
+            return text
+        }
+    }
+
+    static func gainPlan(loudnessGain: Float) -> GainPlan {
+        GainPlan(preset: curve().0, boost: Float(boost), loudness: loudnessGain)
+    }
+
+    /// Footnote under Boost. `loudnessGain`: PlayerEngine.levelGain (the playing track's).
+    static func gainNote(loudnessGain: Float) -> String {
+        guard processed else { return "Equalizer, Boost and Loudness are off: the sound is played unprocessed." }
+        let plan = gainPlan(loudnessGain: loudnessGain)
+        let cap = plan.requested > plan.total + 0.25 ? " (the maximum)" : ""
+        return "Total now: \(dbLabel(plan.total))\(cap). A limiter keeps the sound from distorting."
     }
 
     // MARK: Loudness leveling
@@ -88,51 +130,28 @@ enum SoundSettings {
 
     /// What normal music is mastered to (streaming services use −14 LUFS).
     static let loudnessTarget: Float = -14
-    /// The raw VLC preamp is capped at +20 dB (libvlc clamps it), i.e. +8 dB above "equalizer off".
+    /// Largest loudness lift.
     static let maxBoost: Float = 8
     static let maxCut: Float = 12
 
-    /// Gain in dB for this item: lifts it towards the target, never past its true peak (minus 0.5 dB and
-    /// the gain the user already added), so nothing clips because of it. `level` also lowers loud tracks.
-    /// The boost only uses what the preset's preamp + Preamp leave below +8. With the limiter on the true peak
-    /// is ignored (the limiter catches it).
+    /// Gain in dB for this item: what it needs to reach the target (`raise` only lifts, `level` also lowers),
+    /// at most +8 dB. It never takes back Boost or the preset's gain and ignores the true peak: the limiter
+    /// catches the peaks.
     static func levelGain(for item: MediaItem?) -> Float {
         guard let item, let lufs = item.lufs else { return 0 }
         let mode = loudness
         guard mode != .off else { return 0 }
-        let userGain = max(0, presetPreamp + Float(preamp))
-        var gain = loudnessTarget - Float(lufs)
-        gain = min(max(0, maxBoost - userGain), max(mode == .level ? -maxCut : 0, gain))
-        if gain > 0, !limiter {
-            let headroom = item.tpeak.map { -Float($0) - 0.5 } ?? 0
-            gain = min(gain, max(0, headroom - userGain))
-        }
-        return (gain * 2).rounded() / 2  // half-dB steps: fewer preamp changes between similar tracks
+        let gain = min(maxBoost, max(mode == .level ? -maxCut : 0, loudnessTarget - Float(lufs)))
+        let stepped = (gain * 2).rounded() / 2  // half-dB steps: fewer preamp changes between similar tracks
+        return stepped == 0 ? 0 : stepped  // no "-0.0" in the log
     }
 
-    /// Total gain the equalizer's preamp applies now, app scale: preset/custom preamp + Preamp + `extraGain`
-    /// (loudness), after VLC's clamp. `requested` is the same before the clamp.
-    static func totalGain(extraGain: Float) -> (applied: Float, requested: Float) {
-        let requested = presetPreamp + Float(preamp) + extraGain
-        let applied = makeEqualizer(extraGain: extraGain).map { $0.preAmplification - vlcPreampOffset } ?? 0
-        return (applied, requested)
-    }
-
-    /// Footnote under Preamp, e.g. "Total gain now: +4 dB (max +8)". `loudnessGain`: PlayerEngine.levelGain.
-    static func gainNote(loudnessGain: Float) -> String {
-        let (applied, requested) = totalGain(extraGain: loudnessGain)
-        var text = "Total gain now: \(dbLabel(applied))"
-        if loudnessGain != 0 { text += " incl. loudness \(dbLabel(loudnessGain))" }
-        text += requested > applied + 0.25 ? " (max +8, \(dbLabel(requested)) asked)" : " (max +8)"
-        return text
-    }
-
-    /// The preamp of the chosen preset / custom curve, in app scale (0 = same loudness as the equalizer off).
-    private static var presetPreamp: Float {
+    /// (preamp in app scale, bands) of the selected curve: preset, custom, or flat for Off / an unknown tag.
+    static func curve() -> (Float, [Float]) {
         switch preset {
-        case "off": return 0
-        case "custom": return customValues().0
-        default: return presetValues(preset)?.0 ?? 0
+        case "off": return (0, Array(repeating: 0, count: frequencies.count))
+        case "custom": return customValues()
+        default: return presetValues(preset) ?? (0, Array(repeating: 0, count: frequencies.count))
         }
     }
 
@@ -145,21 +164,16 @@ enum SoundSettings {
     }
 
     /// "Momentum 4" (Sennheiser headphones; was misnamed "Momentus 4", id "momentus4", until v0.9.4 —
-    /// `migrate()` rewrites the stored selection): an EqualizerAPO headphone curve (Preamp −1 dB,
-    /// 31-band GraphicEQ +3…+7.68 dB peaking 1.6–2.5 kHz), fitted by tools/eq_fit.py to the ISO bands
-    /// the app's equalizer really uses (31 Hz … 16 kHz), rounded to 1 dB: max 0.8 dB / rms 0.26 dB
-    /// from APO. v0.9.0–0.9.2 had a fit for VLC's 60 Hz … 16 kHz table (too hot at 0.5–1 kHz).
-    /// Preamp: the fit wants +3 (app scale) but that clipped on loud tracks; +1 is clean by ear
-    /// (2026-10-18), i.e. 2 dB quieter than APO overall, same curve shape.
+    /// `migrate()` rewrites the stored selection): an EqualizerAPO headphone curve (31-band GraphicEQ
+    /// +3…+7.68 dB peaking 1.6–2.5 kHz), fitted by tools/eq_fit.py to the ISO bands the app's equalizer
+    /// really uses (31 Hz … 16 kHz) for APO preamp 0 dB (how the owner listens), 0.5 dB steps: max 0.61 dB /
+    /// rms 0.34 dB from APO. Raw preamp 16 (+4): as loud as APO; the limiter keeps loud tracks from clipping.
     static let appPresets: [AppPreset] = [
-        AppPreset(id: "momentum4", name: "Momentum 4", vlcPreamp: 13,
-                  bands: [-1, -1, 0, 1, 1, 2, 4, 2, 0, -1]),
-        // "Amplify": flat (a pure gain, no filtering) as loud as Momentum 4. Momentum 4's real combined
-        // response (eq_fit.py model, +1 preamp, peak +5.5 dB near 2 kHz), power-averaged over music spectra
-        // with K-weighting (BS.1770 loudness): +1.6…+2.4 dB; power mean of the band gains +2.0; pink noise
-        // +2.4…+2.8 (too bright for music). +2.0 dB (VLC 14): mid-range, and whole dB so the custom
-        // editor (1 dB steps) keeps it when loaded from this preset.
-        AppPreset(id: "amplify", name: "Amplify", vlcPreamp: 14,
+        AppPreset(id: "momentum4", name: "Momentum 4", vlcPreamp: 16,
+                  bands: [-1, -1, -0.5, 0.5, 1, 2, 3.5, 2, -0.5, -1.5]),
+        // "Amplify": flat (a pure gain, no filtering) as loud as Momentum 4: its preamp +1 dB, the relation
+        // measured in 0.18.23 (Momentum 4's curve K-weighted over music spectra plays ~1 dB above its preamp).
+        AppPreset(id: "amplify", name: "Amplify", vlcPreamp: 17,
                   bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     ]
 
@@ -170,6 +184,10 @@ enum SoundSettings {
             defaults.set(new, forKey: presetKey)
         }
         defaults.removeObject(forKey: "stereoWiden")  // the stereo widener was removed in 0.18.20
+        defaults.removeObject(forKey: "soundLimiter")  // 0.18.32's Limiter switch: the limiter is always on now
+        if defaults.object(forKey: boostKey) != nil, defaults.integer(forKey: boostKey) != boost {
+            defaults.set(boost, forKey: boostKey)  // 0.18.32's Preamp went down to −6
+        }
     }
 
     static func appPreset(_ value: String) -> AppPreset? {
@@ -224,47 +242,29 @@ enum SoundSettings {
         return (eq.preAmplification - vlcPreampOffset, eq.bands.map(\.amplification))
     }
 
-    /// `extraGain` (dB) is the loudness leveling gain; the Preamp setting adds to it. With the equalizer off and
-    /// no gain there is no equalizer at all (unprocessed); with gain it is a flat one (a pure gain, see above).
-    static func makeEqualizer(extraGain: Float = 0) -> VLCAudioEqualizer? {
-        let gain = extraGain + Float(preamp)
-        let eq: VLCAudioEqualizer
-        switch preset {
-        case "off":
-            guard gain != 0 else { return nil }
-            eq = VLCAudioEqualizer()
-            eq.preAmplification = vlcPreampOffset
-        case _ where preset.hasPrefix("a:"):
-            guard let app = appPreset(preset) else { return nil }
-            eq = VLCAudioEqualizer()
-            eq.preAmplification = app.vlcPreamp
-            for (band, value) in zip(eq.bands, app.bands) { band.amplification = value }
-        case "custom":
-            let (pre, values) = customValues()
-            eq = VLCAudioEqualizer()
-            eq.preAmplification = pre + vlcPreampOffset  // clamped once below, after Preamp + loudness
-            for (band, value) in zip(eq.bands, values) { band.amplification = value }
-        default:
-            let index = UInt32(preset.dropFirst(2)) ?? 0
-            guard let p = presets.first(where: { $0.index == index }) else { return nil }
-            eq = VLCAudioEqualizer(preset: p)
-        }
-        // libvlc clamps the raw preamp to ±20 dB (+8 above "equalizer off")
-        eq.preAmplification = min(20, max(-20, eq.preAmplification + gain))
+    /// The equalizer for a fresh player (nil = unprocessed). On a running player PlayerEngine sets the same values
+    /// as variables instead (`vlc.equalizer = …` there would restart the filters).
+    static func makeEqualizer(loudnessGain: Float) -> VLCAudioEqualizer? {
+        guard processed else { return nil }
+        let eq = VLCAudioEqualizer()
+        eq.preAmplification = gainPlan(loudnessGain: loudnessGain).vlcPreamp
+        for (band, value) in zip(eq.bands, curve().1) { band.amplification = value }
         return eq
     }
 
-    /// Changes in this key mean the player must be rebuilt. The Preamp is not in it: it changes on the running player.
-    static var configKey: String {
-        "\(preset)|\(preset == "custom" ? defaults.string(forKey: customKey) ?? "" : "")|\(loudness.rawValue)|\(limiter)"
+    /// "equalizer-bands" as VLC's equalizer parses it (space-separated dB values).
+    static func bandsText(_ bands: [Float]) -> String {
+        bands.map { String(format: "%.2f", $0) }.joined(separator: " ")
     }
 
-    /// e.g. "EQ Momentum 4, preamp +3, limiter + loudness".
+    /// A change here rebuilds the player (the filter chain changes). Everything else changes on the running player.
+    static var configKey: String { processed ? "processed" : "unprocessed" }
+
+    /// e.g. "EQ Momentum 4, boost +2 + loudness".
     static var summary: String {
         var chain: [String] = []
         if preset != "off" { chain.append("EQ \(presetName(preset))") }
-        if preamp != 0 { chain.append("preamp \(preamp > 0 ? "+" : "\u{2212}")\(abs(preamp))") }
-        if limiter { chain.append("limiter") }
+        if boost != 0 { chain.append("boost +\(boost)") }
         var parts = chain.isEmpty ? [] : [chain.joined(separator: ", ")]
         if loudness != .off { parts.append(loudness == .raise ? "loudness" : "leveling") }
         guard !parts.isEmpty else { return "Off (unprocessed)" }

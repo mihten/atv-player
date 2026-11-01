@@ -7,8 +7,7 @@ struct SoundSettingsView: View {
     @Environment(\.settingsNav) private var nav
     @AppStorage(SoundSettings.presetKey) private var preset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
-    @AppStorage(SoundSettings.preampKey) private var preamp = 0
-    @AppStorage(SoundSettings.limiterKey) private var limiter = false
+    @AppStorage(SoundSettings.boostKey) private var boost = 0
 
     private var equalizerOptions: [(label: String, value: String)] {
         [("Off", "off")]
@@ -19,12 +18,6 @@ struct SoundSettingsView: View {
 
     var body: some View {
         SettingsPage {
-            Section {
-                ChoiceRow("Loudness", selection: $loudness,
-                          options: SoundSettings.Loudness.allCases.map { ($0.name, $0.rawValue) })
-            } header: {
-                Text("Loudness")
-            }
             Section {
                 ChoiceRow("Equalizer", selection: $preset, options: equalizerOptions)
                 Button {
@@ -41,8 +34,8 @@ struct SoundSettingsView: View {
                 Text("Equalizer")
             }
             Section {
-                ChoiceRow("Preamp", selection: $preamp,
-                          options: SoundSettings.preampRange.map { (SoundSettings.dbLabel(Float($0)), $0) })
+                ChoiceRow("Boost", selection: $boost,
+                          options: SoundSettings.boostRange.map { (SoundSettings.dbLabel(Float($0)), $0) })
             } header: {
                 Text("Gain")
             } footer: {
@@ -50,13 +43,13 @@ struct SoundSettingsView: View {
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }
             Section {
-                Toggle("Limiter", isOn: $limiter)
-            } footer: {
-                Text("Prevents clipping when the gain is high.")
-                    .font(.system(size: 22)).foregroundStyle(.secondary)
+                ChoiceRow("Loudness", selection: $loudness,
+                          options: SoundSettings.Loudness.allCases.map { ($0.name, $0.rawValue) })
+            } header: {
+                Text("Loudness")
             }
         }
-        .onChange(of: "\(preset)|\(loudness)|\(preamp)|\(limiter)") {
+        .onChange(of: "\(preset)|\(loudness)|\(boost)") {
             engine.applySettings()
         }
     }

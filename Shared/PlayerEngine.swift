@@ -55,10 +55,13 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var wantPlaying = false
     private var appliedSound: String
     private var audioReport = ""
-    /// Loudness leveling gain (dB) currently applied through the equalizer preamp (Settings shows the total gain).
+    /// Loudness leveling gain (dB) of the playing track (Settings shows the total gain).
     @Published private(set) var levelGain: Float = 0
-    /// Settings → Sound → Preamp currently applied (changes on the running player, see applyPreamp).
-    private var appliedPreamp = 0
+    /// What the running player's equalizer + limiter were last given (nil = unprocessed player), see applySound.
+    private var appliedGain: SoundSettings.GainPlan?
+    private var appliedBands: [Float] = []
+    /// A value could not be set on the audio output (no var_Create): set it again once playback has started.
+    private var soundRetry = false
     /// Start watchdog: VLC can sit in "stopped" without any error event (file gone on the server →
     /// HTTP 404, or a dead player instance). A load counts as started at its first time event.
     private var startedPlaying = false
@@ -106,65 +109,73 @@ final class PlayerEngine: NSObject, ObservableObject {
         connection?.send(["type": "log", "message": message])
     }
 
-    /// Equalizer (+ limiter chain) on a fresh player, before its first playback creates the audio output.
+    /// Sound on a fresh player, before its first playback creates the audio filters: VLCKit's equalizer (it sets
+    /// the chain to "equalizer"), then the fixed chain equalizer → limiter and the limiter's share of the gain.
+    /// Unprocessed = no equalizer, no chain.
     private func configureAudio() {
         levelGain = SoundSettings.levelGain(for: current)
-        appliedPreamp = SoundSettings.preamp
-        let eq = SoundSettings.makeEqualizer(extraGain: levelGain)
-        if let eq {
-            vlc.equalizer = eq
+        appliedGain = nil
+        appliedBands = []
+        soundRetry = false
+        guard let eq = SoundSettings.makeEqualizer(loudnessGain: levelGain) else {
+            audioReport = "audio: \(SoundSettings.summary)"
+            return
         }
-        let gainNote = levelGain != 0 ? String(format: ", loudness %+.1f dB", levelGain) : ""
-        audioReport = "audio: \(SoundSettings.summary)\(gainNote)"
-        if let chain = applyFilterChain(withEqualizer: eq != nil) {
-            audioReport += "; \(chain)"
-        }
-    }
-
-    /// With the limiter on, puts the compressor back after the equalizer: libVLC's set_equalizer rewrites the
-    /// "audio-filter" variable to "equalizer" (or "" without one). Returns the log text (nil with the limiter off).
-    private func applyFilterChain(withEqualizer: Bool) -> String? {
-        guard let chain = SoundSettings.filterChain(withEqualizer: withEqualizer) else { return nil }
+        vlc.equalizer = eq
+        let chain = SoundSettings.filterChain
         let result = VLCInternals.setAudioFilter(vlc, chain)
         #if os(iOS)
         watchFilterModules(chain)
         #endif
-        return "audio filters '\(chain)': \(result)"
+        let plan = SoundSettings.gainPlan(loudnessGain: levelGain)
+        let vars = setSoundVariables(plan, bands: nil)
+        appliedGain = plan
+        appliedBands = SoundSettings.curve().1
+        audioReport = "audio: \(SoundSettings.summary); filters '\(chain)': \(result); \(plan.logText); \(vars)"
     }
 
-    /// A new gain on the running player (no rebuild): the equalizer's preamp changes, as with VLC's own sliders.
-    private func setEqualizer(_ eq: VLCAudioEqualizer?) -> String {
-        vlc.equalizer = eq
-        return applyFilterChain(withEqualizer: eq != nil).map { "; \($0)" } ?? ""
+    /// Equalizer preamp (+ bands) and the limiter's makeup / threshold as variables on the running player and its
+    /// audio output: the filters pick them up through their callbacks, the chain stays (VLCInternals).
+    private func setSoundVariables(_ plan: SoundSettings.GainPlan, bands: [Float]?) -> String {
+        var values: [(String, VLCInternals.Value)] = [
+            ("equalizer-preamp", .float(plan.vlcPreamp)),
+            ("compressor-makeup-gain", .float(plan.makeup)),
+            ("compressor-threshold", .float(plan.threshold)),
+        ]
+        if let bands { values.append(("equalizer-bands", .string(SoundSettings.bandsText(bands)))) }
+        let result = VLCInternals.setVariables(vlc, values)
+        // Retry only for an incomplete set on the player (no var_Create); a missing audio output is fine, the next
+        // one inherits the player's values. A missing symbol cannot get better.
+        let n = values.count
+        soundRetry = !result.hasPrefix("player \(n)/\(n)") && !result.hasPrefix("var_SetChecked not found")
+            && !result.hasPrefix("player object not found")
+        return "set \(result)"
     }
 
-    /// Per-track loudness gain for the item that is about to load: the equalizer's preamp is changed on the
-    /// running player (that is what VLC's own equalizer sliders do). Called before the new media is set.
-    private func applyLevel(for item: MediaItem) {
-        let gain = SoundSettings.levelGain(for: item)
-        guard gain != levelGain else { return }
-        let before = levelGain
-        levelGain = gain
-        let chainNote = setEqualizer(SoundSettings.makeEqualizer(extraGain: gain))
-        audioReport = "audio: \(SoundSettings.summary), loudness \(String(format: "%+.1f", gain)) dB"
-        log(String(format: "loudness gain %+.1f -> %+.1f dB for '%@' (%@ LUFS, peak %@ dBFS)%@", before, gain, item.title,
-                   item.lufs.map { String(format: "%.1f", $0) } ?? "?", item.tpeak.map { String(format: "%.1f", $0) } ?? "?",
-                   chainNote))
-    }
-
-    /// Settings → Sound → Preamp changed: applied on the running player like the loudness gain, no rebuild. The
-    /// loudness gain is worked out again (it only uses what the Preamp leaves).
-    private func applyPreamp() {
-        let preamp = SoundSettings.preamp
-        guard preamp != appliedPreamp else { return }
-        let before = appliedPreamp
-        appliedPreamp = preamp
-        levelGain = SoundSettings.levelGain(for: current)
-        let chainNote = setEqualizer(SoundSettings.makeEqualizer(extraGain: levelGain))
-        let total = SoundSettings.totalGain(extraGain: levelGain).applied
-        audioReport = "audio: \(SoundSettings.summary)" + (levelGain != 0 ? String(format: ", loudness %+.1f dB", levelGain) : "")
-        log(String(format: "preamp %+ld -> %+ld dB, loudness %+.1f dB, total gain %+.1f dB%@", before, preamp, levelGain,
-                   total, chainNote))
+    /// Preset, custom curve, Boost or loudness gain changed (or the next track has another loudness gain): new
+    /// values on the running player, no rebuild and no `vlc.equalizer = …` (that would restart the filters).
+    /// `item`: the track the loudness gain is for. One log line per change.
+    private func applySound(for item: MediaItem?, why: String) {
+        guard appliedGain != nil, SoundSettings.processed else {
+            levelGain = 0  // unprocessed player (processed ↔ unprocessed rebuilds, see applySettings)
+            return
+        }
+        levelGain = SoundSettings.levelGain(for: item)
+        let plan = SoundSettings.gainPlan(loudnessGain: levelGain)
+        let bands = SoundSettings.curve().1
+        guard plan != appliedGain || bands != appliedBands || soundRetry else { return }
+        let vars = setSoundVariables(plan, bands: bands != appliedBands || soundRetry ? bands : nil)
+        appliedGain = plan
+        appliedBands = bands
+        audioReport = "audio: \(SoundSettings.summary); \(plan.logText)"
+        var track = ""
+        if let item, why == "track" {
+            track = String(format: " for '%@' (%@ LUFS)", item.title, item.lufs.map { String(format: "%.1f", $0) } ?? "?")
+        }
+        log("\(plan.logText) [\(why)]\(track); \(vars)")
+        #if os(iOS)
+        if why == "settings" { watchFilterRestart(why) }  // a new track restarts the filters anyway (new stream)
+        #endif
     }
 
     /// UI diagnostics into the server log (e.g. full-screen events), with the app state.
@@ -327,7 +338,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             return  // resume sync after a reconnect: keep whatever is playing now
         }
         current = item
-        applyLevel(for: item)
+        applySound(for: item, why: "track")
         videoHidden = false  // new media starts with its picture track on
         traceTask?.cancel()
         traceT0 = nil
@@ -426,6 +437,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         pendingToggle = nil
         vlc.stop()
         current = nil
+        levelGain = 0  // Settings' "Total now" without a track
         setPlaying(false)
         position = 0
         duration = 0
@@ -1001,7 +1013,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         let options = PlayerSettings.vlcOptions() + SoundSettings.limiterOptions()
         let sound = SoundSettings.configKey
         guard options != vlcOptions || sound != appliedSound else {
-            applyPreamp()
+            applySound(for: current, why: "settings")
             tracksApplied = false
             applyTracks()
             return
@@ -1017,7 +1029,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
     }
 
-    /// Fresh VLC instance with the current options (subtitle style, EQ, limiter).
+    /// Fresh VLC instance with the current options (subtitle style; sound processed or not).
     private func rebuildPlayer(_ why: String) {
         vlc.delegate = nil
         vlc.stop()
@@ -1089,6 +1101,13 @@ final class PlayerEngine: NSObject, ObservableObject {
             startedPlaying = true
             startCheck?.cancel()
             startTimeout?.cancel()
+            // Same values once more: a set made while the filters were opening (stream start) is not seen by
+            // them. Re-setting only runs their callbacks, the chain stays.
+            if let plan = appliedGain {
+                let retry = soundRetry
+                let vars = setSoundVariables(plan, bands: appliedBands)
+                if retry { log("\(plan.logText) [retry after start]; \(vars)") }
+            }
             if let target = seekAfterStart {
                 seekAfterStart = nil
                 log("seek to \(Int(target)) s now that playback started (queued jump)")
@@ -1268,6 +1287,24 @@ extension PlayerEngine {
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard let self, let names = VLCLogTap.shared.takeFilters(id) else { return }
             self.log("vlc audio filter modules after '\(chain)': \(names.isEmpty ? "none loaded yet" : names.joined(separator: ", "))")
+        }
+    }
+
+    /// Diagnostic: a gain change must not restart the audio filters. VLC logs `removing module "equalizer"` /
+    /// `"compressor"` when it does (an audible gap); report what it logged within 3 s.
+    fileprivate func watchFilterRestart(_ why: String) {
+        let id = VLCLogTap.shared.watchRemovals()
+        let generation = loadGeneration
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, let names = VLCLogTap.shared.takeRemovals(id) else { return }
+            guard generation == self.loadGeneration else {  // a new stream removes the filters anyway
+                self.log("vlc filters after gain change [\(why)]: not checked (track changed within 3 s)")
+                return
+            }
+            let filters = names.filter { $0 == "equalizer" || $0 == "compressor" }
+            self.log("vlc filters after gain change [\(why)]: " + (filters.isEmpty
+                ? "no restart (ok)" : "RESTARTED, removed \(filters.joined(separator: ", "))"))
         }
     }
 

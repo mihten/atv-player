@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// Quick panel over the player: ♥ Love, shuffle, repeat, the lyrics / subtitle track, equalizer, limiter, fast seek,
+/// Quick panel over the player: ♥ Love, shuffle, repeat, the lyrics / subtitle track, equalizer, boost, fast seek,
 /// "Prefer videos" and the version of the song (song / music videos). Opens on a click-and-hold of the centre button with
 /// Love focused; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps pausing / resuming. Compact rows
-/// (QuickRowStyle) so 9 fit with room to spare: 8 rows with the system button style already barely fitted. Preamp is in
-/// Settings → Sound only.
+/// (QuickRowStyle) so 9 fit with room to spare: 8 rows with the system button style already barely fitted.
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -13,12 +12,12 @@ struct QuickPanel: View {
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
-    @AppStorage(SoundSettings.limiterKey) private var limiter = false
+    @AppStorage(SoundSettings.boostKey) private var boost = 0
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @FocusState private var focus: Row?
     let close: () -> Void
 
-    enum Row: String { case love, shuffle, repeatMode, subtitles, equalizer, limiter, fastSeek, preferVideos, version }
+    enum Row: String { case love, shuffle, repeatMode, subtitles, equalizer, boost, fastSeek, preferVideos, version }
 
     /// Equalizer choices in click order (same values as Settings → Sound). Any other preset (a VLC one chosen in
     /// Settings) is shown by name and the next click goes to the first of these.
@@ -93,12 +92,15 @@ struct QuickPanel: View {
             // "custom" without a saved curve plays flat at unity gain (SoundSettings.customValues), as in Settings.
             eqPreset = next
             connection.send(["type": "log", "message": "quick panel: equalizer -> \(next)"])
-            engine.applySettings()  // rebuilds the VLC player and resumes at the same position
+            engine.applySettings()  // new curve on the running player (rebuilds only to / from unprocessed)
         }
-        row(.limiter, "Limiter", "rectangle.compress.vertical", limiter ? "On" : "Off") {
-            limiter.toggle()
-            connection.send(["type": "log", "message": "quick panel: limiter -> \(limiter ? "on" : "off")"])
-            engine.applySettings()  // new filter chain: rebuilds the VLC player at the same position
+        // Boost in 2 dB steps (0 → +2 → … → +8 → 0); an odd value set in Settings goes to the next even one.
+        row(.boost, "Boost", "speaker.wave.3", SoundSettings.dbLabel(Float(boost))) {
+            let top = SoundSettings.boostRange.upperBound
+            let next = boost >= top ? 0 : min(top, boost / 2 * 2 + 2)
+            boost = next
+            connection.send(["type": "log", "message": "quick panel: boost -> +\(next) dB"])
+            engine.applySettings()  // new gain on the running player
         }
     }
 
