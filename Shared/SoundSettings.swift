@@ -10,7 +10,7 @@ import MobileVLCKit
 enum SoundSettings {
     static let presetKey = "eqPreset"      // "off" | "custom" | "p:<VLC preset index>"
     static let customKey = "eqCustom"      // "preamp;b0,b1,…,b9" in dB
-    static let loudnessKey = "loudnessMode" // "off" | "raise" | "level"
+    static let loudnessKey = "loudnessMode" // "off" | "raise" (0.18.33 "level" becomes "raise")
     static let boostKey = "soundPreamp"    // Int dB 0…8, added to any equalizer choice (0.18.32 "Preamp", same key)
 
     private static var defaults: UserDefaults { .standard }
@@ -114,34 +114,29 @@ enum SoundSettings {
     /// Per-track gain from the server's loudness measurement. Applied through the equalizer's preamp:
     /// VLC 3's equalizer outputs preamp × (0.25 × input + Σ band terms), and a band at 0 dB adds nothing,
     /// so a flat equalizer is a pure gain of (preamp − 12) dB; no filtering happens (equalizer.c).
-    enum Loudness: String, CaseIterable {
-        case off, raise, level
-
-        var name: String {
-            switch self {
-            case .off: "Off"
-            case .raise: "Raise quiet tracks"
-            case .level: "Level all tracks"
-            }
-        }
+    /// Settings → Sound → Loudness On / Off. On ("raise") lifts quiet tracks, it never lowers anything.
+    enum Loudness: String {
+        case off, raise
     }
 
     static var loudness: Loudness { Loudness(rawValue: defaults.string(forKey: loudnessKey) ?? "") ?? .raise }
+
+    /// Stored value for the On / Off switch.
+    static func loudnessValue(on: Bool) -> String { (on ? Loudness.raise : .off).rawValue }
+
+    static let loudnessNote = "Raises quiet recordings. Never turns anything down."
 
     /// What normal music is mastered to (streaming services use −14 LUFS).
     static let loudnessTarget: Float = -14
     /// Largest loudness lift.
     static let maxBoost: Float = 8
-    static let maxCut: Float = 12
 
-    /// Gain in dB for this item: what it needs to reach the target (`raise` only lifts, `level` also lowers),
-    /// at most +8 dB. It never takes back Boost or the preset's gain and ignores the true peak: the limiter
-    /// catches the peaks.
+    /// Gain in dB for this item: what it needs to reach the target, only up, at most +8 dB. It never takes back
+    /// Boost or the preset's gain and ignores the true peak: the limiter catches the peaks.
     static func levelGain(for item: MediaItem?) -> Float {
         guard let item, let lufs = item.lufs else { return 0 }
-        let mode = loudness
-        guard mode != .off else { return 0 }
-        let gain = min(maxBoost, max(mode == .level ? -maxCut : 0, loudnessTarget - Float(lufs)))
+        guard loudness != .off else { return 0 }
+        let gain = min(maxBoost, max(0, loudnessTarget - Float(lufs)))
         let stepped = (gain * 2).rounded() / 2  // half-dB steps: fewer preamp changes between similar tracks
         return stepped == 0 ? 0 : stepped  // no "-0.0" in the log
     }
@@ -185,6 +180,9 @@ enum SoundSettings {
         }
         defaults.removeObject(forKey: "stereoWiden")  // the stereo widener was removed in 0.18.20
         defaults.removeObject(forKey: "soundLimiter")  // 0.18.32's Limiter switch: the limiter is always on now
+        if defaults.string(forKey: loudnessKey) == "level" {
+            defaults.set(Loudness.raise.rawValue, forKey: loudnessKey)  // 0.18.33's "Level all tracks" was removed
+        }
         if defaults.object(forKey: boostKey) != nil, defaults.integer(forKey: boostKey) != boost {
             defaults.set(boost, forKey: boostKey)  // 0.18.32's Preamp went down to −6
         }
@@ -260,13 +258,13 @@ enum SoundSettings {
     /// A change here rebuilds the player (the filter chain changes). Everything else changes on the running player.
     static var configKey: String { processed ? "processed" : "unprocessed" }
 
-    /// e.g. "EQ Momentum 4, boost +2 + loudness".
+    /// e.g. "EQ Momentum 4, boost +2 + loudness on".
     static var summary: String {
         var chain: [String] = []
         if preset != "off" { chain.append("EQ \(presetName(preset))") }
         if boost != 0 { chain.append("boost +\(boost)") }
         var parts = chain.isEmpty ? [] : [chain.joined(separator: ", ")]
-        if loudness != .off { parts.append(loudness == .raise ? "loudness" : "leveling") }
+        if loudness != .off { parts.append("loudness on") }
         guard !parts.isEmpty else { return "Off (unprocessed)" }
         parts[0] = parts[0].prefix(1).uppercased() + String(parts[0].dropFirst())
         return parts.joined(separator: " + ")

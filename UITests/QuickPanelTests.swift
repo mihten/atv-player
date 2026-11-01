@@ -34,7 +34,7 @@ final class QuickPanelTests: XCTestCase {
 
     private func report(_ step: String) {
         let line = "\(step): app \(app.state == .runningForeground ? "foreground" : "NOT foreground (\(app.state.rawValue))"), "
-            + "focus '\(focused)', equalizer '\(value("equalizer"))', "
+            + "focus '\(focused)', equalizer '\(value("equalizer"))', loudness '\(value("loudness"))', "
             + "boost '\(value("boost"))', fast seek '\(value("fastSeek"))', "
             + "version '\(value("version"))', prefer videos '\(value("preferVideos"))', love '\(value("love"))'"
         print("UITEST: \(line)")
@@ -46,7 +46,7 @@ final class QuickPanelTests: XCTestCase {
 
     /// One launch: hold centre in the player; the panel opens on Love (first row: a click toggles, a second restores),
     /// then the Equalizer row (a click goes to the next of Momentum 4 → Custom → Amplify → Off, four clicks come back),
-    /// Boost (0 → +2 → +4 → +6 → +8 → 0 dB, five clicks come back), Fast seek and Prefer videos (a click toggles, a second
+    /// Loudness (passed over), Boost (0 → +2 → +4 → +6 → +8 → 0 dB, five clicks come back), Fast seek and Prefer videos (a click toggles, a second
     /// restores) and Version last ("—" for the queued song, which has no music video: a click does nothing); every row is
     /// on screen; Back closes the panel and the app stays open.
     func testQuickPanelRows() {
@@ -55,6 +55,7 @@ final class QuickPanelTests: XCTestCase {
         sleep(10)  // the player opens once the queue has loaded
         remote.press(.select, forDuration: 1.2)
         XCTAssertTrue(row("equalizer").waitForExistence(timeout: 5), "the panel should have an Equalizer row")
+        XCTAssertTrue(row("loudness").exists, "the panel should have a Loudness row")
         XCTAssertTrue(row("boost").exists, "the panel should have a Boost row")
         XCTAssertFalse(row("limiter").exists, "the Limiter row is gone (the limiter is always on)")
         XCTAssertTrue(row("fastSeek").exists, "the panel should have a Fast seek row")
@@ -62,8 +63,8 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertTrue(focused.contains("Love"), "the panel should open on Love, has '\(focused)'")
 
         let screen = app.windows.firstMatch.frame
-        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "boost", "fastSeek", "preferVideos",
-                     "version"]
+        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "loudness", "boost", "fastSeek",
+                     "preferVideos", "version"]
         var lastY = -CGFloat.infinity
         for id in order {
             let frame = row(id).frame
@@ -95,6 +96,8 @@ final class QuickPanelTests: XCTestCase {
             XCTAssertEqual(value("equalizer"), eqStart, "four clicks should come back to '\(eqStart)'")
         }
 
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Loudness"), "▼ should reach Loudness, has '\(focused)'")
         press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Boost"), "▼ should reach Boost, has '\(focused)'")
         let boostCycle = ["0 dB", "+2 dB", "+4 dB", "+6 dB", "+8 dB"]

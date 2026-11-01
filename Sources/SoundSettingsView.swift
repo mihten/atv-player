@@ -9,6 +9,11 @@ struct SoundSettingsView: View {
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(SoundSettings.boostKey) private var boost = 0
 
+    private var loudnessOn: Binding<Bool> {
+        Binding(get: { loudness != SoundSettings.Loudness.off.rawValue },
+                set: { loudness = SoundSettings.loudnessValue(on: $0) })
+    }
+
     private var equalizerOptions: [(label: String, value: String)] {
         [("Off", "off")]
             + SoundSettings.appPresets.map { ($0.name, "a:\($0.id)") }
@@ -43,10 +48,12 @@ struct SoundSettingsView: View {
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }
             Section {
-                ChoiceRow("Loudness", selection: $loudness,
-                          options: SoundSettings.Loudness.allCases.map { ($0.name, $0.rawValue) })
+                Toggle("Loudness", isOn: loudnessOn)
             } header: {
                 Text("Loudness")
+            } footer: {
+                Text(SoundSettings.loudnessNote)
+                    .font(.system(size: 22)).foregroundStyle(.secondary)
             }
         }
         .onChange(of: "\(preset)|\(loudness)|\(boost)") {

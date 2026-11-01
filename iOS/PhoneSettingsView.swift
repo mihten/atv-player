@@ -347,11 +347,10 @@ struct PhoneSoundSettingsView: View {
             }
             .themedRow()
             Section {
-                Picker("Loudness", selection: $loudness) {
-                    ForEach(SoundSettings.Loudness.allCases, id: \.rawValue) { mode in
-                        Text(mode.name).tag(mode.rawValue)
-                    }
-                }
+                Toggle("Loudness", isOn: Binding(get: { loudness != SoundSettings.Loudness.off.rawValue },
+                                                 set: { loudness = SoundSettings.loudnessValue(on: $0) }))
+            } footer: {
+                Text(SoundSettings.loudnessNote)
             }
             .themedRow()
         }

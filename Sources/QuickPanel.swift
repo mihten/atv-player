@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Quick panel over the player: ♥ Love, shuffle, repeat, the lyrics / subtitle track, equalizer, boost, fast seek,
-/// "Prefer videos" and the version of the song (song / music videos). Opens on a click-and-hold of the centre button with
-/// Love focused; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps pausing / resuming. Compact rows
-/// (QuickRowStyle) so 9 fit with room to spare: 8 rows with the system button style already barely fitted.
+/// Quick panel over the player: ♥ Love, shuffle, repeat, the lyrics / subtitle track, equalizer, loudness, boost,
+/// fast seek, "Prefer videos" and the version of the song (song / music videos). Opens on a click-and-hold of the centre
+/// button with Love focused; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps pausing / resuming.
+/// Compact rows (QuickRowStyle, ~56 pt + 6 spacing): 10 rows + title + hint ≈ 780 pt of the 960 pt inside the 1080p
+/// safe area (8 rows with the system button style already barely fitted).
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -13,11 +14,14 @@ struct QuickPanel: View {
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.boostKey) private var boost = 0
+    @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @FocusState private var focus: Row?
     let close: () -> Void
 
-    enum Row: String { case love, shuffle, repeatMode, subtitles, equalizer, boost, fastSeek, preferVideos, version }
+    enum Row: String {
+        case love, shuffle, repeatMode, subtitles, equalizer, loudness, boost, fastSeek, preferVideos, version
+    }
 
     /// Equalizer choices in click order (same values as Settings → Sound). Any other preset (a VLC one chosen in
     /// Settings) is shown by name and the next click goes to the first of these.
@@ -37,6 +41,7 @@ struct QuickPanel: View {
         guard let item = engine.current, item.hasVersions else { return [] }
         return item.versions ?? []
     }
+    private var loudnessOn: Bool { loudness != SoundSettings.Loudness.off.rawValue }
     private var repeatMode: String { connection.state?.repeatMode ?? "all" }
     private var subtitleIndex: Int {
         guard subsOn else { return 3 }
@@ -45,7 +50,7 @@ struct QuickPanel: View {
 
     var body: some View {
         let accent = theme.accent(artwork.palette)
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("PLAYBACK").font(theme.eyebrow(24)).tracking(5).foregroundStyle(accent)
             playbackRows
             soundRows
@@ -93,6 +98,12 @@ struct QuickPanel: View {
             eqPreset = next
             connection.send(["type": "log", "message": "quick panel: equalizer -> \(next)"])
             engine.applySettings()  // new curve on the running player (rebuilds only to / from unprocessed)
+        }
+        row(.loudness, "Loudness", "waveform", loudnessOn ? "On" : "Off") {
+            let on = !loudnessOn
+            loudness = SoundSettings.loudnessValue(on: on)
+            connection.send(["type": "log", "message": "quick panel: loudness -> \(on ? "on" : "off")"])
+            engine.applySettings()  // new gain on the running player (rebuilds only to / from unprocessed)
         }
         // Boost in 2 dB steps (0 → +2 → … → +8 → 0); an odd value set in Settings goes to the next even one.
         row(.boost, "Boost", "speaker.wave.3", SoundSettings.dbLabel(Float(boost))) {
