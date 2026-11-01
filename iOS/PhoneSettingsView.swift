@@ -8,6 +8,8 @@ struct PhoneSettingsView: View {
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
+    @AppStorage(SoundSettings.preampKey) private var preamp = 0
+    @AppStorage(SoundSettings.limiterKey) private var limiter = false
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
@@ -53,7 +55,7 @@ struct PhoneSettingsView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = loudness  // refresh when any changes
+        _ = eqPreset; _ = loudness; _ = preamp; _ = limiter  // refresh when any changes
         return SoundSettings.summary
     }
 
@@ -323,6 +325,8 @@ struct PhoneSoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
+    @AppStorage(SoundSettings.preampKey) private var preamp = 0
+    @AppStorage(SoundSettings.limiterKey) private var limiter = false
 
     var body: some View {
         Form {
@@ -344,11 +348,25 @@ struct PhoneSoundSettingsView: View {
                 NavigationLink("Edit custom equalizer") { PhoneEqualizerView() }
             }
             .themedRow()
+            Section {
+                Stepper(value: $preamp, in: SoundSettings.preampRange) {
+                    LabeledContent("Preamp", value: SoundSettings.dbLabel(Float(preamp)))
+                }
+            } footer: {
+                Text(SoundSettings.gainNote(loudnessGain: engine.levelGain))
+            }
+            .themedRow()
+            Section {
+                Toggle("Limiter", isOn: $limiter)
+            } footer: {
+                Text("Prevents clipping when the gain is high.")
+            }
+            .themedRow()
         }
         .phoneThemed()
         .navigationTitle("Sound")
         .withMiniPlayer()
-        .onChange(of: "\(eqPreset)|\(loudness)") {
+        .onChange(of: "\(eqPreset)|\(loudness)|\(preamp)|\(limiter)") {
             engine.applySettings()
         }
     }

@@ -34,7 +34,8 @@ final class QuickPanelTests: XCTestCase {
 
     private func report(_ step: String) {
         let line = "\(step): app \(app.state == .runningForeground ? "foreground" : "NOT foreground (\(app.state.rawValue))"), "
-            + "focus '\(focused)', equalizer '\(value("equalizer"))', fast seek '\(value("fastSeek"))', "
+            + "focus '\(focused)', equalizer '\(value("equalizer"))', "
+            + "limiter '\(value("limiter"))', fast seek '\(value("fastSeek"))', "
             + "version '\(value("version"))', prefer videos '\(value("preferVideos"))', love '\(value("love"))'"
         print("UITEST: \(line)")
         if let dir = ProcessInfo.processInfo.environment["UI_SHOTS"] {
@@ -45,7 +46,7 @@ final class QuickPanelTests: XCTestCase {
 
     /// One launch: hold centre in the player; the panel opens on Love (first row: a click toggles, a second restores),
     /// then the Equalizer row (a click goes to the next of Momentum 4 → Custom → Amplify → Off, four clicks come back),
-    /// Fast seek (a click toggles, a second restores), Prefer videos (same) and Version last ("—" for the queued song,
+    /// Limiter (a click toggles, a second restores), Fast seek (same), Prefer videos (same) and Version last ("—" for the queued song,
     /// which has no music video: a click does nothing); every row is on screen; Back closes the panel and the app stays
     /// open.
     func testQuickPanelRows() {
@@ -54,12 +55,14 @@ final class QuickPanelTests: XCTestCase {
         sleep(10)  // the player opens once the queue has loaded
         remote.press(.select, forDuration: 1.2)
         XCTAssertTrue(row("equalizer").waitForExistence(timeout: 5), "the panel should have an Equalizer row")
+        XCTAssertTrue(row("limiter").exists, "the panel should have a Limiter row")
         XCTAssertTrue(row("fastSeek").exists, "the panel should have a Fast seek row")
         report("q1 panel open")
         XCTAssertTrue(focused.contains("Love"), "the panel should open on Love, has '\(focused)'")
 
         let screen = app.windows.firstMatch.frame
-        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "fastSeek", "preferVideos", "version"]
+        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "limiter", "fastSeek", "preferVideos",
+                     "version"]
         var lastY = -CGFloat.infinity
         for id in order {
             let frame = row(id).frame
@@ -92,10 +95,19 @@ final class QuickPanelTests: XCTestCase {
         }
 
         press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Limiter"), "▼ should reach Limiter, has '\(focused)'")
+        let limiterStart = value("limiter")
+        press(.select, wait: 3)  // new filter chain: rebuilds the VLC player
+        report("q4 limiter clicked")
+        XCTAssertEqual(value("limiter"), limiterStart == "On" ? "Off" : "On", "a click should toggle '\(limiterStart)'")
+        press(.select, wait: 3)
+        XCTAssertEqual(value("limiter"), limiterStart, "a second click should restore '\(limiterStart)'")
+
+        press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Fast seek"), "▼ should reach Fast seek, has '\(focused)'")
         let fastStart = value("fastSeek")
         press(.select, wait: 1)
-        report("q4 fast seek clicked")
+        report("q5 fast seek clicked")
         XCTAssertEqual(value("fastSeek"), fastStart == "On" ? "Off" : "On", "a click should toggle '\(fastStart)'")
         press(.select, wait: 1)
         XCTAssertEqual(value("fastSeek"), fastStart, "a second click should restore '\(fastStart)'")
@@ -104,7 +116,7 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertTrue(focused.contains("Prefer videos"), "▼ should reach Prefer videos, has '\(focused)'")
         let preferStart = value("preferVideos")
         press(.select, wait: 2)  // the queue owner answers with a new state
-        report("q5 prefer videos clicked")
+        report("q6 prefer videos clicked")
         XCTAssertEqual(value("preferVideos"), preferStart == "On" ? "Off" : "On", "a click should toggle '\(preferStart)'")
         press(.select, wait: 2)
         XCTAssertEqual(value("preferVideos"), preferStart, "a second click should restore '\(preferStart)'")
@@ -113,7 +125,7 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertTrue(focused.contains("Version"), "▼ should reach Version (last row), has '\(focused)'")
         let versionStart = value("version")
         press(.select, wait: 3)
-        report("q6 version clicked")
+        report("q7 version clicked")
         if versionStart == "—" {
             XCTAssertEqual(value("version"), "—", "Version without other versions should do nothing")
         } else {
@@ -121,7 +133,7 @@ final class QuickPanelTests: XCTestCase {
         }
 
         press(.menu)
-        report("q7 after Back")
+        report("q8 after Back")
         XCTAssertFalse(row("equalizer").exists, "Back should close the panel")
         XCTAssertEqual(app.state, .runningForeground)
     }

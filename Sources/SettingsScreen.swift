@@ -187,6 +187,8 @@ struct SettingsRootView: View {
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
+    @AppStorage(SoundSettings.preampKey) private var preamp = 0
+    @AppStorage(SoundSettings.limiterKey) private var limiter = false
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
 
     var body: some View {
@@ -219,7 +221,7 @@ struct SettingsRootView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = loudness  // refresh when any changes
+        _ = eqPreset; _ = loudness; _ = preamp; _ = limiter  // refresh when any changes
         return SoundSettings.summary
     }
 

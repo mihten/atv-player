@@ -24,6 +24,16 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
     }
 
     private let window = OSAllocatedUnfairLock(initialState: Window())
+
+    /// Audio filter modules VLC loaded (`using audio filter module "…"`) since `watchFilters`, for one diag line
+    /// after the limiter's filter chain was set (PlayerEngine.watchFilterModules).
+    private struct FilterWatch {
+        var id = 0
+        var open = false
+        var names: [String] = []
+    }
+
+    private let filters = OSAllocatedUnfairLock(initialState: FilterWatch())
     private static let maxEntries = 45
     private static let keywords = ["flush", "silence", "late", "early", "toggling", "avaudiosession", "route", "latency",
                                    "deadlock", "discontinuity", "resampl", "underrun", "pause", "resum", "audiounit",
@@ -32,6 +42,12 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
     // MARK: - VLCLogging
 
     func handleMessage(_ message: String, logLevel level: VLCLogLevel, context: VLCLogContext?) {
+        if message.hasPrefix("using audio filter module") {
+            let name = message.split(separator: "\"").dropFirst().first.map(String.init) ?? message
+            filters.withLock { w in
+                if w.open, w.names.count < 12 { w.names.append(name) }
+            }
+        }
         let module = context?.module ?? ""
         let type = context?.objectType ?? ""
         let lower = message.lowercased()
@@ -45,6 +61,25 @@ final class VLCLogTap: NSObject, VLCLogging, @unchecked Sendable {
     }
 
     // MARK: - Windows (main thread)
+
+    /// Starts collecting loaded audio filter modules; returns the id for `takeFilters`.
+    func watchFilters() -> Int {
+        filters.withLock { w in
+            w.id += 1
+            w.open = true
+            w.names = []
+            return w.id
+        }
+    }
+
+    /// The modules seen since `watchFilters(id)`; nil if a newer watch replaced it.
+    func takeFilters(_ id: Int) -> [String]? {
+        filters.withLock { w in
+            guard w.open, w.id == id else { return nil }
+            w.open = false
+            return w.names
+        }
+    }
 
     /// Anything else worth seeing in the same timeline (the app's own audio session steps). Any thread.
     func note(_ text: String) {
