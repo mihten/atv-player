@@ -54,6 +54,10 @@ struct PhoneRootView: View {
                 .environmentObject(artwork)
                 .environment(\.appTheme, theme)
                 .environment(\.playerNamespace, playerNS)
+                .environment(\.showQueue, {  // the player's Next line
+                    showPlayer = false
+                    tab = 2
+                })
         }
         .fullScreenCover(isPresented: $rootFullScreen, onDismiss: {
             if !landscape, engine.current != nil { showPlayer = true }
@@ -147,10 +151,20 @@ private struct ShowPlayerKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
 
+private struct ShowQueueKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
 extension EnvironmentValues {
     var showPlayer: () -> Void {
         get { self[ShowPlayerKey.self] }
         set { self[ShowPlayerKey.self] = newValue }
+    }
+
+    /// Closes the player sheet and opens the Queue tab.
+    var showQueue: () -> Void {
+        get { self[ShowQueueKey.self] }
+        set { self[ShowQueueKey.self] = newValue }
     }
 }
 
@@ -184,6 +198,8 @@ struct LibraryTab: View {
             .navigationTitle("ATV Player")
             .demoPush("videos")
             .demoPush("folder")
+            .demoPush("videofolder")
+            .demoPush("foryou")
             .withMiniPlayer()
             .task { await library.load() }
         }
@@ -216,7 +232,7 @@ struct LibraryTab: View {
     }
 
     private func shuffle(_ name: String) {
-        connection.command("play_collection", ["collection": name, "shuffle": true])
+        connection.startPlayback(["collection": name])
     }
 }
 
@@ -301,6 +317,22 @@ extension View {
     func itemMenu(_ item: MediaItem) -> some View { modifier(ItemMenu(item: item)) }
 }
 
+/// Play button row of a playlist, For you list, folder or the music videos list: the shared label (PlayLabels), the
+/// item count as secondary text. The action is always ServerConnection.startPlayback (shuffled, repeat all).
+struct PlayRow: View {
+    let title: String
+    let count: Int
+    var systemImage = "play.fill"
+
+    var body: some View {
+        HStack {
+            Label(title, systemImage: systemImage)
+            Spacer(minLength: 8)
+            Text(PlayLabels.count(count)).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct ItemRow: View {
     let item: MediaItem
     var highlighted = false
@@ -361,13 +393,13 @@ struct PhoneVideoListView: View {
         List {
             if let errorText { Text(errorText).foregroundStyle(.secondary) }
             Button {
-                connection.command("play_collection", ["collection": "videos", "shuffle": true])
+                connection.startPlayback(["collection": "videos"])
             } label: {
-                Label("Shuffle all music videos", systemImage: "shuffle")
+                PlayRow(title: PlayLabels.play, count: items.count)
             }
             ForEach(items) { item in
                 Button {
-                    connection.command("play_collection", ["collection": "videos", "start_id": item.id])
+                    connection.startPlayback(["collection": "videos", "start_id": item.id])
                 } label: {
                     ItemRow(item: item)
                 }
@@ -424,7 +456,7 @@ struct PhoneFolderRootsView: View {
     }
 }
 
-/// One folder: Play / Shuffle (everything below it or only this folder), subfolders, files.
+/// One folder: Play (including subfolders / only this folder), subfolders, files.
 struct PhoneFolderView: View {
     @EnvironmentObject var connection: ServerConnection
     let root: String
@@ -439,16 +471,13 @@ struct PhoneFolderView: View {
             if let errorText { Text(errorText).foregroundStyle(.secondary) }
             if let result {
                 Section {
-                    Button { play(shuffle: true) } label: {
-                        Label(result.hasSubfolders ? "Shuffle all, with subfolders (\(result.total))" : "Shuffle (\(result.total))",
-                              systemImage: "shuffle")
-                    }
-                    Button { play(shuffle: false) } label: {
-                        Label(result.hasSubfolders ? "Play all, with subfolders" : "Play", systemImage: "play.fill")
+                    Button { play() } label: {
+                        PlayRow(title: result.hasSubfolders ? PlayLabels.includingSubfolders : PlayLabels.play,
+                                count: result.total)
                     }
                     if result.hasSubfolders && !result.items.isEmpty {
-                        Button { play(shuffle: true, recursive: false) } label: {
-                            Label("Shuffle this folder only (\(result.items.count))", systemImage: "shuffle")
+                        Button { play(recursive: false) } label: {
+                            PlayRow(title: PlayLabels.onlyThisFolder, count: result.items.count, systemImage: "play")
                         }
                     }
                 }
@@ -468,7 +497,7 @@ struct PhoneFolderView: View {
                 if !result.items.isEmpty {
                     Section("Files") {
                         ForEach(result.items) { item in
-                            Button { play(shuffle: false, recursive: false, startAt: item.id) } label: {
+                            Button { play(recursive: false, startAt: item.id) } label: {
                                 ItemRow(item: item)
                             }
                             .itemMenu(item)
@@ -493,12 +522,11 @@ struct PhoneFolderView: View {
         }
     }
 
-    private func play(shuffle: Bool, recursive: Bool = true, startAt: Int? = nil) {
-        var args: [String: Any] = [
-            "collection": "folder", "root": root, "folder": folder, "shuffle": shuffle, "recursive": recursive,
-        ]
+    /// Shuffled with repeat all (startPlayback); a picked file plays first.
+    private func play(recursive: Bool = true, startAt: Int? = nil) {
+        var args: [String: Any] = ["collection": "folder", "root": root, "folder": folder, "recursive": recursive]
         if let startAt { args["start_id"] = startAt }
-        connection.command("play_collection", args)
+        connection.startPlayback(args)
     }
 }
 
@@ -622,8 +650,7 @@ struct PhonePlaylistView: View {
                 let playable = detail.items.filter { !$0.isMissing }.count
                 Section {
                     if playable > 0 {
-                        Button { play(shuffle: false) } label: { Label("Play (\(playable))", systemImage: "play.fill") }
-                        Button { play(shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                        Button { play() } label: { PlayRow(title: PlayLabels.play, count: playable) }
                     } else {
                         Text("Empty. Add songs and videos in the web remote.").foregroundStyle(.secondary)
                     }
@@ -636,7 +663,7 @@ struct PhonePlaylistView: View {
                             Label("\(entry.title) — file was deleted or moved", systemImage: "exclamationmark.triangle")
                                 .foregroundStyle(.secondary)
                         } else {
-                            Button { play(shuffle: false, startIndex: index) } label: {
+                            Button { play(startIndex: index) } label: {
                                 if theme.isClassic {
                                     HStack(spacing: 12) {
                                         Image(systemName: entry.isVideo ? "film" : "music.note")
@@ -665,10 +692,11 @@ struct PhonePlaylistView: View {
     }
 
     /// startIndex = position in the stored playlist (the server maps it past missing entries).
-    private func play(shuffle: Bool, startIndex: Int? = nil) {
-        var args: [String: Any] = ["collection": "playlist", "playlist": playlistID, "shuffle": shuffle]
+    /// Shuffled with repeat all (startPlayback); a picked entry plays first.
+    private func play(startIndex: Int? = nil) {
+        var args: [String: Any] = ["collection": "playlist", "playlist": playlistID]
         if let startIndex { args["start_index"] = startIndex }
-        connection.command("play_collection", args)
+        connection.startPlayback(args)
     }
 
     private func load() async {

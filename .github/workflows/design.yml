@@ -43,6 +43,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Guard - list and folder playback (one shuffled Play)
+        run: |
+          # Playlists, For you lists, folders and the music videos list start only through
+          # ServerConnection.startPlayback (Shared/Playback.swift: always shuffled, repeat all), labelled with PlayLabels.
+          bad=0
+          if grep -rn '"play_collection"' Sources iOS; then
+            echo "::error::play_collection sent from Sources/ or iOS/: use ServerConnection.startPlayback (Shared/Playback.swift)"
+            bad=1
+          fi
+          if grep -rnF -e 'Play all' -e 'Shuffle all' -e 'this folder only' -e 'with subfolders' Sources iOS; then
+            echo "::error::old play button wording in Sources/ or iOS/: use PlayLabels (Shared/Playback.swift)"
+            bad=1
+          fi
+          exit $bad
+
       - name: Select Xcode
         run: |
           sudo xcode-select -s /Applications/Xcode_26.6.app

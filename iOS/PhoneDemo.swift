@@ -16,6 +16,8 @@ enum PhoneDemo {
         switch route {
         case "videos": PhoneVideoListView()
         case "folder": PhoneFolderView(root: "music", folder: "Neon Harbor/Midnight Ferries", title: "Midnight Ferries")
+        case "videofolder": PhoneFolderView(root: "videos", folder: "", title: "Music videos")  // subfolder + own files
+        case "foryou": PhoneAutoListView(list: AutoList(key: "recent", name: "Recently added", count: 0))
         case "playlist": PhonePlaylistView(playlistID: 1, title: "Playlist")
         case "eq": PhoneEqualizerView()
         case "theme": PhoneThemeSettingsView()

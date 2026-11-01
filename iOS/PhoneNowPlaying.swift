@@ -267,47 +267,56 @@ struct PhoneNowPlayingView: View {
     // MARK: Classic
 
     private func classicBody(_ transport: Transport) -> some View {
-        VStack(spacing: 22) {
-            Spacer(minLength: 0)
-            if let item = transport.item {
-                if lyricsMode {
-                    LyricsPanel(item: item, store: LyricsStore.shared).layoutPriority(1)
-                } else if item.isVideo {
-                    videoSurface
-                } else {
-                    Artwork(item: item, size: 300)
-                }
-                VStack(spacing: 6) {
-                    Text(item.title).font(.title3.bold()).multilineTextAlignment(.center).lineLimit(2)
-                    if !item.subtitle.isEmpty {
-                        Text(item.subtitle).foregroundStyle(.secondary).lineLimit(1)
+        GeometryReader { geo in
+            VStack(spacing: 22) {
+                Spacer(minLength: 0)
+                if let item = transport.item {
+                    if lyricsMode {
+                        LyricsPanel(item: item, store: LyricsStore.shared).layoutPriority(1)
+                    } else if item.isVideo {
+                        videoSurface
+                    } else {
+                        // smaller on short screens (iPhone SE / mini), so the Next line still fits
+                        Artwork(item: item, size: min(300, geo.size.height * 0.4))
                     }
-                }
-                scrubber(transport)
-                classicControls(transport)
-                HStack(spacing: 28) {
-                    Button { lyricsMode.toggle() } label: {
-                        Label("Lyrics", systemImage: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
-                            .foregroundStyle(lyricsMode ? Color.accentColor : .secondary)
-                    }
-                    Button { connection.command("love", ["id": item.id, "on": item.loved != true]) } label: {
-                        Label(item.loved == true ? "Loved" : "Love", systemImage: item.loved == true ? "heart.fill" : "heart")
-                            .foregroundStyle(item.loved == true ? Color.accentColor : .secondary)
-                    }
-                    if item.hasVersions {
-                        VersionsMenu(connection: connection, engine: engine, item: item) {
-                            Label(item.versionLabel ?? "Versions", systemImage: "rectangle.stack")
-                                .foregroundStyle(.secondary)
+                    VStack(spacing: 6) {
+                        Text(item.title).font(.title3.bold()).multilineTextAlignment(.center).lineLimit(2)
+                        if !item.subtitle.isEmpty {
+                            Text(item.subtitle).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
+                    scrubber(transport)
+                    classicControls(transport)
+                    VStack(spacing: 10) {
+                        HStack(spacing: 28) {
+                            Button { lyricsMode.toggle() } label: {
+                                Label("Lyrics", systemImage: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
+                                    .foregroundStyle(lyricsMode ? Color.accentColor : .secondary)
+                            }
+                            Button { connection.command("love", ["id": item.id, "on": item.loved != true]) } label: {
+                                Label(item.loved == true ? "Loved" : "Love",
+                                      systemImage: item.loved == true ? "heart.fill" : "heart")
+                                    .foregroundStyle(item.loved == true ? Color.accentColor : .secondary)
+                            }
+                            if item.hasVersions {
+                                VersionsMenu(connection: connection, engine: engine, item: item) {
+                                    Label(item.versionLabel ?? "Versions", systemImage: "rectangle.stack")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .font(.footnote)
+                        NextLine(next: connection.state?.upcoming?.first, accent: .accentColor, font: .footnote,
+                                 centered: true)
+                    }
+                } else {
+                    Text("Nothing playing").foregroundStyle(.secondary)
                 }
-                .font(.footnote)
-            } else {
-                Text("Nothing playing").foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 24)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .padding(.horizontal, 24)
     }
 
     private var videoSurface: some View {
@@ -394,7 +403,8 @@ struct PhoneNowPlayingView: View {
     private func themedBody(_ transport: Transport) -> some View {
         let accent = theme.accent(artwork.palette)
         return GeometryReader { geo in
-            let side = min(geo.size.width - 52, geo.size.height * 0.42, 360)
+            // Short screens (iPhone SE / mini) give the artwork less, so the Next line and the controls still fit.
+            let side = min(geo.size.width - 52, geo.size.height * (geo.size.height < 700 ? 0.36 : 0.42), 360)
             VStack(spacing: 0) {
                 Spacer(minLength: 6)
                 if let item = transport.item {
@@ -416,6 +426,8 @@ struct PhoneNowPlayingView: View {
                         .padding(.top, 12)
                     secondaryRow(accent: accent)
                         .padding(.top, 16)
+                    NextLine(next: connection.state?.upcoming?.first, accent: accent, font: theme.font(13))
+                        .padding(.top, 6)
                 } else {
                     Text("Nothing playing").foregroundStyle(.secondary)
                 }
@@ -547,15 +559,17 @@ struct PhoneNowPlayingView: View {
         .padding(.horizontal, 6)
     }
 
+    /// Shuffle, lyrics, ♥, versions (only for items with versions) and repeat, evenly spread over the width.
     private func secondaryRow(accent: Color) -> some View {
         let state = connection.state
         let repeatMode = state?.repeatMode ?? "all"
-        return HStack(spacing: 14) {
+        return HStack(spacing: 0) {
             Button { connection.command("shuffle") } label: {
                 Image(systemName: "shuffle")
                     .foregroundStyle(state?.shuffle == true ? accent : theme.ink.opacity(0.45))
                     .frame(width: 40, height: 36)
             }
+            Spacer(minLength: 0)
             Button { lyricsMode.toggle() } label: {
                 Image(systemName: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
                     .foregroundStyle(lyricsMode ? accent : theme.ink.opacity(0.45))
@@ -563,6 +577,7 @@ struct PhoneNowPlayingView: View {
             }
             if let item = engine.current {
                 let loved = item.loved == true
+                Spacer(minLength: 0)
                 Button {
                     taps += 1
                     connection.command("love", ["id": item.id, "on": !loved])
@@ -575,24 +590,13 @@ struct PhoneNowPlayingView: View {
                 .accessibilityLabel(loved ? "Unlove" : "Love")
             }
             if let item = engine.current, item.hasVersions {
+                Spacer(minLength: 0)
                 VersionsMenu(connection: connection, engine: engine, item: item) {
                     Image(systemName: "rectangle.stack")
                         .foregroundStyle(item.isVideo ? accent : theme.ink.opacity(0.45))
                         .frame(width: 40, height: 36)
                 }
                 .accessibilityLabel("Versions")
-            }
-            Spacer(minLength: 0)
-            if let next = state?.upcoming?.first {
-                HStack(spacing: 6) {
-                    Text("NEXT")
-                        .font(.system(size: 10, weight: .heavy))
-                        .tracking(2)
-                        .foregroundStyle(accent)
-                    Text(next.title).font(theme.font(13)).opacity(0.7).lineLimit(1)
-                }
-                .id(next.id)
-                .transition(.blurFade(CGSize(width: 0, height: 6), blur: 6))
             }
             Spacer(minLength: 0)
             Button { connection.command("repeat") } label: {
@@ -603,6 +607,48 @@ struct PhoneNowPlayingView: View {
         }
         .font(.system(size: 17, weight: .semibold))
         .buttonStyle(PressScale())
+    }
+}
+
+/// The next queue item on its own line under the player's buttons: "NEXT", a film icon for a video, "Title · Artist"
+/// (one line, cut only when the width is not enough). Keeps its height when there is no next item, so the layout does
+/// not jump; a tap opens the Queue tab.
+struct NextLine: View {
+    let next: MediaItem?
+    let accent: Color
+    var font: Font = .system(size: 13)
+    var centered = false
+    @Environment(\.showQueue) private var showQueue
+
+    var body: some View {
+        Button { showQueue() } label: {
+            HStack(spacing: 7) {
+                if let next {
+                    Text("NEXT")
+                        .font(.system(size: 10, weight: .heavy))
+                        .tracking(2)
+                        .foregroundStyle(accent)
+                    if next.isVideo {
+                        Image(systemName: "film").font(.system(size: 11, weight: .semibold)).opacity(0.7)
+                    }
+                    Text([next.title, next.artist ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(font)
+                        .opacity(0.7)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .id(next?.id)
+            .transition(.blurFade(CGSize(width: 0, height: 6), blur: 6))
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: centered ? .center : .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(next == nil)
+        .accessibilityLabel(next.map { "Next: \($0.title)" } ?? "")
+        .accessibilityHint("Opens the queue")
+        .accessibilityHidden(next == nil)
+        .animation(.easeInOut(duration: 0.35), value: next?.id)
     }
 }
 

@@ -74,6 +74,11 @@ record() {  # $1 = device, $2 = file name, rest = command run while recording
   echo "  $name.mp4"
 }
 
+lyrics_off() {  # $1 = device: the iPhone remembers the lyrics view (AppStorage "lyricsMode") from an earlier lyrics pass
+  t 90 xcrun simctl terminate "$1" "$PHONE_ID" 2>/dev/null
+  t 30 xcrun simctl spawn "$1" defaults write "$PHONE_ID" lyricsMode -bool NO
+}
+
 play() {  # $1 = session: the server loads the queue paused after a relaunch
   t 30 "${DRV[@]}" cmd "$1" play
 }
@@ -107,7 +112,7 @@ if [[ $PLATFORMS == *tv* ]]; then
   t 30 "${DRV[@]}" play tv music "Harbor Lights"
   for theme in "${THEMES[@]}"; do
     echo "== Apple TV, $theme"
-    for route in home playlist folder settings $EXTRA_ROUTES; do
+    for route in home playlist folder videofolder foryou settings $EXTRA_ROUTES; do
       launch "$TV" "$TV_ID" "$theme" "$route"
       play tv
       sleep 7
@@ -159,12 +164,13 @@ if [[ $PLATFORMS == *phone* ]]; then
   t 30 "${DRV[@]}" play phone music "Low Tide"
   for theme in "${THEMES[@]}"; do
     echo "== iPhone, $theme"
-    for route in library playlist queue settings $EXTRA_ROUTES; do
+    for route in library playlist folder videofolder foryou queue settings $EXTRA_ROUTES; do
       launch "$PHONE" "$PHONE_ID" "$theme" "$route"
       play phone
       sleep 6
       shot "$PHONE" "phone-$theme-$route"
     done
+    lyrics_off "$PHONE"
     record "$PHONE" "phone-$theme-open" open_player "$PHONE" "$PHONE_ID" "$theme" phone
     launch "$PHONE" "$PHONE_ID" "$theme" player
     play phone
@@ -174,6 +180,13 @@ if [[ $PLATFORMS == *phone* ]]; then
     t 30 "${DRV[@]}" play phone videos "Undertow"
     sleep 6
     shot "$PHONE" "phone-$theme-video"
+    # A song and a video with versions (versions button in the player's buttons row)
+    t 30 "${DRV[@]}" play phone music "Afterglow"
+    sleep 6
+    shot "$PHONE" "phone-$theme-versions"
+    t 30 "${DRV[@]}" play phone videos "Afterglow"
+    sleep 6
+    shot "$PHONE" "phone-$theme-video-versions"
     t 30 "${DRV[@]}" play phone music "Low Tide"
     sleep 2
     # Lyrics view (iPhone Now Playing): synced song, music video, plain text, song without lyrics (info card)
@@ -191,5 +204,64 @@ if [[ $PLATFORMS == *phone* ]]; then
     sleep 2
   done
   t 120 xcrun simctl shutdown "$PHONE"
+
+  # Smallest supported iPhone height (SE / mini): the player must fit without scrolling. Player screens only.
+  SMALL=$(xcrun simctl list devices available -j | python3 -c '
+import json, sys
+names = ("iPhone SE (3rd generation)", "iPhone 13 mini", "iPhone 12 mini")
+data = json.load(sys.stdin)["devices"]
+for runtime in sorted((r for r in data if ".iOS-" in r), key=lambda r: [int(x) for x in r.split("-")[1:] if x.isdigit()], reverse=True):
+    for d in data[runtime]:
+        if d["name"] in names:
+            print(d["udid"]); sys.exit()
+')
+  if [ -z "$SMALL" ]; then
+    RUNTIME=$(xcrun simctl list runtimes -j | python3 -c '
+import json, sys
+rs = [r for r in json.load(sys.stdin)["runtimes"] if r.get("platform") == "iOS" and r.get("isAvailable")]
+rs.sort(key=lambda r: [int(x) for x in r["version"].split(".") if x.isdigit()])
+print(rs[-1]["identifier"] if rs else "")
+')
+    for type in iPhone-SE-3rd-generation iPhone-13-mini; do
+      SMALL=$(xcrun simctl create "Small iPhone" "com.apple.CoreSimulator.SimDeviceType.$type" "$RUNTIME" 2>/dev/null) && break
+    done
+  fi
+  if [ -n "$SMALL" ]; then
+    echo "== small iOS simulator $SMALL"
+    boot "$SMALL"
+    t 30 xcrun simctl ui "$SMALL" appearance dark
+    t 30 xcrun simctl status_bar "$SMALL" override --time 9:41 --batteryState charged --batteryLevel 100 \
+      --wifiBars 3 --cellularMode active --cellularBars 4
+    t 120 xcrun simctl install "$SMALL" "$PHONE_APP"
+    for theme in "${THEMES[@]}"; do
+      echo "== small iPhone, $theme"
+      t 30 "${DRV[@]}" play phone music "Low Tide"
+      lyrics_off "$SMALL"
+      launch "$SMALL" "$PHONE_ID" "$theme" player
+      play phone
+      sleep 8
+      shot "$SMALL" "small-$theme-player"
+      for entry in "music|Afterglow|versions" "videos|Afterglow|video-versions"; do
+        IFS='|' read -r kind title name <<<"$entry"
+        t 30 "${DRV[@]}" play phone "$kind" "$title"
+        sleep 6
+        shot "$SMALL" "small-$theme-$name"
+      done
+      LAUNCH_EXTRA="-lyricsMode YES"
+      launch "$SMALL" "$PHONE_ID" "$theme" player
+      play phone
+      for entry in "music|Low Tide|lyrics-synced" "videos|Undertow|lyrics-video" "music|Driftwood|lyrics-info"; do
+        IFS='|' read -r kind title name <<<"$entry"
+        t 30 "${DRV[@]}" play phone "$kind" "$title"
+        sleep 10
+        shot "$SMALL" "small-$theme-$name"
+      done
+      LAUNCH_EXTRA=""
+    done
+    t 30 "${DRV[@]}" play phone music "Low Tide"
+    t 120 xcrun simctl shutdown "$SMALL"
+  else
+    echo "  ! no small iPhone simulator (SE / mini) available"
+  fi
 fi
 ls -la "$OUT"

@@ -301,6 +301,20 @@ struct SongInfoCard: View {
     }
 
     var body: some View {
+        // Fewer rows when the space is short (iPhone SE / mini player sheet), so the card never pushes the player's
+        // controls off the screen; it cannot scroll (a drag must reach the sheet).
+        let all = rows
+        ViewThatFits(in: .vertical) {
+            card(all)
+            card(Array(all.prefix(5)))
+            card(Array(all.prefix(3)))
+        }
+        .foregroundStyle(theme.ink)
+        .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+    }
+
+    private func card(_ rows: [(String, String)]) -> some View {
         VStack(alignment: .leading, spacing: m.info * 0.7) {
             Text("NO LYRICS IN THIS FILE")
                 .font(.system(size: m.caption, weight: .heavy)).tracking(3)
@@ -316,10 +330,7 @@ struct SongInfoCard: View {
                         .lineLimit(3)
                 }
             }
-            Spacer(minLength: 0)
         }
-        .foregroundStyle(theme.ink)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.top, 30)
     }
 }

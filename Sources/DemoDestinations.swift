@@ -9,6 +9,8 @@ struct DemoDestination: View {
         case "playlist": PlaylistView(playlistID: 1, title: "Playlist")
         case "folders": FolderRootsView()
         case "folder": FolderView(root: "music", folder: "Neon Harbor/Midnight Ferries", title: "Midnight Ferries")
+        case "videofolder": FolderView(root: "videos", folder: "", title: "Music videos")  // subfolder + own files
+        case "foryou": AutoListView(list: AutoList(key: "recent", name: "Recently added", count: 0))
         default: EmptyView()
         }
     }

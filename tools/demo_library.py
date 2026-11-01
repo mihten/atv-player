@@ -23,7 +23,7 @@ ALBUMS = [
     ("Velvet Static", "Glass Orchard", "2019", "blobs", ["#7f00ff", "#e100ff", "#00d2ff"],
      [("Orchard", 187), ("Prism Rain", 243), ("Slow Bloom", 266)]),
     ("Paper Moons", "Tidal", "2023", "moon", ["#0f2027", "#2c5364", "#f4e2d8"],
-     [("Low Tide", 205), ("Moonwalk on Water", 229), ("Undertow", 257), ("Driftwood", 192)]),
+     [("Low Tide", 205), ("Moonwalk on Water (Extended Night Mix for the Long Drive Home)", 229), ("Undertow", 257), ("Driftwood", 192)]),
     ("Lumen Drift", "Afterglow", "2024", "stripes", ["#f7971e", "#ffd200", "#1f1c2c"],
      [("Afterglow", 248), ("Northern Hum", 221), ("Kite", 176)]),
     ("The Quiet Arcade", "Insert Coin", "2018", "grid", ["#00f260", "#0575e6", "#111111"],
@@ -33,10 +33,10 @@ ALBUMS = [
 ]
 
 VIDEOS = [
-    # file stem (Artist - Title), seconds, visual
+    # file stem ([subfolder/]Artist - Title), seconds, visual
     ("Lumen Drift - Afterglow (Official Video)", 75, "zoom:stripes:#f7971e,#ffd200,#1f1c2c"),
     ("Lumen Drift - Afterglow (Live)", 85, "zoom:stripes:#1f1c2c,#f7971e,#ffd200"),  # a second version of the song
-    ("Neon Harbor - City of Glass (Live)", 70, "mandelbrot"),
+    ("Live/Neon Harbor - City of Glass (Live)", 70, "mandelbrot"),  # a subfolder: folder with subfolders + own files
     ("Paper Moons - Undertow (Official Video)", 80, "zoom:moon:#0f2027,#2c5364,#f4e2d8"),
     ("Saffron Skies - Monsoon (Lyric Video)", 65, "gradients"),
     ("The Quiet Arcade - Pixel Heart (Official Video)", 60, "life"),
@@ -210,6 +210,7 @@ def make_videos(out):
                 vin = ["-f", "lavfi", "-t", str(secs), "-i",
                        "life=s=320x180:r=25:mold=12:ratio=0.12:life_color=#00f260:death_color=#0575e6:mold_color=#111133"]
                 vf = "scale=1280:720:flags=neighbor"
+            (folder / f"{stem}.mkv").parent.mkdir(parents=True, exist_ok=True)
             run(["ffmpeg", "-y", "-v", "error", *vin, "-f", "lavfi", "-t", str(secs), "-i", tone(k + 3),
                  "-i", str(srt), "-map", "0:v", "-map", "1:a", "-map", "2:s", "-vf", vf,
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "2M", "-bufsize", "4M",

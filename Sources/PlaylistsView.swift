@@ -66,8 +66,8 @@ struct PlaylistsView: View {
     }
 }
 
-/// One playlist: Play / Shuffle, then its entries in order. Selecting an entry plays the playlist
-/// from there. Missing files (deleted on the NAS) are shown greyed out and skipped by the server.
+/// One playlist: Play, then its entries in order. Selecting an entry plays it first, the rest of the playlist follows
+/// shuffled. Missing files (deleted on the NAS) are shown greyed out and skipped by the server.
 struct PlaylistView: View {
     @EnvironmentObject var connection: ServerConnection
     let playlistID: Int
@@ -89,8 +89,9 @@ struct PlaylistView: View {
                 Section {
                     if playable > 0 {
                         Button { play() } label: {
-                            Label("Play (\(playable))", systemImage: "play.fill")
+                            RowLabel(title: PlayLabels.play, detail: PlayLabels.count(playable), systemImage: "play.fill")
                         }
+                        .accessibilityIdentifier("play")  // UI tests
                     } else {
                         Text("Empty. Add songs and videos in the web remote: \(Config.remoteAddress)")
                             .foregroundStyle(.secondary)
@@ -153,9 +154,9 @@ struct PlaylistView: View {
     }
 }
 
-/// One auto-playlist (Loved, Most played, Recently added, Not heard in a while, On this day): Play in order or Shuffle,
-/// then its items; an item plays the list in order from there. Reloads when a ♥ changes (connection.autoVersion) and,
-/// without the server, after a rescan.
+/// One auto-playlist (Loved, Most played, Recently added, Not heard in a while, On this day): Play (shuffled), then its
+/// items; an item plays first, the rest of the list follows shuffled. Reloads when a ♥ changes (connection.autoVersion)
+/// and, without the server, after a rescan.
 struct AutoListView: View {
     @EnvironmentObject var connection: ServerConnection
     let list: AutoList
@@ -179,18 +180,16 @@ struct AutoListView: View {
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        Button { play(shuffle: false) } label: {
-                            Label("Play (\(items.count))", systemImage: "play.fill")
+                        Button { play() } label: {
+                            RowLabel(title: PlayLabels.play, detail: PlayLabels.count(items.count), systemImage: "play.fill")
                         }
-                        Button { play(shuffle: true) } label: {
-                            Label("Shuffle", systemImage: "shuffle")
-                        }
+                        .accessibilityIdentifier("play")  // UI tests
                     }
                 }
                 if !items.isEmpty {
                     Section(list.name) {
                         ForEach(items) { item in
-                            Button { play(shuffle: false, from: item.id) } label: {
+                            Button { play(from: item.id) } label: {
                                 RowLabel(title: item.title, detail: item.artist ?? "",
                                          systemImage: item.kind == "video" ? "film" : "music.note", item: item)
                             }
@@ -207,10 +206,11 @@ struct AutoListView: View {
         .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
     }
 
-    private func play(shuffle: Bool, from id: Int? = nil) {
+    /// Starts shuffled with repeat all (startPlayback); a picked item plays first.
+    private func play(from id: Int? = nil) {
         var args: [String: Any] = ["collection": list.key]
         if let id { args["start_id"] = id }
-        connection.startPlayback(args, shuffle: shuffle)
+        connection.startPlayback(args)
     }
 
     private func load() async {

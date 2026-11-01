@@ -159,7 +159,7 @@ struct PhoneHome: View {
                 ForEach(videos.prefix(30)) { video in
                     Button {
                         taps += 1
-                        connection.command("play_collection", ["collection": "videos", "start_id": video.id])
+                        connection.startPlayback(["collection": "videos", "start_id": video.id])
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             ItemThumb(item: video, corner: theme == .noir ? 2 : 12)
@@ -254,7 +254,7 @@ struct PhoneHome: View {
 
     private func shuffle(_ name: String) {
         taps += 1
-        connection.command("play_collection", ["collection": name, "shuffle": true])
+        connection.startPlayback(["collection": name])
     }
 
     private func loadVideos() async {

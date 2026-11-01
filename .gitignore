@@ -8,7 +8,7 @@ xcodebuild.log
 Pods/
 *.xcworkspace/
 Podfile.lock
-server/__pycache__/
+__pycache__/
 
 # Site-specific config (addresses, paths, share names) never goes to the public repo
 local.env

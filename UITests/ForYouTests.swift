@@ -45,9 +45,9 @@ final class ForYouTests: XCTestCase {
         }
     }
 
-    /// The list screen of an auto-playlist with items: its "Play (N)" button.
+    /// The list screen of an auto-playlist with items: its "Play" button (shuffled; there is no Shuffle button).
     private var playButton: XCUIElement {
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Play (")).firstMatch
+        app.buttons.matching(identifier: "play").firstMatch
     }
 
     private func report(_ step: String) {
@@ -61,7 +61,8 @@ final class ForYouTests: XCTestCase {
     }
 
     /// Home: ▼ from the top reaches the "For you" shelf (Loved is its first card), ▶ reaches "Recently added"; a click
-    /// pushes the list (focus on Play, ▼ Shuffle); Back returns to the same card on Home and the app stays open.
+    /// pushes the list (focus on Play, ▼ the first item: no Shuffle button); Back returns to the same card on Home and
+    /// the app stays open.
     func test1HomeShelf() {
         launchHome()
         report("1a home")
@@ -76,10 +77,13 @@ final class ForYouTests: XCTestCase {
         press(.select, wait: 3)
         report("1d recently added list")
         XCTAssertTrue(playButton.exists, "the list screen should show Play")
-        XCTAssertTrue(focused.contains("Play ("), "the first focus should be on Play, has '\(focused)'")
+        // the focused element is the List cell: its label is the row's text ("Play, 27 items"), not the button's identifier
+        XCTAssertTrue(focused.hasPrefix("Play,"), "the first focus should be on Play, has '\(focused)'")
+        XCTAssertFalse(app.buttons["Shuffle"].exists, "the list should have no Shuffle button")
         press(.down)
-        report("1e shuffle button")
-        XCTAssertTrue(focused.contains("Shuffle"), "▼ from Play should reach Shuffle, has '\(focused)'")
+        report("1e first item")
+        XCTAssertFalse(focused.hasPrefix("Play,"), "▼ from Play should reach the first item, has '\(focused)'")
+        XCTAssertFalse(focused.contains("Shuffle"), "▼ from Play should not reach a Shuffle button, has '\(focused)'")
         press(.menu)
         report("1f after Back")
         XCTAssertEqual(app.state, .runningForeground)

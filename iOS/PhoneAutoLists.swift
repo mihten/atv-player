@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One auto-playlist (Loved, Most played, Recently added, Not heard in a while, On this day): Play in order or
-/// Shuffle, then its items; a row plays the list in order from there. Reloads when a ♥ changes
+/// One auto-playlist (Loved, Most played, Recently added, Not heard in a while, On this day): Play (shuffled), then
+/// its items; a row plays first, the rest of the list follows shuffled. Reloads when a ♥ changes
 /// (connection.autoVersion) and, without the server, when the on-device library changes.
 struct PhoneAutoListView: View {
     @EnvironmentObject var connection: ServerConnection
@@ -20,15 +20,14 @@ struct PhoneAutoListView: View {
                              : "Nothing here yet.")
                             .foregroundStyle(.secondary)
                     } else {
-                        Button { play(shuffle: false) } label: { Label("Play (\(items.count))", systemImage: "play.fill") }
-                        Button { play(shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                        Button { play() } label: { PlayRow(title: PlayLabels.play, count: items.count) }
                     }
                 }
                 .themedRow()
                 if !items.isEmpty {
                     Section {
                         ForEach(items) { item in
-                            Button { play(shuffle: false, from: item.id) } label: {
+                            Button { play(from: item.id) } label: {
                                 ItemRow(item: item)
                             }
                             .itemMenu(item)
@@ -46,10 +45,11 @@ struct PhoneAutoListView: View {
         .task(id: "\(connection.autoVersion)|\(libraryVersion)") { await load() }
     }
 
-    private func play(shuffle: Bool, from id: Int? = nil) {
-        var args: [String: Any] = ["collection": list.key, "shuffle": shuffle]
+    /// Shuffled with repeat all (startPlayback); a picked item plays first.
+    private func play(from id: Int? = nil) {
+        var args: [String: Any] = ["collection": list.key]
         if let id { args["start_id"] = id }
-        connection.command("play_collection", args)
+        connection.startPlayback(args)
     }
 
     private func load() async {

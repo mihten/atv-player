@@ -1,20 +1,9 @@
 import SwiftUI
 
-/// Apple TV: every start of playback (folder, playlist, collection, a single item in a list) begins shuffled with
-/// repeat all; both can be changed in the player's quick panel (hold the remote's centre button). Auto-playlists also
-/// offer Play in order (shuffle: false).
-extension ServerConnection {
-    func startPlayback(_ arguments: [String: Any], shuffle: Bool = true) {
-        var args = arguments
-        args["shuffle"] = shuffle
-        command("play_collection", args)
-        command("repeat", ["mode": "all"])
-    }
-}
-
-/// Quick panel over the player: shuffle, repeat, the lyrics / subtitle track, equalizer, fast seek, the version of the
-/// song (song / music videos), "Prefer videos" and ♥ Love. Opens on a click-and-hold of the centre button; ▲▼ moves, click
-/// changes the focused row, Back closes it. ⏯ keeps pausing / resuming. Sized for 8 rows on a 1080p screen.
+/// Quick panel over the player: ♥ Love, shuffle, repeat, the lyrics / subtitle track, equalizer, fast seek, "Prefer
+/// videos" and the version of the song (song / music videos). Opens on a click-and-hold of the centre button with Love
+/// focused; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps pausing / resuming. Sized for 8 rows on a
+/// 1080p screen.
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -27,7 +16,7 @@ struct QuickPanel: View {
     @FocusState private var focus: Row?
     let close: () -> Void
 
-    enum Row: String { case shuffle, repeatMode, subtitles, equalizer, fastSeek, version, preferVideos, love }
+    enum Row: String { case love, shuffle, repeatMode, subtitles, equalizer, fastSeek, preferVideos, version }
 
     /// Equalizer choices in click order (same values as Settings → Sound). Any other preset (a VLC one chosen in
     /// Settings) is shown by name and the next click goes to the first of these.
@@ -57,6 +46,11 @@ struct QuickPanel: View {
         let accent = theme.accent(artwork.palette)
         VStack(alignment: .leading, spacing: 12) {
             Text("PLAYBACK").font(theme.eyebrow(24)).tracking(5).foregroundStyle(accent)
+            row(.love, "Love", lovedOn ? "heart.fill" : "heart", lovedOn ? "On" : "Off") {
+                guard let item = engine.current else { return }
+                connection.command("love", ["id": item.id, "on": !lovedOn])
+                connection.send(["type": "log", "message": "quick panel: love \(item.id) -> \(lovedOn ? "off" : "on")"])
+            }
             row(.shuffle, "Shuffle", "shuffle", shuffleOn ? "On" : "Off") {
                 connection.command("shuffle", ["on": !shuffleOn])
             }
@@ -84,6 +78,10 @@ struct QuickPanel: View {
                 connection.send(["type": "log", "message": "quick panel: fast seek -> \(fastSeek ? "on" : "off")"])
                 // PlayerEngine applies it at the next seek (VLC reads it only when an item starts).
             }
+            row(.preferVideos, "Prefer videos", "play.rectangle", preferVideosOn ? "On" : "Off") {
+                connection.command("prefer_videos", ["on": !preferVideosOn])
+                connection.send(["type": "log", "message": "quick panel: prefer videos -> \(preferVideosOn ? "off" : "on")"])
+            }
             row(.version, "Version", "rectangle.stack", versions.isEmpty ? "—" : (engine.current?.versionLabel ?? "—")) {
                 let list = versions
                 guard let item = engine.current, !list.isEmpty else { return }
@@ -92,15 +90,6 @@ struct QuickPanel: View {
                 connection.send(["type": "log", "message": "quick panel: version \(item.id) -> \(next.id) (\(next.label))"])
                 connection.switchVersion(to: next.id, position: engine.livePosition)
             }
-            row(.preferVideos, "Prefer videos", "play.rectangle", preferVideosOn ? "On" : "Off") {
-                connection.command("prefer_videos", ["on": !preferVideosOn])
-                connection.send(["type": "log", "message": "quick panel: prefer videos -> \(preferVideosOn ? "off" : "on")"])
-            }
-            row(.love, "Love", lovedOn ? "heart.fill" : "heart", lovedOn ? "On" : "Off") {
-                guard let item = engine.current else { return }
-                connection.command("love", ["id": item.id, "on": !lovedOn])
-                connection.send(["type": "log", "message": "quick panel: love \(item.id) -> \(lovedOn ? "off" : "on")"])
-            }
             Text("Click changes  ·  Back closes  ·  ⏯ pauses").font(theme.font(20)).opacity(0.5).padding(.top, 6)
         }
         .padding(.horizontal, 44)
@@ -108,7 +97,7 @@ struct QuickPanel: View {
         .frame(width: 760)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
         .focusSection()
-        .onAppear { focus = .shuffle }
+        .onAppear { focus = .love }  // one click hearts the playing item
         .onExitCommand { close() }
         .onPlayPauseCommand { engine.togglePlay(source: "quick-panel") }
     }

@@ -37,8 +37,11 @@ def library():
     return get("/api/library")["items"]
 
 
-def find(title):
+def find(title, kind=None):
+    """First item whose title contains `title`; with `kind`, items of that kind first (a song and its video share it)."""
     items = library()
+    if kind:
+        items = sorted(items, key=lambda it: it["kind"] != kind)
     for it in items:
         if title.lower() in (it["title"] or "").lower():
             return it
@@ -87,7 +90,7 @@ def main():
         msg = {"type": "cmd", "cmd": "play_collection", "collection": collection, "shuffle": "--shuffle" in args}
         rest = [a for a in args[3:] if not a.startswith("--")]
         if rest:
-            msg["start_id"] = find(rest[0])["id"]
+            msg["start_id"] = find(rest[0], {"music": "audio", "videos": "video"}.get(collection))["id"]
         asyncio.run(send(session, msg))
     elif args[0] == "cmd":
         msg = {"type": "cmd", "cmd": args[2], **(json.loads(args[3]) if len(args) > 3 else {})}

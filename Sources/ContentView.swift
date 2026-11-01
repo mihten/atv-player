@@ -130,8 +130,9 @@ struct VideoListView: View {
             Button {
                 connection.startPlayback(["collection": "videos"])
             } label: {
-                Label("Play all music videos (shuffled)", systemImage: "play.fill")
+                RowLabel(title: PlayLabels.play, detail: PlayLabels.count(items.count), systemImage: "play.fill")
             }
+            .accessibilityIdentifier("play")  // UI tests
             ForEach(items) { item in
                 Button {
                     connection.startPlayback(["collection": "videos", "start_id": item.id])
@@ -369,7 +370,7 @@ struct FolderRootsView: View {
     }
 }
 
-/// One folder: Play / Shuffle (everything below it), subfolders, then its own files.
+/// One folder: Play (including subfolders / only this folder), subfolders, then its own files.
 struct FolderView: View {
     @EnvironmentObject var connection: ServerConnection
     @State private var libraryVersion = LocalLibrary.shared.version
@@ -388,17 +389,22 @@ struct FolderView: View {
                 Section {
                     if result.hasSubfolders {
                         Button { play() } label: {
-                            Label("Play all, including subfolders (\(result.total))", systemImage: "play.fill")
+                            RowLabel(title: PlayLabels.includingSubfolders, detail: PlayLabels.count(result.total),
+                                     systemImage: "play.fill")
                         }
+                        .accessibilityIdentifier("play")  // UI tests
                         if !result.items.isEmpty {
                             Button { play(recursive: false) } label: {
-                                Label("Play this folder only (\(result.items.count))", systemImage: "play")
+                                RowLabel(title: PlayLabels.onlyThisFolder, detail: PlayLabels.count(result.items.count),
+                                         systemImage: "play")
                             }
+                            .accessibilityIdentifier("playThisFolder")  // UI tests
                         }
                     } else {
                         Button { play() } label: {
-                            Label("Play all (\(result.total))", systemImage: "play.fill")
+                            RowLabel(title: PlayLabels.play, detail: PlayLabels.count(result.total), systemImage: "play.fill")
                         }
+                        .accessibilityIdentifier("play")  // UI tests
                     }
                 }
                 if !result.subfolders.isEmpty {
