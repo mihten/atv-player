@@ -11,6 +11,8 @@ final class ServerConnection: ObservableObject {
     @Published private(set) var state: SessionState?
     /// Bumped when the server says playlists changed (web remote edits); playlist screens reload on it.
     @Published private(set) var playlistsVersion = 0
+    /// Bumped when a ♥ changed (server {"type": "auto"}, or LocalQueue); auto-playlist screens reload on it.
+    @Published private(set) var autoVersion = 0
     weak var engine: PlayerEngine?
     /// Called after a few failed connection attempts in a row (the server may have a new address).
     var onUnreachable: (() -> Void)?
@@ -58,7 +60,12 @@ final class ServerConnection: ObservableObject {
         failures = 0
         connected = true
         state = nil
-        let queue = LocalQueue(engine: engine, publish: { [weak self] in self?.state = $0 })
+        let queue = LocalQueue(engine: engine, publish: { [weak self] newState in
+            self?.state = newState
+            if let item = newState.current { self?.engine?.refreshLinks(item) }
+        }, autoChanged: { [weak self] in
+            self?.autoVersion += 1
+        })
         local = queue
         LocalLibrary.shared.start()
         queue.start()
@@ -134,7 +141,10 @@ final class ServerConnection: ObservableObject {
         guard let message = try? JSONDecoder.server().decode(ServerMessage.self, from: data) else { return }
         switch message.type {
         case "state":
-            if let newState = message.state { state = newState }
+            if let newState = message.state {
+                state = newState
+                if let item = newState.current { engine?.refreshLinks(item) }
+            }
         case "load":
             if let item = message.item {
                 engine?.load(item, position: message.position ?? 0, autoplay: message.autoplay ?? true,
@@ -144,6 +154,8 @@ final class ServerConnection: ObservableObject {
             if let action = message.action { engine?.control(action, position: message.position) }
         case "playlists":
             playlistsVersion += 1
+        case "auto":
+            autoVersion += 1
         default:
             break
         }

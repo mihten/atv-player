@@ -34,7 +34,8 @@ final class QuickPanelTests: XCTestCase {
 
     private func report(_ step: String) {
         let line = "\(step): app \(app.state == .runningForeground ? "foreground" : "NOT foreground (\(app.state.rawValue))"), "
-            + "focus '\(focused)', equalizer '\(value("equalizer"))', fast seek '\(value("fastSeek"))'"
+            + "focus '\(focused)', equalizer '\(value("equalizer"))', fast seek '\(value("fastSeek"))', "
+            + "version '\(value("version"))', prefer videos '\(value("preferVideos"))', love '\(value("love"))'"
         print("UITEST: \(line)")
         if let dir = ProcessInfo.processInfo.environment["UI_SHOTS"] {
             let name = step.replacingOccurrences(of: " ", with: "-").filter { $0.isLetter || $0.isNumber || $0 == "-" }
@@ -43,8 +44,9 @@ final class QuickPanelTests: XCTestCase {
     }
 
     /// One launch: hold centre in the player, then the Equalizer row (a click goes to the next of Momentum 4 → Custom →
-    /// Amplify → Off, four clicks come back) and the Fast seek row below it (a click toggles, a second restores);
-    /// Back closes the panel and the app stays open.
+    /// Amplify → Off, four clicks come back), the Fast seek row below it (a click toggles, a second restores), the
+    /// Version row ("—" for the queued song, which has no music video: a click does nothing), Prefer videos and Love (a
+    /// click toggles, a second restores); every row is on screen; Back closes the panel and the app stays open.
     func testQuickPanelRows() {
         app.launchArguments = ["-serverAddress", "127.0.0.1:8080", "-appTheme", "aurora", "-demoRoute", "player"]
         app.launch()
@@ -77,8 +79,43 @@ final class QuickPanelTests: XCTestCase {
         press(.select, wait: 1)
         XCTAssertEqual(value("fastSeek"), fastStart, "a second click should restore '\(fastStart)'")
 
+        let screen = app.windows.firstMatch.frame
+        for id in ["shuffle", "version", "preferVideos", "love"] {
+            let frame = row(id).frame
+            XCTAssertTrue(row(id).exists && frame.minY >= screen.minY && frame.maxY <= screen.maxY,
+                          "row \(id) should be on screen (\(frame) in \(screen))")
+        }
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Version"), "▼ should reach Version, has '\(focused)'")
+        let versionStart = value("version")
+        press(.select, wait: 3)
+        report("q4 version clicked")
+        if versionStart == "—" {
+            XCTAssertEqual(value("version"), "—", "Version without other versions should do nothing")
+        } else {
+            XCTAssertNotEqual(value("version"), versionStart, "a click should play the next version")
+        }
+
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Prefer videos"), "▼ should reach Prefer videos, has '\(focused)'")
+        let preferStart = value("preferVideos")
+        press(.select, wait: 2)  // the queue owner answers with a new state
+        report("q5 prefer videos clicked")
+        XCTAssertEqual(value("preferVideos"), preferStart == "On" ? "Off" : "On", "a click should toggle '\(preferStart)'")
+        press(.select, wait: 2)
+        XCTAssertEqual(value("preferVideos"), preferStart, "a second click should restore '\(preferStart)'")
+
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Love"), "▼ should reach Love, has '\(focused)'")
+        let loveStart = value("love")
+        press(.select, wait: 2)  // the queue owner answers with a new state (the item's heart)
+        report("q6 love clicked")
+        XCTAssertEqual(value("love"), loveStart == "On" ? "Off" : "On", "a click should toggle '\(loveStart)'")
+        press(.select, wait: 2)
+        XCTAssertEqual(value("love"), loveStart, "a second click should restore '\(loveStart)'")
+
         press(.menu)
-        report("q4 after Back")
+        report("q7 after Back")
         XCTAssertFalse(row("equalizer").exists, "Back should close the panel")
         XCTAssertEqual(app.state, .runningForeground)
     }

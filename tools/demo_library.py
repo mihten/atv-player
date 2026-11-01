@@ -35,6 +35,7 @@ ALBUMS = [
 VIDEOS = [
     # file stem (Artist - Title), seconds, visual
     ("Lumen Drift - Afterglow (Official Video)", 75, "zoom:stripes:#f7971e,#ffd200,#1f1c2c"),
+    ("Lumen Drift - Afterglow (Live)", 85, "zoom:stripes:#1f1c2c,#f7971e,#ffd200"),  # a second version of the song
     ("Neon Harbor - City of Glass (Live)", 70, "mandelbrot"),
     ("Paper Moons - Undertow (Official Video)", 80, "zoom:moon:#0f2027,#2c5364,#f4e2d8"),
     ("Saffron Skies - Monsoon (Lyric Video)", 65, "gradients"),

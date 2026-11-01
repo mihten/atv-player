@@ -52,6 +52,17 @@ struct MediaItem: Codable, Identifiable, Hashable {
     var lyr: Int? = nil
     /// Codec of the default audio track (server 0.16.1+; nil from older servers). Songs: same as `codec`.
     var acodec: String? = nil
+    /// Video frame rate (server 0.16.2+ / no-server preparse; nil or 0 = unknown) and dynamic range of a video
+    /// ("sdr" / "pq" / "hlg" / "dv"; server only, nil = unknown).
+    var fps: Double? = nil
+    var dyn: String? = nil
+    /// Song <-> music video links (server 0.16.3+ / no-server VersionLinks): number of music videos of a song (lists),
+    /// and every member of the item's group, songs first (the item being played; nil = no other version).
+    var videos: Int? = nil
+    var versions: [MediaVersion]? = nil
+    /// ♥ (server 0.16.4+ / no-server LocalListening; nil from older servers). Per version group: true when the item or
+    /// one of its versions is loved.
+    var loved: Bool? = nil
     /// No-server mode only (never sent by the server): where the file is. `smb://...` URL string, or a path relative
     /// to LocalSettings.deviceFolder (the iPhone app's Documents folder, whose absolute path changes with app updates).
     var localPath: String? = nil
@@ -89,10 +100,54 @@ extension MediaItem {
     var codecBadges: [String] {
         if kind == "video" {
             let video = isVideo ? codec.flatMap(CodecName.label) : nil  // audio-only stream: no video codec
-            return [video, acodec.flatMap(CodecName.label)].compactMap { $0 }
+            return [video, acodec.flatMap(CodecName.label), isVideo ? hdrBadge : nil].compactMap { $0 }
         }
         return [(acodec ?? codec).flatMap(CodecName.label)].compactMap { $0 }
     }
+
+    /// HDR format of a video file (played as SDR by VLC 3); nil for SDR or unknown.
+    var hdrBadge: String? {
+        switch dyn ?? "" {
+        case "pq": return "HDR10"
+        case "hlg": return "HLG"
+        case "dv": return "DV"
+        default: return nil
+        }
+    }
+}
+
+extension MediaItem {
+    /// The item's own entry in `versions` ("Official video", "Live at Wembley 1986", "Song" ...).
+    var versionLabel: String? { versions?.first(where: { $0.id == id })?.label }
+    /// ids sharing the item's ♥: its versions and the item itself (a no-server audio twin is not listed in them).
+    var versionGroup: [Int] {
+        let ids = versions?.map(\.id) ?? []
+        return ids.contains(id) ? ids : ids + [id]
+    }
+    /// Linked versions besides this one (the song and / or other videos).
+    var hasVersions: Bool { (versions?.count ?? 0) > 1 }
+    var videoCount: Int {
+        if let versions { return versions.filter { $0.kind == "video" }.count }
+        return videos ?? 0
+    }
+    /// Chip for the player: "▶ 2 videos" on a song with music videos, the version label on a video with siblings.
+    var versionBadge: String? {
+        if kind == "audio" {
+            let count = videoCount
+            return count > 0 ? "▶ \(count) video\(count == 1 ? "" : "s")" : nil
+        }
+        return hasVersions ? versionLabel : nil
+    }
+}
+
+/// One version of a song: the song itself or one of its music videos (MediaItem.versions).
+struct MediaVersion: Codable, Hashable, Identifiable {
+    let id: Int
+    let kind: String
+    let label: String
+    let duration: Double?
+
+    var isVideo: Bool { kind == "video" }
 }
 
 /// ffmpeg codec names (and the scanner's file-extension fallbacks for songs) -> short display labels.
@@ -142,6 +197,8 @@ struct SessionState: Codable {
     let upcoming: [MediaItem]?
     let players: Int?
     let version: String?
+    /// "Prefer videos" for this queue (server 0.16.3+; nil = older server).
+    var preferVideos: Bool? = nil
 }
 
 /// Every server push uses this one shape; unused fields are nil.

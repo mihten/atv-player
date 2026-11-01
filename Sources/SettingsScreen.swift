@@ -277,7 +277,7 @@ struct AboutSettingsView: View {
                 info("▼  ▲", "Next / previous")
                 info("◀  ▶", "Jump back / forward (Settings → Playback)")
                 info("Click", "Lyrics on / off")
-                info("Hold", "Shuffle, repeat, lyrics language")
+                info("Hold", "Shuffle, repeat, lyrics language, video version, prefer videos, ♥ love")
                 info("⏯", "Pause / resume, also in the menus")
             }
             Section("Good to know") {

@@ -10,6 +10,7 @@
   WebSocket; nothing polls.
 """
 import asyncio
+import datetime
 import json
 import logging
 import mimetypes
@@ -17,6 +18,7 @@ import os
 import random
 import re
 import socket
+import sqlite3
 import subprocess
 import time
 from io import BytesIO
@@ -40,7 +42,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.1"
+VERSION = "0.16.4"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -58,7 +60,8 @@ REMOTES: dict = {}  # ws -> session kind the web remote controls
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
-                "codec", "acodec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak", "lyr")
+                "codec", "acodec", "track", "disc", "year", "width", "height", "hidden", "lufs", "tpeak", "lyr",
+                "fps", "dyn", "videos")
 FULL_KEYS = SUMMARY_KEYS + ("audio_track", "audio_ord", "sub_track", "sub_ord", "channels", "bitrate")
 
 
@@ -67,7 +70,11 @@ def summary(it, keys=SUMMARY_KEYS):
     d["lossless"] = bool(it.get("lossless"))
     d["hidden"] = bool(it.get("hidden"))
     d["acodec"] = it.get("acodec") or None  # "" = video without audio
+    d["fps"] = it.get("fps") or None  # 0 = unknown / song
+    d["dyn"] = it.get("dyn") or None  # "sdr" / "pq" / "hlg" / "dv"; "" = song
     d["art"] = bool(it.get("has_art"))
+    d["videos"] = (video_count(it["id"]) or None) if it["kind"] == "audio" else None  # linked music videos
+    d["loved"] = is_loved(it["id"])
     return d
 
 
@@ -77,6 +84,8 @@ def full(it):
         d["subs"] = json.loads(it.get("subs") or "null")
     except ValueError:
         d["subs"] = None
+    d["versions"] = [{"id": i, "kind": LIB[i]["kind"], "label": VERSION_LABEL.get(i, ""),
+                      "duration": LIB[i].get("duration")} for i in VERSIONS.get(it["id"], [])] or None
     return d
 
 
@@ -100,9 +109,96 @@ def load_library():
     LAST_SCAN.clear()
     if meta:
         LAST_SCAN.update(json.loads(meta["value"]))
+    link_versions()
+
+
+# ---------------------------------------------------------------- song <-> music video versions
+# A song and its music videos (official, live, acoustic, lyric video ...) form one group: same normalised artist (main
+# artist, without "feat. ...") and title (scanner.norm drops the "(...)" / "[...]" parts). Rebuilt after every
+# load_library; hidden duplicates are not members. Shared/LocalLibrary.swift (VersionLinks) has the same rules.
+
+VERSIONS: dict[int, list[int]] = {}  # item id -> every member of its group (2+ members), songs first
+VERSION_LABEL: dict[int, str] = {}  # item id -> "Official video", "Live at Wembley 1986", "Song", "Video" ...
+VERSION_CLASS: dict[int, int] = {}  # 0 official / plain / remaster, 1 lyric / visualizer / audio, 2 live / other
+
+FEAT_RE = re.compile(r"\s+(?:feat\.|ft\.|featuring\s).*$", re.I)
+BRACKET_RE = re.compile(r"[\(\[]([^\)\]]*)[\)\]]")
+NOISE_WORDS = {"official", "music", "video", "hd", "4k", "hq"}
+
+
+def version_key(it):
+    artist = scanner.norm(FEAT_RE.sub("", it.get("artist") or ""))
+    title = scanner.norm(FEAT_RE.sub("", it.get("title") or ""))
+    return (artist, title) if artist and title else None
+
+
+def version_label(title, kind):
+    """(label, class) from the bracket text of a title, e.g. "(Live at Wembley 1986)" -> ("Live at Wembley 1986", 2)."""
+    parts, official = [], False
+    for text in BRACKET_RE.findall(title or ""):
+        words = text.split()
+        if not words or words[0].lower().rstrip(".") in ("feat", "ft", "featuring", "with"):
+            continue
+        official = official or any(w.lower() == "official" for w in words)
+        rest = " ".join(w for w in words if w.lower() not in NOISE_WORDS)
+        if rest:
+            parts.append(rest)
+    text = " · ".join(parts)
+    low = text.lower()
+    words = re.findall(r"[a-z0-9]+", low)
+    if any(w == "live" or w.startswith(("acoustic", "unplugged", "remix")) for w in words):
+        cls = 2
+    elif any(w == "audio" or w.startswith(("lyric", "visuali")) for w in words):
+        cls = 1
+    elif not words or any(w.startswith("remaster") for w in words):
+        cls = 0
+    else:
+        cls = 2
+    if not text:
+        text = "Official video" if official and kind == "video" else ("Video" if kind == "video" else "Song")
+    elif kind == "video" and low in ("lyric", "lyrics"):
+        text = "Lyric video"
+    return text[:1].upper() + text[1:], cls
+
+
+def link_versions():
+    VERSIONS.clear()
+    VERSION_LABEL.clear()
+    VERSION_CLASS.clear()
+    groups: dict = {}
+    for it in LIB.values():
+        if it["hidden"]:
+            continue
+        key = version_key(it)
+        if key:
+            groups.setdefault(key, []).append(it["id"])
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for i in members:
+            VERSION_LABEL[i], VERSION_CLASS[i] = version_label(LIB[i]["title"], LIB[i]["kind"])
+        members.sort(key=lambda i: (LIB[i]["kind"] != "audio", VERSION_CLASS[i], VERSION_LABEL[i].lower(), i))
+        for i in members:
+            VERSIONS[i] = members
+
+
+def video_count(item_id):
+    return sum(1 for i in VERSIONS.get(item_id, []) if LIB[i]["kind"] == "video")
+
+
+def preferred_video(item_id):
+    """The video "Prefer videos" plays instead of a song: the first one of the song's own class, else the best one."""
+    it = LIB.get(item_id)
+    if not it or it["kind"] != "audio":
+        return None
+    videos = [i for i in VERSIONS.get(item_id, []) if LIB[i]["kind"] == "video"]
+    own = VERSION_CLASS.get(item_id, 0)
+    return next((i for i in videos if VERSION_CLASS[i] == own), videos[0] if videos else None)
 
 
 def collection(name, root=None, folder=None, recursive=True, playlist=None):
+    if name in AUTO_NAMES:  # auto-playlists from the play history and the hearts
+        return auto_items(name)
     if name == "playlist":  # playlist order; hidden duplicates stay playable, vanished files are skipped
         pl = PLAYLISTS.get(playlist) if playlist is not None else None
         return [LIB[i] for i in pl["items"] if i in LIB] if pl else []
@@ -132,7 +228,8 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
 STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
 KINDS = ("tv", "phone")
 KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone"}
-SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items")
+SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items",
+              "prefer_videos", "swapped", "pinned", "dropped", "noted")
 
 
 class Session:
@@ -157,6 +254,14 @@ class Session:
         self.source = None
         self.source_items: list[int] = []
         self.noted = None  # item whose current start is already in the play history
+        # "Prefer videos": songs in the queue are played as one of their music videos (prefer_list). swapped: queue
+        # entry -> the song it replaced (also for a version picked by hand); pinned: entries picked by hand with
+        # switch_version, which the flag never changes back; dropped: video -> songs left out for it ("no doubles"),
+        # put back when the flag goes off.
+        self.prefer_videos = False
+        self.swapped: dict[int, int] = {}
+        self.pinned: list[int] = []
+        self.dropped: dict[int, list[int]] = {}
 
     @property
     def players(self):
@@ -177,6 +282,7 @@ class Session:
         return {
             "session": self.kind, "session_name": KIND_NAMES[self.kind], "sessions": sessions_summary(),
             "queue": self.queue, "index": self.index, "shuffle": self.shuffle, "repeat_mode": self.repeat,
+            "prefer_videos": self.prefer_videos,
             "playing": self.playing, "position": self.position, "position_at": self.position_at,
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
@@ -201,6 +307,10 @@ class Session:
                 setattr(self, k, data[k])
         if version < 2:  # saved before endless playback became the default: switch it on once
             self.repeat = "all"
+        self.prefer_videos = bool(self.prefer_videos)
+        self.swapped = {int(k): int(v) for k, v in (self.swapped or {}).items()}  # JSON keys are strings
+        self.pinned = [int(i) for i in self.pinned or []]
+        self.dropped = {int(k): [int(i) for i in v] for k, v in (self.dropped or {}).items()}
         self.prune()
 
     def prune(self):
@@ -208,6 +318,9 @@ class Session:
         cur = self.current_id
         self.queue = [i for i in self.queue if i in LIB]
         self.original = [i for i in self.original if i in LIB]
+        self.swapped = {k: v for k, v in self.swapped.items() if k in LIB and v in LIB}
+        self.pinned = [i for i in self.pinned if i in LIB]
+        self.dropped = {k: [i for i in v if i in LIB] for k, v in self.dropped.items() if k in LIB}
         if cur in self.queue:
             self.index = self.queue.index(cur)
         elif self.queue:
@@ -249,6 +362,7 @@ def save_history():
 def note_played(item_id):
     now = time.time()
     PLAYED[item_id] = now
+    note_play(item_id, now)
     cutoff = now - HISTORY_DAYS * 86400
     for k in [k for k, v in PLAYED.items() if v <= cutoff]:
         del PLAYED[k]
@@ -274,6 +388,193 @@ def smart_shuffle(ids):
     random.shuffle(older)
     random.shuffle(newer)
     return fresh + older + newer
+
+
+# ---------------------------------------------------------------- listening history and hearts (auto-playlists)
+# DATA/listening.db keeps every start for good (plays) and the hearts (loved), for the auto-playlists (Loved, Most played,
+# Recently added, Not heard in a while, On this day). PLAYED above stays the 30-day shuffle memory. On first start the
+# last plays of history.json are imported as plays.
+
+LISTEN_DB = DATA / "listening.db"
+LISTEN = None  # sqlite3 connection (listening())
+PLAY_COUNT: dict[int, int] = {}  # item id -> number of starts
+LAST_PLAY: dict[int, float] = {}  # item id -> last start (no expiry)
+LOVED: dict[int, float] = {}  # item id -> when it got its heart
+AUTO_LISTS = (("loved", "Loved"), ("most_played", "Most played"), ("recent", "Recently added"),
+              ("forgotten", "Not heard in a while"), ("on_this_day", "On this day"))
+AUTO_NAMES = {key for key, _ in AUTO_LISTS}
+AUTO_SIZE = 100
+FORGOTTEN_DAYS = 90
+FIRST_SCAN_GAP = 600  # s without a new item ends the first scan (its items all got about the same "added")
+
+
+def listening():
+    global LISTEN
+    if LISTEN is None:
+        DATA.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(LISTEN_DB)
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS plays (id INTEGER NOT NULL, at REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS plays_at ON plays (at);
+            CREATE TABLE IF NOT EXISTS loved (id INTEGER PRIMARY KEY, at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+        """)
+        LISTEN = con
+    return LISTEN
+
+
+def load_listening():
+    con = listening()
+    if con.execute("SELECT 1 FROM meta WHERE key = 'history_imported'").fetchone() is None:
+        try:
+            played = json.loads(HISTORY_FILE.read_text()).get("played") or {}
+        except (OSError, ValueError, AttributeError):
+            played = {}
+        rows = []
+        for k, v in played.items():
+            try:
+                rows.append((int(k), float(v)))
+            except (TypeError, ValueError):
+                pass
+        con.executemany("INSERT INTO plays (id, at) VALUES (?, ?)", rows)
+        con.execute("INSERT INTO meta (key, value) VALUES ('history_imported', ?)", (str(len(rows)),))
+        con.commit()
+        log.info("listening history: %d plays imported from %s", len(rows), HISTORY_FILE.name)
+    PLAY_COUNT.clear()
+    LAST_PLAY.clear()
+    LOVED.clear()
+    for i, n, last in con.execute("SELECT id, COUNT(*), MAX(at) FROM plays GROUP BY id"):
+        PLAY_COUNT[i], LAST_PLAY[i] = n, last
+    LOVED.update(dict(con.execute("SELECT id, at FROM loved").fetchall()))
+
+
+def note_play(item_id, at):
+    PLAY_COUNT[item_id] = PLAY_COUNT.get(item_id, 0) + 1
+    LAST_PLAY[item_id] = max(at, LAST_PLAY.get(item_id, 0))
+    try:
+        con = listening()
+        con.execute("INSERT INTO plays (id, at) VALUES (?, ?)", (item_id, at))
+        con.commit()
+    except sqlite3.Error as e:
+        log.warning("play not saved: %s", e)
+
+
+def is_loved(item_id):
+    """The heart is per version group: a song loved shows as loved while its video plays (and the other way round)."""
+    return any(i in LOVED for i in VERSIONS.get(item_id, (item_id,)))
+
+
+def set_loved(item_id, on):
+    """Heart on / off. On marks the item, off clears every member of its group. Returns False when nothing changed."""
+    if on == is_loved(item_id):
+        return False
+    now = time.time()
+    gone = [i for i in VERSIONS.get(item_id, (item_id,)) if i in LOVED]
+    try:
+        con = listening()
+        if on:
+            con.execute("INSERT OR REPLACE INTO loved (id, at) VALUES (?, ?)", (item_id, now))
+        else:
+            con.executemany("DELETE FROM loved WHERE id = ?", [(i,) for i in gone])
+        con.commit()
+    except sqlite3.Error as e:
+        log.warning("heart not saved: %s", e)
+        return False
+    if on:
+        LOVED[item_id] = now
+    else:
+        for i in gone:
+            LOVED.pop(i, None)
+    return True
+
+
+def group_last_play(item_id):
+    """Last start of any version of the item (a song heard as its video counts as heard)."""
+    return max(LAST_PLAY.get(i, 0) for i in VERSIONS.get(item_id, (item_id,)))
+
+
+def added_time(items):
+    """Item id -> time it came into the library. The first scan gives every item about the same "added" (one block
+    without a FIRST_SCAN_GAP pause from the earliest one): those items use their file time instead, never later than
+    "added" (a retagged old file gets a new mtime)."""
+    first_end, prev = None, None
+    for it in sorted(items, key=lambda it: it["added"]):
+        if prev is not None and it["added"] - prev > FIRST_SCAN_GAP:
+            break
+        prev = first_end = it["added"]
+    first = first_end is not None
+    return {it["id"]: (min(it["mtime"], it["added"]) if first and it["added"] <= first_end else it["added"])
+            for it in items}
+
+
+def on_this_day(now=None):
+    """Ids played within 3 days of today's date in earlier years, newest year first (in a year: last played first)."""
+    now = now or time.time()
+    con = listening()
+    first = con.execute("SELECT MIN(at) FROM plays").fetchone()[0]
+    if first is None:
+        return []
+    today = datetime.date.fromtimestamp(now)
+    out, seen = [], set()
+    for year in range(today.year - 1, datetime.date.fromtimestamp(first).year - 2, -1):
+        try:
+            day = today.replace(year=year)
+        except ValueError:  # 29 February
+            day = today.replace(year=year, day=28)
+        lo = time.mktime((day - datetime.timedelta(days=3)).timetuple())
+        hi = min(time.mktime((day + datetime.timedelta(days=4)).timetuple()), now - 300 * 86400)
+        rows = con.execute("SELECT id, MAX(at) AS last FROM plays WHERE at >= ? AND at < ? GROUP BY id "
+                           "ORDER BY last DESC", (lo, hi))
+        for i, _ in rows:
+            if i in LIB and i not in seen:
+                seen.add(i)
+                out.append(i)
+    return out[:AUTO_SIZE]
+
+
+def auto_items(name, now=None):
+    """Items of an auto-playlist, in its order. History lists keep hidden duplicates that were played (like playlists)."""
+    now = now or time.time()
+    if name == "loved":  # once per version group, by its newest loved member
+        ids, seen = [], set()
+        for i in sorted((i for i in LOVED if i in LIB), key=lambda i: -LOVED[i]):
+            if i not in seen:
+                seen.update(VERSIONS.get(i, (i,)))
+                ids.append(i)
+    elif name == "most_played":
+        ids = sorted((i for i in PLAY_COUNT if i in LIB), key=lambda i: (-PLAY_COUNT[i], -LAST_PLAY[i]))[:AUTO_SIZE]
+    elif name == "recent":
+        visible = [it for it in LIB.values() if not it["hidden"]]
+        added = added_time(visible)
+        ids = sorted(added, key=lambda i: (-added[i], -i))[:AUTO_SIZE]
+    elif name == "forgotten":
+        cutoff = now - FORGOTTEN_DAYS * 86400
+        ids = sorted(it["id"] for it in LIB.values() if not it["hidden"] and group_last_play(it["id"]) < cutoff)
+        random.Random(datetime.date.fromtimestamp(now).isoformat()).shuffle(ids)  # same order all day
+        ids = ids[:AUTO_SIZE]
+    elif name == "on_this_day":
+        try:
+            ids = on_this_day(now)
+        except sqlite3.Error as e:
+            log.warning("on this day: %s", e)
+            ids = []
+    else:
+        return []
+    return [LIB[i] for i in ids]
+
+
+def auto_lists():
+    """The auto-playlists for the menus: non-empty ones, Loved always."""
+    out = []
+    for key, name in AUTO_LISTS:
+        items = auto_items(key)
+        if items or key == "loved":
+            entry = {"key": key, "name": name, "count": len(items),
+                     "first_art": next((it["id"] for it in items if it.get("has_art")), None)}
+            if key == "loved":  # every item shown with a heart (the web remote's rows): loved ones and their versions
+                entry["ids"] = sorted({j for it in items for j in VERSIONS.get(it["id"], (it["id"],))})
+            out.append(entry)
+    return out
 
 
 def session_for(kind):
@@ -350,10 +651,13 @@ def follow_playlist(s, pl_id):
         return False
     if new == s.source_items:  # rename only
         return False
-    cur = s.current_id
+    playing = s.current_id
+    # Compared and rebuilt with the playlist's own entries: a version swap counts as the song it replaced.
+    queue = [s.swapped.get(i, i) for i in s.queue]
+    cur = queue[s.index] if 0 <= s.index < len(queue) else None
     if s.shuffle:
         keep = set(new)
-        played = [i for i in s.queue[:max(s.index, 0)] if i in keep]
+        played = [i for i in queue[:max(s.index, 0)] if i in keep]
         rest = list(new)
         for i in played + ([cur] if cur is not None else []):
             if i in rest:
@@ -365,11 +669,32 @@ def follow_playlist(s, pl_id):
         s.queue, s.index = list(new), new.index(cur)
     else:
         keep = set(new)
-        k = sum(1 for i in s.queue[:max(s.index, 0)] if i in keep)
+        k = sum(1 for i in queue[:max(s.index, 0)] if i in keep)
         s.queue = new[:k] + ([cur] if cur is not None else []) + new[k:]
         s.index = k
     s.original, s.source_items = list(new), list(new)
-    log.info("[%s] queue follows playlist %s: %d items now, current %s kept", s.kind, pl_id, len(s.queue), cur)
+    s.dropped = {}  # rebuilt from the playlist's own entries
+    if playing is not None and playing != cur:
+        # The current entry stays the version that is playing; the playlist's own entry of that video goes (no doubles).
+        other = next((n for n, i in enumerate(s.queue) if i == playing and n != s.index), None)
+        if other is not None:
+            del s.queue[other]
+            if other < s.index:
+                s.index -= 1
+        s.queue[s.index] = playing
+        if cur in s.original:
+            if playing in s.original:
+                s.original.remove(playing)
+            s.original[s.original.index(cur)] = playing
+    # The rest of the queue is the playlist's own entries now: only the playing version can still stand for a song
+    # (a stale swap would later turn a video added to the playlist into its song).
+    s.swapped = {k: v for k, v in s.swapped.items() if k == playing and playing != cur}
+    if s.prefer_videos:
+        s.queue, where = prefer_list(s, s.queue, set(s.queue), keep=s.index)
+        s.index = where[s.index] if s.queue else -1
+        at = s.original.index(playing) if playing in s.original else None
+        s.original, _ = prefer_list(s, s.original, set(s.original), keep=at)
+    log.info("[%s] queue follows playlist %s: %d items now, current %s kept", s.kind, pl_id, len(s.queue), playing)
     return True
 
 
@@ -382,6 +707,14 @@ async def playlists_changed(pl_id=None):
     msg = {"type": "playlists", "id": pl_id}
     for ws in list(PLAYERS) + list(REMOTES):
         await send(ws, msg)
+
+
+async def loved_changed():
+    """A heart changed: every queue's state (current / upcoming carry "loved"), and {"type": "auto"} to every client
+    so open auto-playlist screens reload."""
+    await broadcast_all()
+    for ws in list(PLAYERS) + list(REMOTES):
+        await send(ws, {"type": "auto"})
 
 
 async def send(ws, msg):
@@ -458,14 +791,14 @@ async def ensure_current_file(s):
     return True
 
 
-async def start_current(s, position=0.0, autoplay=True, present=False):
+async def start_current(s, position=0.0, autoplay=True, present=False, noted=None):
     if not await ensure_current_file(s):
         return
     s.position, s.position_at = position, time.time()
     s.duration = (s.current or {}).get("duration") or 0.0
     s.want_play = autoplay
     s.playing = False
-    s.noted = None  # the next "playing" status of this start goes into the play history
+    s.noted = noted  # None: the next "playing" status of this start goes into the play history
     s.save()
     await to_players(s, load_message(s, autoplay, position, present))
     await broadcast_state(s)
@@ -478,6 +811,79 @@ async def stop_playback(s):
     await broadcast_state(s)
 
 
+def prefer_list(s, ids, present, keep=None):
+    """ids with every song that has a music video replaced by preferred_video (noted in s.swapped). No doubles: a song
+    whose video is already in `present` (or was chosen for another song) is dropped (noted in s.dropped). keep: a
+    position left as it is (the current item). Returns (new list, new position of every old position; a dropped song
+    gets its video's)."""
+    out, where, chosen, dropped = [], [], {}, {}
+    for n, i in enumerate(ids):
+        video = None if n == keep or i in s.pinned else preferred_video(i)
+        if video is None:
+            where.append(len(out))
+            out.append(i)
+        elif (video in present and video not in chosen) or chosen.get(video, i) != i:
+            where.append(None)
+            dropped[n] = (video, len(out))
+            songs = s.dropped.setdefault(video, [])
+            if i not in songs:
+                songs.append(i)
+        else:
+            chosen[video] = i
+            s.swapped[video] = i
+            where.append(len(out))
+            out.append(video)
+    for n, (video, at) in dropped.items():
+        where[n] = out.index(video) if video in out else min(at, max(len(out) - 1, 0))
+    return out, where
+
+
+def unswap(s, i):
+    """The song a "Prefer videos" swap replaced (entries picked by hand stay)."""
+    return s.swapped[i] if i in s.swapped and i not in s.pinned else i
+
+
+def restore_list(s, ids, start=0, keep=None):
+    """Prefer videos off: the entries from `start` on (except position keep) go back to their song, and the songs
+    dropped for a video come back right after it (after the current item when that is the video, at the end when the
+    video is gone). Songs already in ids are not added again."""
+    back, seen = {}, set(ids)
+    for video, songs in s.dropped.items():
+        for song in songs:
+            if song not in seen:
+                seen.add(song)
+                back.setdefault(video, []).append(song)
+    out = list(ids[:start])
+    if start > 0:
+        out.extend(back.pop(ids[start - 1], []))
+    for n in range(start, len(ids)):
+        out.append(ids[n] if n == keep else unswap(s, ids[n]))
+        out.extend(back.pop(ids[n], []))
+    for songs in back.values():
+        out.extend(songs)
+    return out
+
+
+def apply_prefer(s, whole=False):
+    """The flag changed (or a repeat-all lap starts, whole=True): on = songs after the current item become their
+    videos, off = swapped entries after it go back to their song and dropped songs come back. The unshuffled order
+    follows (all but the current item), so shuffle off keeps the choice."""
+    cur = s.current_id
+    start = 0 if whole else s.index + 1
+    at = s.original.index(cur) if not whole and cur in s.original else None
+    if s.prefer_videos:
+        rest, _ = prefer_list(s, s.queue[start:], set(s.queue))
+        s.queue = s.queue[:start] + rest
+        s.original, _ = prefer_list(s, s.original, set(s.original), keep=at)
+    else:
+        s.queue = restore_list(s, s.queue, start)
+        s.original = restore_list(s, s.original, keep=at)
+        s.dropped = {}
+        s.swapped = {k: v for k, v in s.swapped.items() if k in s.queue}
+    if whole:
+        s.index = 0 if s.queue else -1
+
+
 async def set_queue(s, ids, start_index=None, shuffle=False):
     """start_index None = beginning (or a random first track when shuffling)."""
     ids = [i for i in ids if i in LIB]
@@ -485,6 +891,11 @@ async def set_queue(s, ids, start_index=None, shuffle=False):
         return
     if start_index is not None:
         start_index = min(max(int(start_index), 0), len(ids) - 1)
+    s.swapped, s.pinned, s.dropped = {}, [], {}
+    if s.prefer_videos:
+        ids, where = prefer_list(s, ids, set(ids))
+        if start_index is not None:
+            start_index = where[start_index]
     s.original = list(ids)
     if shuffle:
         rest = smart_shuffle([i for n, i in enumerate(ids) if n != start_index])
@@ -509,11 +920,57 @@ async def advance(s, user):
         if s.shuffle:  # new lap: the items just heard go to the back, not straight to the front again
             s.queue = smart_shuffle(s.queue)
         s.index = 0
+        if s.prefer_videos or s.swapped:
+            apply_prefer(s, whole=True)
     else:
         s.index = len(s.queue) - 1
         await stop_playback(s)
         return
     await start_current(s)
+
+
+async def switch_version(s, msg):
+    """Replace the current entry with another version of it (song <-> video, official <-> live) and start it: at the
+    same position when both are the same cut (durations within 5 s), else from the start."""
+    cur = s.current
+    try:
+        new_id = int(msg.get("id"))
+    except (TypeError, ValueError):
+        return
+    if cur is None or new_id == cur["id"] or new_id not in VERSIONS.get(cur["id"], []):
+        return
+    old_id, new = cur["id"], LIB[new_id]
+    live = s.position + (time.time() - s.position_at if s.playing else 0)
+    position = float(msg["position"]) if msg.get("position") is not None else live
+    a, b = cur.get("duration") or 0, new.get("duration") or 0
+    same_cut = a > 0 and b > 0 and abs(a - b) <= 5
+    s.queue[s.index] = new_id
+    if s.index < len(s.original) and s.original[s.index] == old_id:
+        s.original[s.index] = new_id
+    elif old_id in s.original:
+        s.original[s.original.index(old_id)] = new_id
+    raw = s.swapped.get(old_id, old_id)  # the playlist / collection entry this slot came from
+    if old_id not in s.queue:
+        s.swapped.pop(old_id, None)
+    if raw != new_id:
+        s.swapped[new_id] = raw
+    else:
+        s.swapped.pop(new_id, None)
+    if new_id not in s.pinned:
+        s.pinned.append(new_id)
+    # The same listen goes on: not a new start in the play history (the shuffle memory still gets the new id).
+    noted = None
+    if s.noted == old_id:
+        noted = new_id
+        PLAYED[new_id] = time.time()
+        try:
+            save_history()
+        except OSError as e:
+            log.warning("history not saved: %s", e)
+    log.info("[%s] version %s -> %s (%s) at %.0f s", s.kind, old_id, new_id, VERSION_LABEL.get(new_id, ""),
+             position if same_cut else 0)
+    s.errors = 0
+    await start_current(s, position=max(position, 0) if same_cut else 0.0, present=True, noted=noted)
 
 
 async def handle_cmd(s, msg):
@@ -552,6 +1009,10 @@ async def handle_cmd(s, msg):
         if not s.queue:
             await set_queue(s, ids)
             return
+        for i in ids:  # picked by hand: an older automatic swap of the same video no longer applies to it
+            s.swapped.pop(i, None)
+        if s.prefer_videos:
+            ids, _ = prefer_list(s, ids, set(s.queue) | set(ids))
         pos = s.index + 1 if msg.get("mode") == "next" else len(s.queue)
         s.source, s.source_items = None, []  # edited by hand: no longer just the playlist
         s.queue[pos:pos] = ids
@@ -599,13 +1060,26 @@ async def handle_cmd(s, msg):
         s.repeat = mode
         s.save()
         await broadcast_state(s)
+    elif cmd == "prefer_videos":
+        on = bool(msg.get("on", not s.prefer_videos))
+        if on != s.prefer_videos:
+            s.prefer_videos = on
+            apply_prefer(s)
+            log.info("[%s] prefer videos %s", s.kind, "on" if on else "off")
+        s.save()
+        await broadcast_state(s)
+    elif cmd == "switch_version":
+        await switch_version(s, msg)
     elif cmd == "remove":
         idx = int(msg.get("index", -1))
         if 0 <= idx < len(s.queue) and idx != s.index:
             s.source, s.source_items = None, []
-            del s.queue[idx]
+            gone = s.queue.pop(idx)
             if idx < s.index:
                 s.index -= 1
+            if gone not in s.queue:
+                s.swapped.pop(gone, None)
+                s.dropped.pop(gone, None)
             s.save()
             await broadcast_state(s)
     elif cmd == "clear":
@@ -614,8 +1088,22 @@ async def handle_cmd(s, msg):
         s.queue = [cur] if cur is not None else []
         s.original = list(s.queue)
         s.index = 0 if s.queue else -1
+        s.swapped = {k: v for k, v in s.swapped.items() if k in s.queue}
+        s.pinned = [i for i in s.pinned if i in s.queue]
+        s.dropped = {}
         s.save()
         await broadcast_state(s)
+    elif cmd == "love":  # {id (default: the current item), on (missing = toggle)}
+        try:
+            item_id = int(msg["id"]) if msg.get("id") is not None else s.current_id
+        except (TypeError, ValueError):
+            return
+        if item_id not in LIB:
+            return
+        on = not is_loved(item_id) if msg.get("on") is None else bool(msg.get("on"))
+        if set_loved(item_id, on):
+            log.info("[%s] heart %s: %s '%s'", s.kind, "on" if on else "off", item_id, LIB[item_id]["title"])
+            await loved_changed()
     elif cmd == "rescan":
         asyncio.create_task(run_scan())
 
@@ -636,6 +1124,7 @@ async def on_message(s, data, role):
             s.errors = 0
             if s.noted != s.current_id:
                 s.noted = s.current_id
+                s.save()  # a server restart in mid-track must not count this start again
                 note_played(s.current_id)
         await broadcast_state(s)
     elif role == "player" and kind == "log":
@@ -788,6 +1277,10 @@ async def api_item(request):
 
 async def api_state(request):
     return web.json_response(session_for(request.query.get("session")).to_dict())
+
+
+async def api_auto(_request):
+    return web.json_response(auto_lists())
 
 
 async def api_history(request):
@@ -1285,6 +1778,8 @@ async def advertise(app):
 async def on_cleanup(app):
     loudness.STOP.set()
     lyrics.STOP.set()
+    if LISTEN is not None:
+        LISTEN.close()
     if "zeroconf" in app:
         zc, info = app["zeroconf"]
         await zc.async_unregister_service(info)
@@ -1300,6 +1795,7 @@ async def on_startup(app):
         s.load()
     load_playlists()
     load_history()
+    load_listening()
     asyncio.create_task(run_scan())
     await advertise(app)
 
@@ -1317,6 +1813,7 @@ def make_app():
     app.router.add_get("/api/item/{id:\\d+}", api_item)
     app.router.add_get("/api/state", api_state)
     app.router.add_get("/api/history", api_history)
+    app.router.add_get("/api/auto", api_auto)
     app.router.add_get("/api/playlists", api_playlists)
     app.router.add_post("/api/playlists", api_playlist_create)
     app.router.add_get("/api/playlists/{id:\\d+}", api_playlist_get)

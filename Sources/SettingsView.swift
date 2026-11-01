@@ -194,10 +194,12 @@ struct ServerSettingsView: View {
 
 /// Settings → Playback.
 struct PlaybackSettingsView: View {
+    @EnvironmentObject var engine: PlayerEngine
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
     @AppStorage(PlayerSettings.seekForwardKey) private var seekForward = 10
+    @AppStorage(PlayerSettings.matchFrameRateKey) private var matchFrameRate = false
 
     var body: some View {
         SettingsPage {
@@ -209,6 +211,16 @@ struct PlaybackSettingsView: View {
                           options: [10, 15, 30, 60].map { ("\($0) seconds", $0) })
                 Toggle("Fast seek", isOn: $fastSeek)
             }
+            Section {
+                Toggle("Match frame rate", isOn: $matchFrameRate)
+                    .accessibilityIdentifier("settings.matchFrameRate")
+            } footer: {
+                Text("Also turn on Apple TV Settings › Video and Audio › Match Content › Match Frame Rate")
+            }
+        }
+        .onChange(of: matchFrameRate) { _, on in
+            engine.diag("settings: match frame rate -> \(on ? "on" : "off")")
+            if !on { engine.matchFrameRateTurnedOff() }  // on: asked for at the next music video
         }
     }
 }

@@ -2,31 +2,48 @@ import SwiftUI
 
 /// Playlists (created and edited in the web remote): list → one playlist → play / shuffle / start
 /// from a song. Same layout as the folder browser. Reloads when the server announces a change
-/// (connection.playlistsVersion), never on a timer.
+/// (connection.playlistsVersion), never on a timer. On top: the auto-playlists ("For you").
 struct PlaylistsView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var locator: ServerLocator
     @State private var playlists: [PlaylistInfo]?
     @State private var errorText: String?
+    @State private var autoLists: [AutoList] = []
+    @State private var libraryVersion = LocalLibrary.shared.version
 
     var body: some View {
         List {
-            if let errorText {
-                Text(errorText).foregroundStyle(.secondary)
-            }
-            if let playlists {
-                if playlists.isEmpty {
-                    Text(locator.localMode ? "Playlists need the media server."
-                         : "No playlists yet. Create them in the web remote: \(Config.remoteAddress) → Playlists.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(playlists) { playlist in
-                    NavigationLink {
-                        PlaylistView(playlistID: playlist.id, title: playlist.name)
-                    } label: {
-                        RowLabel(title: playlist.name, detail: playlist.detail, systemImage: "music.note.list")
+            if !autoLists.isEmpty {
+                Section("For you") {
+                    ForEach(autoLists) { list in
+                        NavigationLink {
+                            AutoListView(list: list)
+                        } label: {
+                            RowLabel(title: list.name, detail: list.detail, systemImage: list.symbol)
+                        }
                     }
                 }
+            }
+            Section {
+                if let errorText {
+                    Text(errorText).foregroundStyle(.secondary)
+                }
+                if let playlists {
+                    if playlists.isEmpty {
+                        Text(locator.localMode ? "Playlists need the media server."
+                             : "No playlists yet. Create them in the web remote: \(Config.remoteAddress) → Playlists.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(playlists) { playlist in
+                        NavigationLink {
+                            PlaylistView(playlistID: playlist.id, title: playlist.name)
+                        } label: {
+                            RowLabel(title: playlist.name, detail: playlist.detail, systemImage: "music.note.list")
+                        }
+                    }
+                }
+            } header: {
+                if !autoLists.isEmpty { Text("Playlists") }
             }
         }
         .denseList()
@@ -34,6 +51,8 @@ struct PlaylistsView: View {
         .themedScreen()
         .navigationTitle("Playlists")
         .task(id: connection.playlistsVersion) { await load() }
+        .task(id: "\(locator.localMode)|\(connection.autoVersion)|\(libraryVersion)") { autoLists = await AutoList.load() }
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
     }
 
     private func load() async {
@@ -127,6 +146,76 @@ struct PlaylistView: View {
             detail = try JSONDecoder.server().decode(PlaylistDetail.self, from: data)
             connection.send(["type": "log", "message": "playlist \(playlistID) shown: \(detail?.items.count ?? 0) entries (update \(connection.playlistsVersion))"])
             gone = false
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+}
+
+/// One auto-playlist (Loved, Most played, Recently added, Not heard in a while, On this day): Play in order or Shuffle,
+/// then its items; an item plays the list in order from there. Reloads when a ♥ changes (connection.autoVersion) and,
+/// without the server, after a rescan.
+struct AutoListView: View {
+    @EnvironmentObject var connection: ServerConnection
+    let list: AutoList
+    @State private var items: [MediaItem]?
+    @State private var errorText: String?
+    @State private var libraryVersion = LocalLibrary.shared.version
+
+    var body: some View {
+        List {
+            if let errorText {
+                Text(errorText).foregroundStyle(.secondary)
+            }
+            if let items {
+                Section {
+                    if items.isEmpty {
+                        // A button that does nothing: a Text cannot take focus, and a screen without a focusable view
+                        // (nothing playing: no Now Playing card) leaves Back to the system.
+                        Button {} label: {
+                            Text(list.key == "loved" ? "Nothing loved yet. Hold the centre button in the player: Love."
+                                 : "Nothing here yet.")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Button { play(shuffle: false) } label: {
+                            Label("Play (\(items.count))", systemImage: "play.fill")
+                        }
+                        Button { play(shuffle: true) } label: {
+                            Label("Shuffle", systemImage: "shuffle")
+                        }
+                    }
+                }
+                if !items.isEmpty {
+                    Section(list.name) {
+                        ForEach(items) { item in
+                            Button { play(shuffle: false, from: item.id) } label: {
+                                RowLabel(title: item.title, detail: item.artist ?? "",
+                                         systemImage: item.kind == "video" ? "film" : "music.note", item: item)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .denseList()
+        .withNowPlaying()
+        .themedScreen()
+        .navigationTitle(list.name)
+        .task(id: "\(connection.autoVersion)|\(libraryVersion)") { await load() }
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+    }
+
+    private func play(shuffle: Bool, from id: Int? = nil) {
+        var args: [String: Any] = ["collection": list.key]
+        if let id { args["start_id"] = id }
+        connection.startPlayback(args, shuffle: shuffle)
+    }
+
+    private func load() async {
+        do {
+            items = try await AutoList.items(list.key)
             errorText = nil
         } catch {
             errorText = error.localizedDescription

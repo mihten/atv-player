@@ -177,9 +177,14 @@ html[data-motion="off"] .disc { animation-play-state: paused !important; }
 .np-title { font: var(--dw) 22px/1.12 var(--display); font-stretch: var(--dstretch); letter-spacing: var(--dls);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 html[data-look="noir"] .np-title, html[data-look="vinyl"] .np-title { font-size: 25px; }
+.np-tline { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+.np-tline .np-title { flex: 1; min-width: 0; }
+#love { padding: 4px; margin: -3px -4px 0 0; flex: none; }
+.lv { color: var(--acc); font-size: 12px; margin-left: 6px; }
 .np-sub { color: var(--ink2); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .facts { display: flex; gap: 5px; flex-wrap: wrap; min-height: 0; }
 .fact { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; padding: 2px 6px; border-radius: 5px; color: var(--ink2); border: 1px solid var(--line); text-transform: uppercase; }
+button.fact { cursor: pointer; color: var(--acc); border-color: color-mix(in srgb, var(--acc) 55%, transparent); background: none; font-family: inherit; }
 .bar { grid-area: bar; position: relative; height: 22px; margin-top: 14px; cursor: pointer; touch-action: none; }
 .bar .track { position: absolute; left: 0; right: 0; top: 8px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.18); overflow: visible; }
 html[data-look="noir"] .bar .track { height: 3px; top: 9.5px; }
@@ -222,6 +227,7 @@ html.playing .eq i { animation-play-state: running; }
   display: flex; flex-direction: column; justify-content: flex-end; transition: transform .2s; color: var(--ink); }
 .tile:active { transform: scale(.97); }
 .tile.wide { grid-column: 1 / -1; min-height: 112px; }
+.quick .switch { grid-column: 1 / -1; }
 .tile b { font: var(--dw) 19px/1.15 var(--display); font-stretch: var(--dstretch); position: relative; z-index: 1; }
 .tile span { color: var(--ink2); font-size: 13px; position: relative; z-index: 1; }
 .tile .ic { position: absolute; right: 14px; top: 14px; width: 56px; height: 56px; opacity: .18; }
@@ -356,6 +362,10 @@ html[data-look="vinyl"] .sheet > div { background: linear-gradient(#2e1f14, #1a1
 .sheet .opt:hover { border-color: var(--acc); }
 .sheet .opt .ic { color: var(--acc); }
 .sheet .opt.cancel { justify-content: center; background: none; color: var(--ink2); }
+.sheet .opt .vth { width: 64px; height: 36px; border-radius: 6px; flex: none; overflow: hidden; display: grid; place-items: center; background: var(--th); }
+.sheet .opt .vth img { width: 100%; height: 100%; object-fit: cover; grid-area: 1 / 1; }
+.sheet .opt .vth .ic { grid-area: 1 / 1; color: rgba(255,255,255,.8); }
+.sheet .opt .grow { flex: 1; min-width: 0; }
 .sheet .list { max-height: 50vh; overflow-y: auto; display: grid; gap: 6px; }
 .sheet .st { font: var(--dw) 19px/1.2 var(--display); font-stretch: var(--dstretch); }
 @keyframes up { from { transform: translateY(30px); opacity: 0; } }
@@ -464,7 +474,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
     </div>
     <div class="np-meta">
       <div class="eyebrow mob-eyebrow"><span class="eq"><i></i><i></i><i></i><i></i></span><span class="npl">Now playing</span></div>
-      <div class="np-title" id="title">Nothing playing</div>
+      <div class="np-tline"><div class="np-title" id="title">Nothing playing</div><button class="tb sm" id="love" title="Love" style="display:none"></button></div>
       <div class="np-sub" id="sub"></div>
       <div class="facts" id="facts"></div>
     </div>
@@ -485,6 +495,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
     <button class="tile wide" data-coll="all"><span class="shufI"></span><b>Shuffle everything</b><span>Songs and music videos</span></button>
     <button class="tile" data-coll="music"><span class="noteI"></span><b>Music</b><span>Shuffle songs</span></button>
     <button class="tile" data-coll="videos"><span class="filmI"></span><b>Videos</b><span>Shuffle music videos</span></button>
+    <div class="switch" id="preferSw" title="Songs in the queue play as one of their music videos"><span>Prefer music videos</span><i></i></div>
   </div>
   <nav id="tabs"><div class="seg">
     <button data-tab="search" class="sel">Search</button>
@@ -509,6 +520,7 @@ const root = document.documentElement;
 /* ── Icons (SF Symbols-like, inline SVG) ── */
 const F = (d) => `<path d="${d}" fill="currentColor"/>`;
 const S = (d, w = 2) => `<path d="${d}" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+const HEART = "M12 20.2s-7.6-4.6-9.3-9.3C1.5 7.6 3.6 4.4 7 4.4c2 0 3.6 1.1 5 3 1.4-1.9 3-3 5-3 3.4 0 5.5 3.2 4.3 6.5-1.7 4.7-9.3 9.3-9.3 9.3z";
 const ICONS = {
   play: F("M8 5.6v12.8a1.1 1.1 0 0 0 1.66.95l10.3-6.4a1.1 1.1 0 0 0 0-1.9L9.66 4.65A1.1 1.1 0 0 0 8 5.6z"),
   pause: F("M7 4.5h3a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1zm7 0h3a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z"),
@@ -530,6 +542,7 @@ const ICONS = {
   chev: S("M9 5.5l6.5 6.5L9 18.5", 2.4), back: S("M15 5.5L8.5 12l6.5 6.5", 2.4),
   next2: S("M5 12h12M12 6l6 6-6 6", 2.2), save: S("M12 4v11M7 10l5 5 5-5M5 20h14", 2.2), pencil: S("M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4", 2),
   trash: S("M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13", 2), check: S("M5 12.5l4.5 4.5L19 7.5", 2.6),
+  heart: F(HEART), heartO: S(HEART, 2),
 };
 /** Swap a button's icon only when it changes. */
 const setIcon = (el, name) => { if (el.dataset.icon !== name) { el.dataset.icon = name; el.innerHTML = ic(name); } };
@@ -615,6 +628,9 @@ let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", 
 let scope = null, plQuery = "";  // scope = {root, folder}: Search limited to one folder (incl. subfolders); plQuery = filter inside the open playlist
 let playlists = [], openPl = null, plHeads = new Map();  // openPl = playlist detail shown; plHeads = first items per playlist (mosaics)
 let plMember = new Map(), plUndo = null;  // plMember: item id -> [{id, name}] of the playlists holding it; plUndo: order before the last sort / dedup
+// "For you" auto-playlists (server /api/auto): autoLists = [{key, name, count, first_art}], autoHeads = key -> first items
+// (mosaics), openAuto = {key, name, items} shown read-only; lovedIds = items with a heart (♥ on rows)
+let autoLists = [], autoHeads = new Map(), openAuto = null, lovedIds = new Set();
 
 const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2,"0")}:${x}` : `${m}:${x}`; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -626,6 +642,30 @@ async function api(method, url, body) {
   return r.json();
 }
 function toast(text) { const t = $("toast"); t.textContent = text; t.style.display = "block"; clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", text.length > 40 ? 6000 : 2200); }
+async function loadAuto() {
+  try { autoLists = await api("GET", "/api/auto"); } catch { return; }
+  const got = await Promise.all(autoLists.map((a) => api("GET", `/api/collection/${a.key}`).then((r) => r.items).catch(() => null)));
+  const lists = got.map((l) => l || []);
+  // the ♥ set: the Loved list's ids and their versions (a heart counts for the whole song/video group); it keeps
+  // hidden duplicates, which /api/library leaves out
+  const k = autoLists.findIndex((a) => a.key === "loved");
+  if (k >= 0 && (autoLists[k].ids || got[k])) showLoved(new Set(autoLists[k].ids || got[k].map((i) => i.id)));
+  autoHeads = new Map(autoLists.map((a, n) => [a.key, lists[n].slice(0, 4)]));
+  if (openAuto) { const n = autoLists.findIndex((a) => a.key === openAuto.key); if (n >= 0) openAuto = { ...autoLists[n], items: lists[n] }; }
+  if (tab === "playlists") render();
+}
+/** The ♥ on the rows shown now (in place, no redraw). */
+function showLoved(ids) {
+  lovedIds = ids;
+  for (const it of lib) it.loved = lovedIds.has(it.id);
+  document.querySelectorAll("#main .row[data-id]").forEach((r) => {
+    const t = r.querySelector(".t"), b = t && t.querySelector(".lv"), on = lovedIds.has(+r.dataset.id);
+    if (on && t && !b) t.insertAdjacentHTML("beforeend", loveMark(+r.dataset.id)); else if (!on && b) b.remove();
+  });
+}
+/** A heart changed somewhere: the ♥ on the rows and the For you lists. */
+const lovedChanged = () => loadAuto();
+const loveMark = (id) => lovedIds.has(id) ? '<span class="lv" title="Loved">♥</span>' : "";
 async function loadPlaylists() {
   playlists = (await api("GET", "/api/playlists")).playlists;
   if (openPl) { try { openPl = await api("GET", `/api/playlists/${openPl.id}`); } catch { openPl = null; } }
@@ -644,18 +684,26 @@ function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=remote&session=${session}`);
   ws.onopen = () => { $("conn").textContent = "server connected"; };
   ws.onclose = () => { $("dot").className = "dot"; $("conn").textContent = "server disconnected, retrying…"; setTimeout(connect, 3000); };
-  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "state") onState(m.state); else if (m.type === "sessions") { sessionList = m.sessions; drawSelector(); follow(); } else if (m.type === "playlists") loadPlaylists(); };
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "state") onState(m.state); else if (m.type === "sessions") { sessionList = m.sessions; drawSelector(); follow(); } else if (m.type === "playlists") loadPlaylists(); else if (m.type === "auto") lovedChanged(); };
 }
 
 async function loadLibrary() {
   const r = await fetch("/api/library"); const j = await r.json();
-  lib = j.items; byId = new Map(lib.map((i) => [i.id, i])); render();
+  lib = j.items; byId = new Map(lib.map((i) => [i.id, i])); lovedIds = new Set([...[...lovedIds].filter((id) => !byId.has(id)), ...lib.filter((i) => i.loved).map((i) => i.id)]); render();  // keeps the hidden loved ones (loadAuto)
   if (st && !st.scanning) $("scan").textContent = `${lib.length} items`;
 }
 
 let artId = undefined;
 function drawNowPlaying(c) {
   const id = c ? c.id : null;
+  // facts follow every state update (a rescan can add the HDR badge to the item that is playing)
+  const facts = c ? [c.codec ? c.codec.toUpperCase() : "", c.lossless ? "Lossless" : "", c.year && c.year.length >= 4 ? c.year.slice(0, 4) : "", c.kind === "video" && c.height ? (c.height >= 2160 ? "4K" : `${c.height}p`) : "", c.kind === "video" ? ({ pq: "HDR10", hlg: "HLG", dv: "DV" }[c.dyn] || "") : ""].filter(Boolean) : [];
+  const ver = versionChip(c);
+  const factsKey = facts.join("|") + "|" + ver;
+  if (factsKey !== drawNowPlaying.facts) {
+    drawNowPlaying.facts = factsKey;
+    $("facts").innerHTML = (ver ? `<button class="fact" data-act="versions" title="Versions of this song">${esc(ver)}</button>` : "") + facts.map((f) => `<span class="fact">${esc(f)}</span>`).join("");
+  }
   if (id === artId) return;
   artId = id;
   followArt(c);
@@ -668,10 +716,44 @@ function drawNowPlaying(c) {
   const stage = $("stage"); stage.classList.remove("out"); if (c) setTimeout(() => { if (artId === id) stage.classList.add("out"); }, 450);
   $("title").textContent = c ? c.title : "Nothing playing";
   $("sub").textContent = c ? [c.artist, c.album || (c.kind === "video" ? "Music video" : "")].filter(Boolean).join(" · ") : "Start something below, or press play";
-  const facts = c ? [c.codec ? c.codec.toUpperCase() : "", c.lossless ? "Lossless" : "", c.year && c.year.length >= 4 ? c.year.slice(0, 4) : "", c.kind === "video" && c.height ? (c.height >= 2160 ? "4K" : `${c.height}p`) : ""].filter(Boolean) : [];
-  $("facts").innerHTML = facts.map((f) => `<span class="fact">${esc(f)}</span>`).join("");
   $("miniArt").outerHTML = c ? thumb(c).replace('<span class="th"', '<span class="th" id="miniArt"') : '<span class="th" id="miniArt"></span>';
   $("miniTitle").textContent = c ? c.title : "Nothing playing"; $("miniSub").textContent = c ? c.artist || "" : "";
+}
+
+/** ♥ next to the title: drawn on every state (drawNowPlaying stops early while the same item plays). */
+function drawLove(c) {
+  const b = $("love");
+  b.style.display = c ? "" : "none";
+  if (!c) return;
+  setIcon(b, c.loved ? "heart" : "heartO");
+  b.classList.toggle("on", !!c.loved);
+  b.title = c.loved ? "Loved: click to remove the heart" : "Love";
+}
+
+/** Chip text for the current item's versions: "▶ 2 videos" on a song, the version label on a video; "" = none. */
+function versionChip(c) {
+  const vs = (c && c.versions) || [];
+  if (vs.length < 2) return "";
+  if (c.kind === "audio") { const n = vs.filter((v) => v.kind === "video").length; return n ? `▶ ${n} video${n === 1 ? "" : "s"}` : ""; }
+  return (vs.find((v) => v.id === c.id) || {}).label || "Video";
+}
+const livePos = () => st ? st.position + (st.playing ? Date.now() / 1000 + clockOffset - st.position_at : 0) : 0;
+
+/** Sheet: every version of the current item (song and its music videos); a click plays it in place. */
+function versionsSheet() {
+  const c = st && st.current; const vs = (c && c.versions) || [];
+  if (vs.length < 2) return;
+  openSheet(`<div class="st">${esc(c.title)}</div><div class="list">` + vs.map((v) => {
+    const it = byId.get(v.id) || { id: v.id, kind: v.kind, art: v.kind === "video" };
+    const art = it.art ? `<img loading="lazy" src="/art/${v.id}" alt="" onerror="this.remove()">` : "";
+    return `<button class="opt" data-v="${v.id}"><span class="vth" style="--th:${thumbBg(v.id)}">${ic(v.kind === "video" ? "film" : "note")}${art}</span>` +
+      `<span class="grow"><span class="t">${esc(v.label)}</span>${v.duration ? `<span class="s" style="display:block">${fmt(v.duration)}</span>` : ""}</span>` +
+      `${v.id === c.id ? ic("check") : ""}</button>`;
+  }).join("") + `</div><button class="opt cancel" data-v="cancel">Cancel</button>`, (e) => {
+    const b = e.target.closest("[data-v]"); if (!b) return;
+    closeSheet();
+    if (b.dataset.v !== "cancel" && +b.dataset.v !== c.id) cmd("switch_version", { id: +b.dataset.v, position: livePos() });
+  });
 }
 
 function drawUpNext(s) {
@@ -699,19 +781,21 @@ function onState(s) {
   showShot(s.session || session);
   drawSelector(); follow();
   $("scan").textContent = s.scanning ? "scanning library…" : (s.last_scan && s.last_scan.finished_at ? `${lib.length} items` : "");
-  if (prevScan && !s.scanning) loadLibrary();
+  if (prevScan && !s.scanning) { loadLibrary(); loadAuto(); }
   root.classList.toggle("playing", !!s.playing);
   drawNowPlaying(s.current);
+  drawLove(s.current);
   drawUpNext(s);
   setIcon($("pp"), s.playing ? "pause" : "play"); setIcon($("miniPP"), s.playing ? "pause" : "play");
   $("shuf").classList.toggle("on", s.shuffle);
+  $("preferSw").classList.toggle("on", !!s.prefer_videos);
   $("rep").classList.toggle("on", s.repeat_mode !== "off");
   setIcon($("rep"), s.repeat_mode === "one" ? "repeat1" : "repeat");
   $("rep").title = `Repeat: ${s.repeat_mode}`;
   // redraw lists only when something they show changed: a redraw between mouse-down and mouse-up swallows the click,
   // and players report their position every few seconds
   const curId = s.current ? s.current.id : null;
-  const qKey = `${s.index}|${s.playing}|${s.queue.join(",")}`;
+  const qKey = `${s.index}|${s.playing}|${s.prefer_videos}|${s.queue.join(",")}`;
   if ((tab === "queue" && qKey !== onState.lastQ) || (curId !== onState.lastCur && (tab === "videos" || tab === "folders"))) render();
   onState.lastCur = curId; onState.lastQ = qKey;
 }
@@ -770,7 +854,8 @@ function inPlaylists(id) {
   return names.length ? `<span class="inpl" title="In playlist${names.length === 1 ? "" : "s"}: ${esc(names.join(", "))}">${ic("list")}<span>${esc(names.join(", "))}</span></span>` : "";
 }
 function rowHtml(it, extra = "", cls = "", th = "") {
-  const badges = (it.kind === "video" ? '<span class="badge">video</span>' : "") + (it.lossless ? '<span class="badge">lossless</span>' : "");
+  const badges = (it.kind === "video" ? '<span class="badge">video</span>' : "") + (it.lossless ? '<span class="badge">lossless</span>' : "") +
+    (it.videos ? `<span class="badge" title="${it.videos} music video${it.videos === 1 ? "" : "s"}">+video</span>` : "") + loveMark(it.id);
   return `<div class="row ${cls}" data-id="${it.id}" ${extra}>${thumb(it, th)}<div class="meta"><div class="t">${esc(it.title)}${badges}</div>` +
          `<div class="s">${esc([it.artist, it.folder || it.root].filter(Boolean).join(" · "))}</div></div>${inPlaylists(it.id)}</div>`;
 }
@@ -792,7 +877,7 @@ function filterPlaylistRows() {
   const q = plQuery.trim().toLowerCase(), rows = document.querySelectorAll("#main .group > .row");
   let shown = 0;
   rows.forEach((r, n) => {
-    const it = openPl && openPl.items[n];
+    const list = openAuto || openPl, it = list && list.items[n];
     const hit = !q || (it && `${it.title} ${it.artist || ""} ${it.album || ""} ${it.folder || ""}`.toLowerCase().includes(q));
     r.style.display = hit ? "" : "none"; if (hit) shown++;
   });
@@ -854,12 +939,12 @@ function render() {
     }
     main.innerHTML = html ? selToggleHtml() + group(html) : '<div class="empty">Loading library…</div>';
   } else if (tab === "playlists") {
-    main.innerHTML = openPl ? playlistDetailHtml(openPl) : playlistListHtml();
+    main.innerHTML = openAuto ? autoDetailHtml(openAuto) : openPl ? playlistDetailHtml(openPl) : autoListHtml() + playlistListHtml();
     const f = $("plq");
     if (f) { f.oninput = (e) => { plQuery = e.target.value; filterPlaylistRows(); }; filterPlaylistRows(); }
   } else if (tab === "queue") {
     if (!st || !st.queue.length) { main.innerHTML = '<div class="empty">Queue is empty. Shuffle something above, or pick songs in Search.</div>'; return; }
-    main.innerHTML = `<div class="toolbar"><span class="grow">${st.queue.length} in queue</span><button class="pill" data-act="saveQueue">${ic("save")} Save as playlist</button><button class="pill" data-act="clear">${ic("x")} Clear upcoming</button></div>` +
+    main.innerHTML = `<div class="toolbar"><span class="grow">${st.queue.length} in queue</span><button class="pill${st.prefer_videos ? " primary" : ""}" data-act="prefer" title="Songs in the queue play as one of their music videos">${ic("film")} Prefer videos</button><button class="pill" data-act="saveQueue">${ic("save")} Save as playlist</button><button class="pill" data-act="clear">${ic("x")} Clear upcoming</button></div>` +
       group(st.queue.map((id, n) => { const it = byId.get(id) || { id, title: `#${id}` }; const cur = n === st.index;
         const row = rowHtml(it, `data-act="jump" data-index="${n}"`, cur ? "cur" : "", cur ? eqHtml : "");
         return cur ? row : withActs(row, `<button class="ib" data-act="remove" data-index="${n}" title="Remove">${ic("x")}</button>`); }).join(""));
@@ -1002,6 +1087,26 @@ function playlistListHtml() {
     `<div class="t">${esc(p.name)}</div><div class="s">${esc(plMeta(p))}</div></div>`).join("") + `</div>`;
 }
 
+/** "For you": the server's auto-playlists (from the play history and the hearts) above the user's playlists. */
+function autoListHtml() {
+  if (!autoLists.length) return "";
+  return `<div class="h2">For you</div><div class="plgrid">` + autoLists.map((a, n) => `<div class="plc" data-act="openAuto" data-auto="${esc(a.key)}">${mosaic({ id: 1000 + n }, autoHeads.get(a.key))}` +
+    (a.count ? `<div class="acts"><button class="ib" data-act="playAuto" data-auto="${esc(a.key)}" title="Play">${ic("play")}</button><button class="ib" data-act="shuffleAuto" data-auto="${esc(a.key)}" title="Shuffle">${ic("shuffle")}</button></div>` : "") +
+    `<div class="t">${a.key === "loved" ? "♥ " : ""}${esc(a.name)}</div><div class="s">${a.count} item${a.count === 1 ? "" : "s"}</div></div>`).join("") + `</div><div class="h2">Your playlists</div>`;
+}
+/** One auto-playlist, read-only: Play (in order), Shuffle, Save as playlist, filter; a row plays the list from there. */
+function autoDetailHtml(a) {
+  const items = a.items || [], n = items.length;
+  const meta = { count: n, videos: items.filter((i) => i.kind === "video").length, duration: items.reduce((t, i) => t + (i.duration || 0), 0) };
+  let html = `<button class="pill back" data-act="closeAuto">${ic("back")} Playlists</button>` +
+    `<div class="plhead">${mosaic({ id: 1000 }, items.slice(0, 4))}<div><div class="eyebrow">For you</div><div class="name">${a.key === "loved" ? "♥ " : ""}${esc(a.name)}</div><div class="s">${esc(plMeta(meta))}</div></div>` +
+    (n ? `<div class="btns"><button class="pill primary" data-act="playAuto" data-auto="${esc(a.key)}">${ic("play")} Play</button><button class="pill" data-act="shuffleAuto" data-auto="${esc(a.key)}">${ic("shuffle")} Shuffle</button>` +
+      `<button class="pill" data-act="saveAuto">${ic("save")} Save as playlist</button></div>` : "") + `</div>`;
+  if (!n) return html + `<div class="empty">${a.key === "loved" ? "Nothing loved yet. Tap ♥ next to the title of what is playing, or use Love on a song." : "Nothing here yet."}</div>`;
+  if (n > 1) html += `<label class="search">${ic("search")}<input type="search" id="plq" placeholder="Search this list" value="${esc(plQuery)}" autocomplete="off"><span class="note" id="plcount"></span></label>`;
+  return html + group(items.map((it) => rowHtml(it, 'data-act="playAutoFrom"', isCur(it.id) ? "cur" : "")).join(""));
+}
+
 function playlistDetailHtml(p) {
   const n = p.items.length;
   let html = `<button class="pill back" data-act="closePl">${ic("back")} Playlists</button>` +
@@ -1094,12 +1199,14 @@ function addToPlaylist(source, label, done) {
 function sheet(it) {
   openSheet(`<div class="shead">${thumb(it)}<div class="meta" style="min-width:0"><div class="st">${esc(it.title)}</div><div class="s">${esc(it.artist || "")}</div></div></div>` +
     `<button class="opt" data-s="now">${ic("play")} Play now</button><button class="opt" data-s="next">${ic("next2")} Play next</button>` +
-    `<button class="opt" data-s="end">${ic("list")} Add to queue</button><button class="opt" data-s="pl">${ic("plus")} Add to playlist…</button><button class="opt cancel" data-s="cancel">Cancel</button>`,
+    `<button class="opt" data-s="end">${ic("list")} Add to queue</button><button class="opt" data-s="pl">${ic("plus")} Add to playlist…</button>` +
+    `<button class="opt" data-s="love">${lovedIds.has(it.id) ? `${ic("heart")} Remove from Loved` : `${ic("heartO")} Love`}</button><button class="opt cancel" data-s="cancel">Cancel</button>`,
   (e) => {
     const b = e.target.closest("[data-s]"); if (!b) return; const a = b.dataset.s;
     if (a === "now") cmd("play_ids", { ids: [it.id] });
     if (a === "next") cmd("enqueue", { ids: [it.id], mode: "next" });
     if (a === "end") cmd("enqueue", { ids: [it.id], mode: "end" });
+    if (a === "love") cmd("love", { id: it.id, on: !lovedIds.has(it.id) });
     closeSheet();
     if (a === "pl") addToPlaylist({ ids: [it.id] }, `"${it.title}"`);
   });
@@ -1124,10 +1231,12 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && selMode 
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-cmd],[data-tab],[data-coll],[data-act]"); if (!b || b.closest("#sheet")) return;
   if (b.dataset.cmd) { e.stopPropagation(); cmd(b.dataset.cmd, b.dataset.cmd === "prev" && st ? { position: st.position + (st.playing ? Date.now() / 1000 + clockOffset - st.position_at : 0) } : {}); return; }
-  if (b.dataset.tab) { if (b.dataset.tab === "playlists" && tab === "playlists") openPl = null; tab = b.dataset.tab; selectTab(); return; }
+  if (b.dataset.tab) { if (b.dataset.tab === "playlists" && tab === "playlists") openPl = openAuto = null; tab = b.dataset.tab; selectTab(); if (tab === "playlists") loadAuto(); return; }
   if (b.dataset.coll) { cmd("play_collection", { collection: b.dataset.coll, shuffle: true }); return; }
   const act = b.dataset.act; e.stopPropagation();
   if (act === "item") sheet(byId.get(+b.dataset.id));
+  else if (act === "versions") versionsSheet();
+  else if (act === "prefer") cmd("prefer_videos", { on: !(st && st.prefer_videos) });
   else if (act === "video") cmd("play_collection", { collection: "videos", start_id: +b.dataset.id });
   else if (act === "jump") cmd("jump", { index: +b.dataset.index });
   else if (act === "remove") cmd("remove", { index: +b.dataset.index });
@@ -1151,8 +1260,14 @@ document.addEventListener("click", (e) => {
   }
   else if (act === "saveQueue") newPlaylist({ queue: true, session }).then((p) => { if (p) { tab = "playlists"; openPl = p; selectTab(); loadPlaylists(); } });
   else if (act === "newPl") newPlaylist().then((p) => { if (p) { openPl = p; loadPlaylists(); } });
-  else if (act === "openPl") plQuery = "", api("GET", `/api/playlists/${b.dataset.pl}`).then((p) => { openPl = p; render(); $("tabs").scrollIntoView({ block: "start" }); });
+  else if (act === "openPl") plQuery = "", openAuto = null, api("GET", `/api/playlists/${b.dataset.pl}`).then((p) => { openPl = p; render(); $("tabs").scrollIntoView({ block: "start" }); });
   else if (act === "closePl") { openPl = null; plQuery = ""; render(); }
+  else if (act === "openAuto") { plQuery = ""; openPl = null; const a = autoLists.find((x) => x.key === b.dataset.auto);
+    if (a) api("GET", `/api/collection/${a.key}`).then((r) => { openAuto = { ...a, items: r.items }; render(); $("tabs").scrollIntoView({ block: "start" }); }); }
+  else if (act === "closeAuto") { openAuto = null; plQuery = ""; render(); }
+  else if (act === "playAuto" || act === "shuffleAuto") cmd("play_collection", { collection: b.dataset.auto, shuffle: act === "shuffleAuto" });
+  else if (act === "playAutoFrom" && openAuto) cmd("play_collection", { collection: openAuto.key, start_id: +b.dataset.id });
+  else if (act === "saveAuto" && openAuto) newPlaylist({ ids: openAuto.items.map((i) => i.id) }, openAuto.name).then((p) => { if (p) { openAuto = null; openPl = p; loadPlaylists(); } });
   else if (act === "playPl" || act === "shufflePl") cmd("play_collection", { collection: "playlist", playlist: +b.dataset.pl, shuffle: act === "shufflePl" });
   else if (act === "playFrom") cmd("play_collection", { collection: "playlist", playlist: openPl.id, start_index: +b.dataset.index });
   else if (act === "renamePl") { const name = prompt("Rename playlist:", openPl.name); if (name && name.trim()) api("PUT", `/api/playlists/${openPl.id}`, { name }).then((p) => { openPl = p; loadPlaylists(); }); }
@@ -1173,6 +1288,8 @@ document.addEventListener("click", (e) => {
 }, true);
 function selectTab() { document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("sel", x.dataset.tab === tab)); render(); }
 $("shuf").onclick = () => cmd("shuffle", { on: !(st && st.shuffle) });
+$("love").onclick = () => { const c = st && st.current; if (c) cmd("love", { id: c.id, on: !c.loved }); };
+$("preferSw").onclick = () => cmd("prefer_videos", { on: !(st && st.prefer_videos) });
 $("rep").onclick = () => cmd("repeat");
 $("lookBtn").onclick = lookSheet;
 $("out").onchange = (e) => {
@@ -1237,7 +1354,7 @@ $("artPh").innerHTML = ic("note");
 new IntersectionObserver(([e]) => $("mini").classList.toggle("show", !e.isIntersecting && e.boundingClientRect.top < 0), { threshold: 0 }).observe($("player"));
 
 applyLook();
-connect(); loadLibrary(); loadPlaylists(); requestAnimationFrame(tick);
+connect(); loadLibrary(); loadPlaylists(); loadAuto(); requestAnimationFrame(tick);
 </script>
 </body>
 </html>

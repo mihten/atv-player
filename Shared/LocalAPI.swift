@@ -37,7 +37,7 @@ private struct ErrorReply: Encodable {
 }
 
 /// No-server mode: answers the apps' HTTP API requests (Net.data) from LocalLibrary, in the server's JSON shapes
-/// (server.py api_library, api_collection, api_browse). Playlists are an empty list; everything else is a 404.
+/// (server.py api_library, api_collection, api_browse, api_auto). Playlists are an empty list; everything else is a 404.
 enum LocalAPI {
     /// Config.serverURL in no-server mode.
     static let baseURL = URL(string: "http://local.invalid")!
@@ -74,6 +74,9 @@ enum LocalAPI {
         }
         if path == "/api/playlists" {
             return reply(url, 200, PlaylistsReply(playlists: []))
+        }
+        if path == "/api/auto" {  // auto-playlists from the plays and hearts on the device
+            return reply(url, 200, library.autoLists())
         }
         return notAvailable(url)
     }

@@ -13,6 +13,8 @@ struct HomeView: View {
     @State private var videos: [MediaItem] = []
     @State private var playlists: [PlaylistInfo] = []
     @State private var covers: [Int: [MediaItem]] = [:]  // playlist id → first items, for the mosaic
+    @State private var autoLists: [AutoList] = []
+    @State private var autoItems: [String: [MediaItem]] = [:]  // auto-playlist key → its items (mosaic, video count)
 
     private let width: CGFloat = 1760  // 1920 minus the side margins
 
@@ -22,6 +24,7 @@ struct HomeView: View {
                 header
                 hero.focusSection()
                 shelf("Browse") { browseTiles }
+                if !autoLists.isEmpty { shelf("For you") { autoCards } }
                 if !playlists.isEmpty { shelf("Playlists") { playlistCards } }
                 shelf("Play") { playTiles }
                 if !videos.isEmpty { shelf("Music videos") { videoPosters } }
@@ -38,6 +41,7 @@ struct HomeView: View {
         .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
         .task(id: "\(locator.localMode)|\(libraryVersion)") { await loadVideos() }
         .task(id: "\(locator.localMode)|\(connection.playlistsVersion)") { await loadPlaylists() }
+        .task(id: "\(locator.localMode)|\(connection.autoVersion)|\(libraryVersion)") { await loadAuto() }
     }
 
     // MARK: - Header
@@ -179,6 +183,26 @@ struct HomeView: View {
         .scrollClipDisabled()
     }
 
+    /// Auto-playlists (Loved, Most played, ...) as playlist cards.
+    private var autoCards: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 40) {
+                ForEach(Array(autoLists.enumerated()), id: \.element.key) { index, list in
+                    NavigationLink {
+                        AutoListView(list: list)
+                    } label: {
+                        let items = autoItems[list.key] ?? []
+                        PlaylistCardLabel(playlist: list.asPlaylistInfo(index: index, items: items),
+                                          items: Array(items.prefix(4)), side: 280)
+                    }
+                    .buttonStyle(TileButtonStyle())
+                }
+            }
+            .padding(.vertical, 24)
+        }
+        .scrollClipDisabled()
+    }
+
     // MARK: - Data
 
     private func shuffle(_ name: String) {
@@ -192,6 +216,16 @@ struct HomeView: View {
             return
         }
         videos = list.items
+    }
+
+    private func loadAuto() async {
+        let lists = await AutoList.load()
+        var found: [String: [MediaItem]] = [:]
+        for list in lists where list.count > 0 {
+            found[list.key] = (try? await AutoList.items(list.key)) ?? []
+        }
+        autoLists = lists
+        autoItems = found
     }
 
     private func loadPlaylists() async {

@@ -230,6 +230,8 @@ struct LocalDraft {
     var lossless = false
     var codec: String?
     var acodec: String?
+    var fps: Double?
+    var dyn: String?
     var subs: [SubtitleTrack]?
     var track: Int?
     var year: String?
@@ -257,6 +259,8 @@ struct LocalDraft {
         lossless = item.lossless ?? false
         codec = item.codec
         acodec = item.acodec
+        fps = item.fps
+        dyn = item.dyn
         subs = item.subs
         track = item.track
         year = item.year
@@ -269,7 +273,8 @@ struct LocalDraft {
         MediaItem(id: id, kind: kind, title: title, artist: artist, album: album, folder: folder, root: root,
                   duration: duration, lossless: lossless, codec: codec, art: localArt != nil, audioTrack: nil,
                   audioOrd: nil, subTrack: nil, subOrd: nil, subs: subs, track: track, year: year,
-                  lufs: nil, tpeak: nil, lyr: 0, acodec: acodec, localPath: localPath, localArt: localArt)
+                  lufs: nil, tpeak: nil, lyr: 0, acodec: acodec, fps: fps, dyn: dyn, localPath: localPath,
+                  localArt: localArt)
     }
 }
 
@@ -360,6 +365,8 @@ struct LocalTags {
     var duration: Double?
     var videoCodec: String?
     var audioCodec: String?
+    /// Frame rate of the first video track (nil = VLC gave none).
+    var fps: Double?
     var subs: [SubtitleTrack] = []
     var artFile: URL?
 }
@@ -397,6 +404,9 @@ enum LocalTagReader {
             let fourcc = (info[VLCMediaTracksInformationCodec] as? NSNumber)?.uint32Value ?? 0
             if type == VLCMediaTracksInformationTypeVideo {
                 if tags.videoCodec == nil { tags.videoCodec = codecName(fourcc) }
+                let rate = (info[VLCMediaTracksInformationFrameRate] as? NSNumber)?.doubleValue ?? 0
+                let base = (info[VLCMediaTracksInformationFrameRateDenominator] as? NSNumber)?.doubleValue ?? 0
+                if tags.fps == nil, rate > 0, base > 0 { tags.fps = rate / base }
             } else if type == VLCMediaTracksInformationTypeAudio {
                 if tags.audioCodec == nil { tags.audioCodec = codecName(fourcc) }
             } else if type == VLCMediaTracksInformationTypeText {
@@ -502,6 +512,8 @@ final class LocalLibrary: ObservableObject {
     private var scannedAt: Double?
     /// Bumped by reset(): a running scan stops at its next step.
     private var generation = 0
+    /// Group key and label per item (VersionLinks): publish() runs every 25 tags read.
+    private let versionCache = VersionLinks.Cache()
 
     private static let nextIDKey = "localLibraryNextID"
     private static let writer = DispatchQueue(label: "eu.mihten.atvplayer.local-library")
@@ -529,7 +541,7 @@ final class LocalLibrary: ObservableObject {
         generation += 1
         scanning = false
         source = Self.sourceKey
-        pathIDs = [:]
+        // pathIDs stay (keyed by fileKey): a file found again keeps its id, and with it its plays and heart
         tagged = []
         discs = [:]
         scannedAt = nil
@@ -566,8 +578,71 @@ final class LocalLibrary: ObservableObject {
             }
         case "playlist":
             return []
+        case "loved", "most_played", "recent", "forgotten", "on_this_day":
+            return autoItems(name)
         default:
             return items
+        }
+    }
+
+    /// Auto-playlists (server.py auto_items): from LocalListening, at most 100 (Loved: all).
+    private func autoItems(_ name: String) -> [MediaItem] {
+        let listening = LocalListening.shared
+        let size = 100
+        switch name {
+        case "loved":  // once per version group, by its newest loved member
+            var seen: Set<Int> = []
+            return listening.lovedOrder.compactMap { id -> MediaItem? in
+                guard let item = byID[id], !seen.contains(id) else { return nil }
+                seen.formUnion(item.versionGroup)
+                return item
+            }
+        case "most_played":
+            return Array(listening.mostPlayed.compactMap { byID[$0] }.prefix(size))
+        case "recent":  // local ids only grow: the newest files have the highest ids
+            return Array(items.sorted { $0.id > $1.id }.prefix(size))
+        case "forgotten":  // no version played within 90 days (or never); the same order all day
+            let now = Date()
+            let cutoff = now.timeIntervalSince1970 - 90 * 86400
+            let last = listening.lastPlays
+            var ids = items.filter { item in
+                item.versionGroup.allSatisfy { (last[$0] ?? 0) < cutoff }
+            }.map(\.id).sorted()
+            var random = SeededGenerator(seed: UInt64(max(LocalListening.dayNumber(now), 0)))
+            ids.shuffle(using: &random)
+            return ids.prefix(size).compactMap { byID[$0] }
+        case "on_this_day":
+            return Array(listening.onThisDay().compactMap { byID[$0] }.prefix(size))
+        default:
+            return []
+        }
+    }
+
+    /// /api/auto: the non-empty lists, Loved always.
+    func autoLists() -> [AutoList] {
+        AutoList.all.compactMap { entry -> AutoList? in
+            let list = autoItems(entry.key)
+            guard !list.isEmpty || entry.key == "loved" else { return nil }
+            return AutoList(key: entry.key, name: entry.name, count: list.count,
+                            firstArt: list.first(where: { $0.art == true || $0.localArt != nil })?.id)
+        }
+    }
+
+    /// A ♥ changed (LocalQueue "love"): items carry the new flag and the queue state follows. No `version` bump (that
+    /// reloads every library screen): the auto-list screens and the iPhone's hearts follow autoVersion.
+    func lovedChanged() {
+        items = Self.markLoved(items)
+        byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        itemsChanged?()
+    }
+
+    /// The heart is per version group (server.py is_loved).
+    private static func markLoved(_ list: [MediaItem]) -> [MediaItem] {
+        let listening = LocalListening.shared
+        return list.map { item -> MediaItem in
+            var marked = item
+            marked.loved = item.versionGroup.contains { listening.isLoved($0) }
+            return marked
         }
     }
 
@@ -621,10 +696,14 @@ final class LocalLibrary: ObservableObject {
         nextID = max(1, UserDefaults.standard.integer(forKey: Self.nextIDKey))
         source = Self.sourceKey
         guard let data = try? Data(contentsOf: Self.indexURL),
-              let index = try? JSONDecoder().decode(LocalIndex.self, from: data),
-              index.source == source else { return }
+              let index = try? JSONDecoder().decode(LocalIndex.self, from: data) else { return }
         nextID = max(nextID, index.nextID)
-        pathIDs = index.pathIDs
+        // Also from another source: the same files keep their ids. Older files are keyed by the full localPath.
+        for (path, id) in index.pathIDs {
+            let fileKey = Self.fileKey(path)
+            pathIDs[fileKey] = min(pathIDs[fileKey] ?? id, id)
+        }
+        guard index.source == source else { return }
         tagged = Set(index.tagged)
         discs = index.discs
         scannedAt = index.scannedAt
@@ -641,6 +720,13 @@ final class LocalLibrary: ObservableObject {
         Self.writer.async { try? data.write(to: url, options: .atomic) }
     }
 
+    /// pathIDs key of a file: an SMB file by its path on the server without the host (the same share by IP address or
+    /// by name is the same file), an iPhone file by its path in Documents. Already a key: returned as it is.
+    private static func fileKey(_ localPath: String) -> String {
+        guard localPath.hasPrefix("smb://"), let url = URL(string: localPath) else { return localPath }
+        return "smb:" + url.path
+    }
+
     /// server.py sort_key: root, folder, disc, track, artist, title.
     private func sortKey(_ item: MediaItem) -> (String, String, Int, Int, String, String) {
         let root = item.root ?? ""
@@ -655,7 +741,8 @@ final class LocalLibrary: ObservableObject {
         let keyed: [(key: (String, String, Int, Int, String, String), item: MediaItem)] = list.map { item in
             (key: sortKey(item), item: item)
         }
-        items = keyed.sorted { $0.key < $1.key }.map { $0.item }
+        let sorted = keyed.sorted { $0.key < $1.key }.map { $0.item }
+        items = Self.markLoved(VersionLinks.attach(sorted, cache: versionCache, dropTwins: true))  // video links, ♥
         byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         version += 1
         itemsChanged?()
@@ -680,9 +767,8 @@ final class LocalLibrary: ObservableObject {
     // MARK: Scan
 
     private func runScan(_ run: Int) async {
-        if source != Self.sourceKey {  // address changed without reset(): fresh index
+        if source != Self.sourceKey {  // address changed without reset(): fresh index (ids stay, see reset)
             source = Self.sourceKey
-            pathIDs = [:]
             tagged = []
             discs = [:]
             scannedAt = nil
@@ -712,12 +798,13 @@ final class LocalLibrary: ObservableObject {
         var seen: Set<Int> = []
         for file in found {
             let id: Int
-            if let known = pathIDs[file.localPath] {
+            let fileKey = Self.fileKey(file.localPath)
+            if let known = pathIDs[fileKey] {
                 id = known
             } else {
                 id = nextID
                 nextID += 1
-                pathIDs[file.localPath] = id
+                pathIDs[fileKey] = id
             }
             guard seen.insert(id).inserted else { continue }
             if let old = byID[id], old.localPath == file.localPath {
@@ -803,9 +890,19 @@ final class LocalLibrary: ObservableObject {
 
     /// Reads tags of the items not read yet, one at a time; publishes and saves every 25 items.
     private func readTags(_ run: Int, errors: inout [String]) async {
-        let todo = items.map(\.id).filter { !tagged.contains($0) }
+        // Videos indexed before fps was read are read once more (fps 0 = VLC gave none, not retried).
+        let todo = items.filter { !tagged.contains($0.id) || ($0.kind == "video" && $0.fps == nil) }.map(\.id)
         guard !todo.isEmpty else { return }
         var working = byID
+        func giveUp(_ ids: [Int]) {
+            tagged.formUnion(ids)
+            for id in ids {
+                guard let unread = working[id], unread.kind == "video", unread.fps == nil else { continue }
+                var draft = LocalDraft(unread)
+                draft.fps = 0
+                working[id] = draft.item
+            }
+        }
         var done = 0
         var failedInRow: [Int] = []
         for id in todo {
@@ -817,7 +914,7 @@ final class LocalLibrary: ObservableObject {
             if let tags {
                 working[id] = applying(tags, to: item)
                 tagged.insert(id)
-                tagged.formUnion(failedInRow)  // single unreadable files: do not retry them on every scan
+                giveUp(failedInRow)  // single unreadable files: do not retry them on every scan
                 failedInRow = []
             } else {
                 failedInRow.append(id)
@@ -832,7 +929,7 @@ final class LocalLibrary: ObservableObject {
                         errors.append("Could not read the tags (the share stopped answering).")
                         break
                     }
-                    tagged.formUnion(failedInRow)
+                    giveUp(failedInRow)
                     failedInRow = []
                 }
             }
@@ -856,6 +953,7 @@ final class LocalLibrary: ObservableObject {
             draft.codec = tags.videoCodec
             draft.acodec = tags.audioCodec
             draft.lossless = LocalTagReader.isLosslessAudio(tags.audioCodec)
+            draft.fps = tags.fps ?? 0
         } else {
             draft.title = tags.title ?? item.title
             draft.artist = tags.artist ?? item.artist

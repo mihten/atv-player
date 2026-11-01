@@ -13,6 +13,9 @@ struct PhoneHome: View {
     @State private var videos: [MediaItem] = []
     @State private var playlists: [PlaylistInfo] = []
     @State private var covers: [Int: [MediaItem]] = [:]
+    @State private var autoLists: [AutoList] = []
+    @State private var autoCovers: [String: [MediaItem]] = [:]
+    @State private var libraryVersion = LocalLibrary.shared.version
     @State private var taps = 0
 
     var body: some View {
@@ -23,6 +26,9 @@ struct PhoneHome: View {
                 }
                 if locator.localMode {
                     LocalLibraryHint(card: true)
+                }
+                if !autoLists.isEmpty {
+                    shelf("For you") { autoShelf }
                 }
                 if !playlists.isEmpty {
                     shelf("Playlists") { playlistShelf }
@@ -42,6 +48,12 @@ struct PhoneHome: View {
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
         .task { await loadVideos() }
         .task(id: connection.playlistsVersion) { await loadPlaylists() }
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: "\(locator.localMode)|\(connection.autoVersion)|\(libraryVersion)") {
+            let found = await loadAutoLists(covers: true)
+            autoLists = found.lists
+            autoCovers = found.items
+        }
         // No-server mode: the on-device library changed (scan, tags read).
         .onReceive(LocalLibrary.shared.$version.dropFirst()) { _ in
             guard locator.localMode else { return }
@@ -159,6 +171,39 @@ struct PhoneHome: View {
                     }
                     .buttonStyle(PressScale())
                     .itemMenu(video)
+                }
+            }
+            .padding(.horizontal, 18)
+        }
+        .padding(.horizontal, -18)
+    }
+
+    /// Auto-playlists (Loved, Most played, ...) as cards like the playlists.
+    private var autoShelf: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(Array(autoLists.enumerated()), id: \.element.key) { index, list in
+                    NavigationLink {
+                        PhoneAutoListView(list: list)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            PlaylistMosaic(playlistID: 1_000_000 + index, items: autoCovers[list.key] ?? [])
+                                .frame(width: 140, height: 140)
+                                .clipShape(RoundedRectangle(cornerRadius: theme == .noir ? 2 : 14, style: .continuous))
+                                .overlay(alignment: .topLeading) {
+                                    Image(systemName: list.symbol)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .padding(7)
+                                        .background(.black.opacity(0.45), in: Circle())
+                                        .foregroundStyle(.white)
+                                        .padding(6)
+                                }
+                            Text(list.name).font(theme.font(14, .semibold)).lineLimit(1)
+                            Text(list.detail).font(theme.font(12)).opacity(0.6)
+                        }
+                        .frame(width: 140, alignment: .leading)
+                    }
+                    .buttonStyle(PressScale())
                 }
             }
             .padding(.horizontal, 18)

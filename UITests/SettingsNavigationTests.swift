@@ -114,6 +114,37 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground)
     }
 
+    /// Value of the "Match frame rate" switch (its identifier, else the focused row's value).
+    private var matchFrameRateValue: String {
+        let element = app.descendants(matching: .any).matching(identifier: "settings.matchFrameRate").firstMatch
+        if element.exists, let value = element.value as? String { return value }
+        let focusedElement = app.descendants(matching: .any).element(matching: NSPredicate(format: "hasFocus == true"))
+        return focusedElement.exists ? "\(focusedElement.value ?? "<no value>")" : "<missing>"
+    }
+
+    /// Playback page: the "Match frame rate" row exists at the bottom, a click changes it and a second click restores it.
+    func test6MatchFrameRateSwitch() {
+        launch("playback")
+        report("6a playback page")
+        XCTAssertFalse(onRoot, "the Playback page should be open")
+        for _ in 0..<6 where !focused.contains("Match frame rate") {
+            press(.down, wait: 1)
+        }
+        report("6b match frame rate row, value '\(matchFrameRateValue)'")
+        XCTAssertTrue(focused.contains("Match frame rate"), "▼ should reach Match frame rate, has '\(focused)'")
+        let before = matchFrameRateValue
+        press(.select)
+        let after = matchFrameRateValue
+        report("6c after click, value '\(before)' -> '\(after)'")
+        XCTAssertNotEqual(before, after, "a click should change the switch")
+        XCTAssertTrue(focused.contains("Match frame rate"), "the focus should stay on the row, has '\(focused)'")
+        press(.select)
+        report("6d after second click, value '\(matchFrameRateValue)'")
+        XCTAssertEqual(matchFrameRateValue, before, "a second click should restore the switch")
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertFalse(onRoot, "the page should stay open")
+    }
+
     /// On a page, Back with the focus on the Now Playing card closes the page (not Settings, not the app).
     func test4BackFromCardOnPage() {
         launch("sound")

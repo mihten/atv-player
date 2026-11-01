@@ -252,10 +252,16 @@ struct SearchResults: View {
     }
 }
 
-/// Long press on a song or video: play next / add to the end of the queue.
+/// Long press on a song or video: play next / add to the end of the queue, ♥ love, play one of its music videos.
 struct ItemMenu: ViewModifier {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var library: LibraryStore
     let item: MediaItem
+
+    /// The item's other music videos (the library store links the whole library like the server does).
+    private var otherVideos: [MediaVersion] {
+        (library.byID[item.id]?.versions ?? item.versions ?? []).filter { $0.isVideo && $0.id != item.id }
+    }
 
     func body(content: Content) -> some View {
         content.contextMenu {
@@ -267,6 +273,25 @@ struct ItemMenu: ViewModifier {
             }
             Button { connection.command("enqueue", ["ids": [item.id], "mode": "end"]) } label: {
                 Label("Add to queue", systemImage: "text.append")
+            }
+            let loved = library.isLoved(item)
+            Button {
+                library.markLoved(item.id, !loved)
+                connection.command("love", ["id": item.id, "on": !loved])
+            } label: {
+                Label(loved ? "Unlove" : "Love", systemImage: loved ? "heart.slash" : "heart")
+            }
+            let videos = otherVideos
+            if !videos.isEmpty {
+                Menu {
+                    ForEach(videos) { video in
+                        Button { connection.command("play_ids", ["ids": [video.id]]) } label: {
+                            Label(video.label, systemImage: "film")
+                        }
+                    }
+                } label: {
+                    Label("Music videos", systemImage: "film")
+                }
             }
         }
     }
@@ -281,6 +306,7 @@ struct ItemRow: View {
     var highlighted = false
     @Environment(\.appTheme) private var theme
     @EnvironmentObject private var engine: PlayerEngine
+    @EnvironmentObject private var library: LibraryStore
 
     var body: some View {
         HStack(spacing: 12) {
@@ -300,7 +326,17 @@ struct ItemRow: View {
                 .frame(width: item.isVideo ? 64 : 44, height: item.isVideo ? 36 : 44)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).lineLimit(1).foregroundStyle(highlighted ? Color.accentColor : .primary)
+                HStack(spacing: 5) {
+                    Text(item.title).lineLimit(1).foregroundStyle(highlighted ? Color.accentColor : .primary)
+                    if item.kind == "audio" && item.videoCount > 0 {  // the song has music videos
+                        Image(systemName: "film").font(.caption2).foregroundStyle(.secondary)
+                            .accessibilityLabel("Has music videos")
+                    }
+                    if library.isLoved(item) {
+                        Image(systemName: "heart.fill").font(.caption2).foregroundStyle(Color.accentColor)
+                            .accessibilityLabel("Loved")
+                    }
+                }
                 let detail = [item.artist, item.lossless == true ? "lossless" : nil].compactMap { $0 }
                     .filter { !$0.isEmpty }.joined(separator: " · ")
                 if !detail.isEmpty {
@@ -475,20 +511,50 @@ struct PhonePlaylistsView: View {
     @State private var playlists: [PlaylistInfo]?
     @State private var covers: [Int: [MediaItem]] = [:]
     @State private var errorText: String?
+    @State private var autoLists: [AutoList] = []
+    @State private var autoCovers: [String: [MediaItem]] = [:]
+    @State private var libraryVersion = LocalLibrary.shared.version
 
     var body: some View {
         List {
-            if locator.localMode {
-                Text("Playlists need the media server.").foregroundStyle(.secondary).themedRow()
-            } else {
-                serverList
+            if !autoLists.isEmpty {
+                Section("For you") {
+                    ForEach(Array(autoLists.enumerated()), id: \.element.key) { index, list in
+                        NavigationLink {
+                            PhoneAutoListView(list: list)
+                        } label: {
+                            AutoListRowLabel(list: list, index: index, items: autoCovers[list.key] ?? [])
+                        }
+                    }
+                }
+                .themedRow()
+            }
+            Section {
+                if locator.localMode {
+                    Text("Playlists need the media server.").foregroundStyle(.secondary).themedRow()
+                } else {
+                    serverList
+                }
+            } header: {
+                if !autoLists.isEmpty { Text("Playlists") }
             }
         }
         .phoneThemed()
         .navigationTitle("Playlists")
         .withMiniPlayer()
-        .refreshable { await load() }
+        .refreshable {
+            await load()
+            await loadAuto()
+        }
         .task(id: connection.playlistsVersion) { await load() }
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
+        .task(id: "\(locator.localMode)|\(connection.autoVersion)|\(libraryVersion)") { await loadAuto() }
+    }
+
+    private func loadAuto() async {
+        let found = await loadAutoLists(covers: !theme.isClassic)
+        autoLists = found.lists
+        autoCovers = found.items
     }
 
     @ViewBuilder private var serverList: some View {
@@ -634,6 +700,10 @@ struct QueueTab: View {
                 List {
                     let queue = connection.state?.queue ?? []
                     let current = connection.state?.index ?? -1
+                    Toggle(isOn: preferVideosBinding(connection)) {
+                        Label("Prefer videos", systemImage: "play.rectangle")
+                    }
+                    .themedRow()
                     if queue.isEmpty {
                         Text("The queue is empty. Pick something in Library or Playlists.").foregroundStyle(.secondary)
                     }

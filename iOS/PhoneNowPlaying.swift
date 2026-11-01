@@ -285,9 +285,21 @@ struct PhoneNowPlayingView: View {
                 }
                 scrubber(transport)
                 classicControls(transport)
-                Button { lyricsMode.toggle() } label: {
-                    Label("Lyrics", systemImage: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
-                        .foregroundStyle(lyricsMode ? Color.accentColor : .secondary)
+                HStack(spacing: 28) {
+                    Button { lyricsMode.toggle() } label: {
+                        Label("Lyrics", systemImage: lyricsMode ? "quote.bubble.fill" : "quote.bubble")
+                            .foregroundStyle(lyricsMode ? Color.accentColor : .secondary)
+                    }
+                    Button { connection.command("love", ["id": item.id, "on": item.loved != true]) } label: {
+                        Label(item.loved == true ? "Loved" : "Love", systemImage: item.loved == true ? "heart.fill" : "heart")
+                            .foregroundStyle(item.loved == true ? Color.accentColor : .secondary)
+                    }
+                    if item.hasVersions {
+                        VersionsMenu(connection: connection, engine: engine, item: item) {
+                            Label(item.versionLabel ?? "Versions", systemImage: "rectangle.stack")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .font(.footnote)
             } else {
@@ -549,6 +561,27 @@ struct PhoneNowPlayingView: View {
                     .foregroundStyle(lyricsMode ? accent : theme.ink.opacity(0.45))
                     .frame(width: 40, height: 36)
             }
+            if let item = engine.current {
+                let loved = item.loved == true
+                Button {
+                    taps += 1
+                    connection.command("love", ["id": item.id, "on": !loved])
+                } label: {
+                    Image(systemName: loved ? "heart.fill" : "heart")
+                        .foregroundStyle(loved ? accent : theme.ink.opacity(0.45))
+                        .symbolEffect(.bounce, value: loved)
+                        .frame(width: 40, height: 36)
+                }
+                .accessibilityLabel(loved ? "Unlove" : "Love")
+            }
+            if let item = engine.current, item.hasVersions {
+                VersionsMenu(connection: connection, engine: engine, item: item) {
+                    Image(systemName: "rectangle.stack")
+                        .foregroundStyle(item.isVideo ? accent : theme.ink.opacity(0.45))
+                        .frame(width: 40, height: 36)
+                }
+                .accessibilityLabel("Versions")
+            }
             Spacer(minLength: 0)
             if let next = state?.upcoming?.first {
                 HStack(spacing: 6) {
@@ -588,6 +621,8 @@ struct FullScreenVideo: View {
     @State private var scrubStarted = Date.distantPast
     @State private var shown: Double = 0
     @State private var holdUntil = Date.distantPast
+    /// Versions of the video (a dialog, not a Menu: the controls hide after 3 s and would take a menu with them).
+    @State private var versionsShown = false
 
     var body: some View {
         ZStack {
@@ -617,6 +652,16 @@ struct FullScreenVideo: View {
                         }
                         .accessibilityLabel("Back to portrait")
                         Spacer()
+                        if engine.current?.hasVersions == true {
+                            Button {
+                                hideTask?.cancel()
+                                versionsShown = true
+                            } label: {
+                                Image(systemName: "rectangle.stack")
+                                    .padding(12).background(.ultraThinMaterial, in: Circle())
+                            }
+                            .accessibilityLabel("Versions")
+                        }
                     }
                     Spacer()
                     progressBar
@@ -636,6 +681,9 @@ struct FullScreenVideo: View {
                 .buttonStyle(.plain)
                 .transition(.opacity)
             }
+        }
+        .confirmationDialog("Versions", isPresented: $versionsShown, titleVisibility: .visible) {
+            versionChoices
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -690,6 +738,26 @@ struct FullScreenVideo: View {
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 10)
+    }
+
+    @ViewBuilder private var versionChoices: some View {
+        if let item = engine.current {
+            ForEach(item.versions ?? []) { version in
+                Button(version.id == item.id ? "✓ \(version.label)" : version.label) {
+                    if version.id != item.id {
+                        engine.diag("full screen: version \(item.id) -> \(version.id) (\(version.label))")
+                        transport.connection.switchVersion(to: version.id, position: engine.livePosition)
+                    }
+                    showControls()
+                }
+            }
+            let prefer = transport.connection.state?.preferVideos == true
+            Button(prefer ? "Prefer videos: turn off" : "Prefer videos: turn on") {
+                transport.connection.command("prefer_videos", ["on": !prefer])
+                showControls()
+            }
+        }
+        Button("Cancel", role: .cancel) { showControls() }
     }
 
     private func showControls() {

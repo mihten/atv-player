@@ -36,6 +36,9 @@ struct PhoneApp: App {
                 connection.onUnreachable = { [weak locator] in locator?.serverUnreachable() }
                 if locator.url != nil { connection.start() }
             }
+            .onChange(of: connection.autoVersion) {
+                Task { await library.refreshLoved() }
+            }
             .onChange(of: locator.url) { _, url in
                 guard url != nil else { return }
                 connection.restart()
@@ -75,6 +78,9 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
     @Published private(set) var byID: [Int: MediaItem] = [:]
     @Published private(set) var errorText: String?
+    /// Items with a ♥: /api/collection/loved after every load and every change (PhoneApp, autoVersion).
+    /// nil = not known yet (the rows' own flag counts).
+    @Published private(set) var lovedIDs: Set<Int>?
     private var loading = false
     /// A forced reload was asked for while loading: load once more afterwards.
     private var reloadPending = false
@@ -99,11 +105,19 @@ final class LibraryStore: ObservableObject {
         repeat {
             reloadPending = false
             do {
-                let (data, _) = try await Net.data(from: .api("api/library"))
-                let list = try JSONDecoder.server().decode(ItemList.self, from: data).items
+                let list: [MediaItem]
+                if Config.localMode {
+                    list = LocalLibrary.shared.items  // already linked (VersionLinks) and marked (♥)
+                } else {
+                    let (data, _) = try await Net.data(from: .api("api/library"))
+                    // Song <-> video links for the menus (the server's own rules; summaries carry only the count)
+                    list = VersionLinks.attach(try JSONDecoder.server().decode(ItemList.self, from: data).items)
+                }
                 items = list
                 byID = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                lovedIDs = Set(list.filter { $0.loved == true }.map(\.id))
                 errorText = nil
+                await refreshLoved()  // the library rows leave out hidden duplicates; the Loved list keeps them
             } catch {
                 errorText = error.localizedDescription
             }
@@ -113,6 +127,34 @@ final class LibraryStore: ObservableObject {
     func reset() {
         items = []
         byID = [:]
+        lovedIDs = nil
+    }
+
+    /// The heart is per version group: the item or any of its versions is in the Loved list.
+    func isLoved(_ item: MediaItem) -> Bool {
+        guard let lovedIDs else { return item.loved == true }
+        return group(item.id, item.versions).contains { lovedIDs.contains($0) }
+    }
+
+    /// Shown at once; the queue owner's answer (refreshLoved) confirms it. Off clears the whole group (like the server).
+    func markLoved(_ id: Int, _ on: Bool) {
+        var ids = lovedIDs ?? []
+        if on { ids.insert(id) } else { ids.subtract(group(id, nil)) }
+        lovedIDs = ids
+    }
+
+    /// MediaItem.versionGroup: the versions and the item itself.
+    private func group(_ id: Int, _ versions: [MediaVersion]?) -> [Int] {
+        let ids = (versions ?? byID[id]?.versions)?.map(\.id) ?? []
+        return ids.contains(id) ? ids : ids + [id]
+    }
+
+    /// A ♥ changed somewhere (this phone, the web remote, the Apple TV): the server's list of loved items.
+    func refreshLoved() async {
+        guard let (data, response) = try? await Net.data(from: .api("api/collection/loved")),
+              ((response as? HTTPURLResponse)?.statusCode ?? 200) == 200,
+              let list = try? JSONDecoder.server().decode(ItemList.self, from: data) else { return }
+        lovedIDs = Set(list.items.map(\.id))
     }
 
     func search(_ text: String) -> [MediaItem] {

@@ -2,11 +2,14 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.appTheme) private var theme
     @State private var showPlayer = false
     @State private var demoPush = false
+    @State private var autoLists: [AutoList] = []
+    @State private var libraryVersion = LocalLibrary.shared.version
 
     var body: some View {
         NavigationStack {
@@ -78,6 +81,17 @@ struct ContentView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
+            if !autoLists.isEmpty {
+                Section("For you") {
+                    ForEach(autoLists) { list in
+                        NavigationLink {
+                            AutoListView(list: list)
+                        } label: {
+                            Label(list.name, systemImage: list.symbol)
+                        }
+                    }
+                }
+            }
             Section {
                 Button { shuffle("all") } label: {
                     Label("Shuffle everything", systemImage: "shuffle")
@@ -92,6 +106,8 @@ struct ContentView: View {
         }
         .withNowPlaying()
         .navigationTitle("ATV Player")
+        .task(id: "\(locator.localMode)|\(connection.autoVersion)|\(libraryVersion)") { autoLists = await AutoList.load() }
+        .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
     }
 
     private func shuffle(_ name: String) {

@@ -10,15 +10,24 @@ private struct LocalQueueFile: Codable {
     var repeatMode: String
     var position: Double
     var history: [String: Double]
+    /// "Prefer videos" (server.py Session.prefer_videos / swapped / pinned); nil in files from app 0.18.28 and older.
+    var preferVideos: Bool?
+    var swapped: [String: Int]?
+    var pinned: [Int]?
+    var dropped: [String: [Int]]?
+    /// Item whose current start is already in the play history (a relaunch in mid-track does not count it again).
+    var noted: Int?
 }
 
 /// No-server mode: this device's queue on the device itself. A port of the server's Session for one player
 /// (server.py set_queue, advance, handle_cmd, on_message, smart_shuffle). ServerConnection hands it the "cmd"
-/// messages and the player's reports instead of sending them over the WebSocket.
+/// messages and the player's reports instead of sending them over the WebSocket. Plays and hearts go to LocalListening.
 @MainActor
 final class LocalQueue {
     private weak var engine: PlayerEngine?
     private let publish: @MainActor (SessionState) -> Void
+    /// A ♥ changed (ServerConnection.autoVersion: auto-playlist screens reload).
+    private let autoChanged: @MainActor () -> Void
     private var queue: [Int] = []
     private var original: [Int] = []
     private var index = -1
@@ -33,13 +42,22 @@ final class LocalQueue {
     private var noted: Int?
     private var played: [Int: Double] = [:]
     private var lastSave = Date.distantPast
+    /// "Prefer videos": songs play as one of their music videos. swapped: queue entry -> the song it replaced (also for
+    /// a version picked by hand); pinned: entries picked by hand (switch_version), never changed back by the flag;
+    /// dropped: video -> songs left out for it ("no doubles"), put back when the flag goes off.
+    private var preferVideos = false
+    private var swapped: [Int: Int] = [:]
+    private var pinned: Set<Int> = []
+    private var dropped: [Int: [Int]] = [:]
 
     private static let historyDays: Double = 30
     private static var fileURL: URL { LocalMedia.dataFolder.appendingPathComponent("local-queue.json") }
 
-    init(engine: PlayerEngine?, publish: @escaping @MainActor (SessionState) -> Void) {
+    init(engine: PlayerEngine?, publish: @escaping @MainActor (SessionState) -> Void,
+         autoChanged: @escaping @MainActor () -> Void) {
         self.engine = engine
         self.publish = publish
+        self.autoChanged = autoChanged
     }
 
     private var library: LocalLibrary { LocalLibrary.shared }
@@ -50,7 +68,9 @@ final class LocalQueue {
     /// Restores the saved queue; the current item is loaded paused at its saved position.
     func start() {
         load()
+        LocalListening.shared.importHistory(played)
         prune()
+        if noted != currentID { noted = nil }
         broadcast()
         if let item = current {
             duration = item.duration ?? 0
@@ -89,9 +109,11 @@ final class LocalQueue {
                 setQueue(ids, startIndex: nil, shuffle: false)
                 return
             }
+            for id in ids { swapped[id] = nil }  // picked by hand: an older automatic swap no longer applies
+            let added = preferVideos ? preferList(ids, present: Set(queue).union(ids)).ids : ids
             let at = (msg["mode"] as? String) == "next" ? index + 1 : queue.count
-            queue.insert(contentsOf: ids, at: min(max(at, 0), queue.count))
-            original.append(contentsOf: ids)
+            queue.insert(contentsOf: added, at: min(max(at, 0), queue.count))
+            original.append(contentsOf: added)
             changed()
         case "next":
             advance(user: true)
@@ -132,11 +154,25 @@ final class LocalQueue {
             }
             repeatMode = mode
             changed()
+        case "prefer_videos":
+            let on = msg["on"].map { Self.bool($0) } ?? !preferVideos
+            if on != preferVideos {
+                preferVideos = on
+                applyPrefer(whole: false)
+                LocalLog.write("prefer videos \(on ? "on" : "off")")
+            }
+            changed()
+        case "switch_version":
+            if let id = Self.int(msg["id"]) { switchVersion(to: id, position: Self.double(msg["position"])) }
         case "remove":
             let target = Self.int(msg["index"]) ?? -1
             if target >= 0 && target < queue.count && target != index {
-                queue.remove(at: target)
+                let gone = queue.remove(at: target)
                 if target < index { index -= 1 }
+                if !queue.contains(gone) {
+                    swapped[gone] = nil
+                    dropped[gone] = nil
+                }
                 changed()
             }
         case "clear":
@@ -144,7 +180,28 @@ final class LocalQueue {
             queue = cur.map { [$0] } ?? []
             original = queue
             index = queue.isEmpty ? -1 : 0
+            swapped = swapped.filter { queue.contains($0.key) }
+            pinned = pinned.filter { queue.contains($0) }
+            dropped = [:]
             changed()
+        case "love":  // {id (default: the current item), on (missing = toggle)}
+            guard let id = Self.int(msg["id"]) ?? currentID, let item = library.byID[id] else { return }
+            // Per version group (server.py set_loved): on marks the item, off clears every member.
+            let listening = LocalListening.shared
+            let group = item.versionGroup
+            let lovedNow = group.contains { listening.isLoved($0) }
+            let on = msg["on"].map { Self.bool($0) } ?? !lovedNow
+            guard on != lovedNow else { return }
+            if on {
+                // An audio twin is not listed in its versions: mark a listed member, so every member shows the heart.
+                let listed = item.versions?.contains { $0.id == id } ?? true
+                _ = listening.setLoved(listed ? id : item.versions?.first?.id ?? id, true)
+            } else {
+                for member in group { _ = listening.setLoved(member, false) }
+            }
+            LocalLog.write("heart \(on ? "on" : "off"): \(id)")
+            library.lovedChanged()  // items carry "loved"; the queue state follows (itemsChanged)
+            autoChanged()
         case "rescan":
             library.scan()
         default:
@@ -200,9 +257,17 @@ final class LocalQueue {
 
     /// startIndex nil = beginning (or a random first item when shuffling).
     private func setQueue(_ raw: [Int], startIndex: Int?, shuffle on: Bool) {
-        let ids = raw.filter { library.byID[$0] != nil }
+        var ids = raw.filter { library.byID[$0] != nil }
         guard !ids.isEmpty else { return }
-        let start = startIndex.map { min(max($0, 0), ids.count - 1) }
+        var start = startIndex.map { min(max($0, 0), ids.count - 1) }
+        swapped = [:]
+        pinned = []
+        dropped = [:]
+        if preferVideos {
+            let preferred = preferList(ids, present: Set(ids))
+            ids = preferred.ids
+            start = start.map { preferred.positions[$0] }
+        }
         original = ids
         if on {
             let rest = smartShuffle(ids.enumerated().filter { $0.offset != start }.map(\.element))
@@ -226,6 +291,7 @@ final class LocalQueue {
         } else if repeatMode == "all" {
             if shuffle { queue = smartShuffle(queue) }  // new lap: the items just heard go to the back
             index = 0
+            if preferVideos || !swapped.isEmpty { applyPrefer(whole: true) }
         } else {
             index = queue.count - 1
             stopPlayback()
@@ -234,15 +300,139 @@ final class LocalQueue {
         startCurrent()
     }
 
-    private func startCurrent(position start: Double = 0, autoplay: Bool = true, present: Bool = false) {
+    private func startCurrent(position start: Double = 0, autoplay: Bool = true, present: Bool = false,
+                              noted startNoted: Int? = nil) {
         guard let item = current else { return }
         position = start
         duration = item.duration ?? 0
         playing = false
-        noted = nil
+        noted = startNoted
         save()
         engine?.load(item, position: start, autoplay: autoplay, present: present)
         broadcast()
+    }
+
+    // MARK: - Versions and "Prefer videos" (server.py prefer_list, apply_prefer, switch_version)
+
+    /// The video a song plays as: the first one of the song's own class, else the best one.
+    private func preferredVideo(_ id: Int) -> Int? {
+        guard let song = library.byID[id], song.kind == "audio", let versions = song.versions else { return nil }
+        let videos = versions.filter { $0.kind == "video" }
+        let own = VersionLinks.versionClass(song)
+        let sameClass = videos.first { version in
+            library.byID[version.id].map { VersionLinks.versionClass($0) } == own
+        }
+        return (sameClass ?? videos.first)?.id
+    }
+
+    /// ids with every song that has a music video replaced by its preferred video (noted in `swapped`). A song whose
+    /// video is already in `present` (or chosen for another song) is dropped (noted in `dropped`). keep: a position
+    /// left as it is.
+    /// positions: the new position of every old one (a dropped song gets its video's).
+    private func preferList(_ ids: [Int], present: Set<Int>, keep: Int? = nil) -> (ids: [Int], positions: [Int]) {
+        var out: [Int] = []
+        var positions: [Int] = []
+        var chosen: [Int: Int] = [:]
+        var drops: [(at: Int, video: Int, next: Int)] = []
+        for (n, id) in ids.enumerated() {
+            let candidate = n == keep || pinned.contains(id) ? nil : preferredVideo(id)
+            guard let video = candidate else {
+                positions.append(out.count)
+                out.append(id)
+                continue
+            }
+            if (present.contains(video) && chosen[video] == nil) || (chosen[video] ?? id) != id {
+                positions.append(0)
+                drops.append((at: n, video: video, next: out.count))
+                if !dropped[video, default: []].contains(id) { dropped[video, default: []].append(id) }
+            } else {
+                chosen[video] = id
+                swapped[video] = id
+                positions.append(out.count)
+                out.append(video)
+            }
+        }
+        for drop in drops {
+            positions[drop.at] = out.firstIndex(of: drop.video) ?? min(drop.next, max(out.count - 1, 0))
+        }
+        return (out, positions)
+    }
+
+    private func unswap(_ id: Int) -> Int {
+        guard let song = swapped[id], !pinned.contains(id) else { return id }
+        return song
+    }
+
+    /// Flag off (server.py restore_list): entries from `start` on (except position keep) go back to their song, and the
+    /// songs dropped for a video come back right after it (after the current item when that is the video, at the end
+    /// when the video is gone). Songs already in ids are not added again.
+    private func restoreList(_ ids: [Int], start: Int = 0, keep: Int? = nil) -> [Int] {
+        var back: [Int: [Int]] = [:]
+        var order: [Int] = []
+        var seen = Set(ids)
+        for (video, songs) in dropped.sorted(by: { $0.key < $1.key }) {
+            for song in songs where !seen.contains(song) {
+                seen.insert(song)
+                if back[video] == nil { order.append(video) }
+                back[video, default: []].append(song)
+            }
+        }
+        var out = Array(ids[..<start])
+        if start > 0, let songs = back.removeValue(forKey: ids[start - 1]) { out += songs }
+        for n in start..<ids.count {
+            out.append(n == keep ? ids[n] : unswap(ids[n]))
+            if let songs = back.removeValue(forKey: ids[n]) { out += songs }
+        }
+        for video in order { out += back[video] ?? [] }
+        return out
+    }
+
+    /// The flag changed (or a repeat-all lap starts: whole): songs after the current item become videos (on) or
+    /// swapped entries go back to their song and dropped songs come back (off); the unshuffled order follows, except
+    /// the current item.
+    private func applyPrefer(whole: Bool) {
+        let cur = currentID
+        let start = whole ? 0 : min(max(index + 1, 0), queue.count)
+        let at = whole ? nil : cur.flatMap { original.firstIndex(of: $0) }
+        if preferVideos {
+            queue = Array(queue[..<start]) + preferList(Array(queue[start...]), present: Set(queue)).ids
+            original = preferList(original, present: Set(original), keep: at).ids
+        } else {
+            queue = restoreList(queue, start: start)
+            original = restoreList(original, keep: at)
+            dropped = [:]
+            swapped = swapped.filter { queue.contains($0.key) }
+        }
+        if whole { index = queue.isEmpty ? -1 : 0 }
+    }
+
+    /// Replaces the current entry with another version of it and starts that: at the same position when both are the
+    /// same cut (durations within 5 s), else from the start. The same listen goes on (no new start in the history).
+    private func switchVersion(to id: Int, position wanted: Double?) {
+        guard let cur = current, id != cur.id, cur.versions?.contains(where: { $0.id == id }) == true,
+              let target = library.byID[id] else { return }
+        let old = cur.id
+        let a = cur.duration ?? 0, b = target.duration ?? 0
+        let sameCut = a > 0 && b > 0 && abs(a - b) <= 5
+        let at = wanted ?? engine?.livePosition ?? position
+        queue[index] = id
+        if index < original.count && original[index] == old {
+            original[index] = id
+        } else if let n = original.firstIndex(of: old) {
+            original[n] = id
+        }
+        let raw = swapped[old] ?? old
+        if !queue.contains(old) { swapped[old] = nil }
+        swapped[id] = raw == id ? nil : raw
+        pinned.insert(id)
+        var startNoted: Int?
+        if noted == old {
+            startNoted = id
+            played[id] = Date().timeIntervalSince1970
+        }
+        LocalLog.write("version \(old) -> \(id) at \(Int(sameCut ? at : 0)) s")
+        errors = 0
+        startCurrent(position: sameCut ? max(at, 0) : 0, present: true, noted: startNoted)
     }
 
     private func stopPlayback() {
@@ -267,6 +457,9 @@ final class LocalQueue {
         let removed = kept.count != queue.count
         queue = kept
         original = original.filter { known[$0] != nil }
+        swapped = swapped.filter { known[$0.key] != nil && known[$0.value] != nil }
+        pinned = pinned.filter { known[$0] != nil }
+        dropped = dropped.filter { known[$0.key] != nil }.mapValues { songs in songs.filter { known[$0] != nil } }
         if cur != nil && !removed {
             // nothing removed: the index still points at the same entry
         } else if let cur, known[cur] != nil {
@@ -308,6 +501,7 @@ final class LocalQueue {
 
     private func notePlayed(_ id: Int) {
         let now = Date().timeIntervalSince1970
+        LocalListening.shared.notePlay(id)
         played[id] = now
         let cutoff = now - Self.historyDays * 86400
         played = played.filter { $0.value > cutoff }
@@ -318,7 +512,7 @@ final class LocalQueue {
         let upcoming = queue.dropFirst(index + 1).prefix(5).compactMap { library.byID[$0] }
         publish(SessionState(queue: queue, index: index, shuffle: shuffle, repeatMode: repeatMode, playing: playing,
                              position: position, duration: duration, current: current, upcoming: upcoming,
-                             players: 1, version: nil))
+                             players: 1, version: nil, preferVideos: preferVideos))
     }
 
     // MARK: - Persistence
@@ -332,6 +526,17 @@ final class LocalQueue {
         shuffle = saved.shuffle
         repeatMode = ["off", "all", "one"].contains(saved.repeatMode) ? saved.repeatMode : "all"
         position = saved.position
+        preferVideos = saved.preferVideos ?? false
+        swapped = [:]
+        for (key, value) in saved.swapped ?? [:] {
+            if let id = Int(key) { swapped[id] = value }
+        }
+        pinned = Set(saved.pinned ?? [])
+        noted = saved.noted
+        dropped = [:]
+        for (key, value) in saved.dropped ?? [:] {
+            if let id = Int(key) { dropped[id] = value }
+        }
         let cutoff = Date().timeIntervalSince1970 - Self.historyDays * 86400
         played = [:]
         for (key, value) in saved.history where value > cutoff {
@@ -343,8 +548,14 @@ final class LocalQueue {
         lastSave = Date()
         var history: [String: Double] = [:]
         for (id, value) in played { history[String(id)] = value }
+        var swappedKeys: [String: Int] = [:]
+        for (id, song) in swapped { swappedKeys[String(id)] = song }
+        var droppedKeys: [String: [Int]] = [:]
+        for (id, songs) in dropped { droppedKeys[String(id)] = songs }
         let file = LocalQueueFile(queue: queue, original: original, index: index, shuffle: shuffle,
-                                  repeatMode: repeatMode, position: position, history: history)
+                                  repeatMode: repeatMode, position: position, history: history,
+                                  preferVideos: preferVideos, swapped: swappedKeys, pinned: Array(pinned),
+                                  dropped: droppedKeys, noted: noted)
         guard let data = try? JSONEncoder().encode(file) else { return }
         try? data.write(to: Self.fileURL, options: .atomic)
     }

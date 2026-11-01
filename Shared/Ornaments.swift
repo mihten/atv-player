@@ -38,6 +38,7 @@ extension MediaItem {
         var out = codecBadges
         if lossless == true { out.append("Lossless") }
         if let year, year.count >= 4 { out.append(String(year.prefix(4))) }
+        if let versionBadge { out.append(versionBadge) }  // "▶ 2 videos" / "Live at Wembley 1986"
         return out
     }
 }

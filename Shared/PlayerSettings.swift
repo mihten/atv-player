@@ -18,6 +18,7 @@ enum PlayerSettings {
     static let fastSeekKey = "fastSeek"
     static let seekBackKey = "seekBack"
     static let seekForwardKey = "seekForward"
+    static let matchFrameRateKey = "matchFrameRate"  // Apple TV only
 
     static let defaultColor = 0xFFFFFF
     static let defaultOutline = 4
@@ -66,6 +67,8 @@ enum PlayerSettings {
     static var fastSeek: Bool { defaults.object(forKey: fastSeekKey) as? Bool ?? true }
     static var seekBack: Double { Double(defaults.object(forKey: seekBackKey) as? Int ?? 10) }
     static var seekForward: Double { Double(defaults.object(forKey: seekForwardKey) as? Int ?? 10) }
+    /// Apple TV: ask the TV for the music video's frame rate (off: each switch blanks the TV for a few seconds).
+    static var matchFrameRate: Bool { defaults.object(forKey: matchFrameRateKey) as? Bool ?? false }
 
     /// libVLC options for the subtitle renderer (freetype). Empty = VLC defaults.
     static func vlcOptions() -> [String] {

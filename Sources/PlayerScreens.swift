@@ -219,6 +219,9 @@ struct VinylPlayer: View {
                         Text(([item.album].compactMap { $0 } + (item.year.map { [String($0.prefix(4))] } ?? []))
                                 .joined(separator: ", "))
                             .font(theme.font(28)).opacity(0.55).lineLimit(1)
+                        if let badge = item.versionBadge {
+                            FactChip(text: badge, theme: theme, size: 20).padding(.top, 4)
+                        }
                     }
                     .id(item.id)
                     .transition(.blurFade(CGSize(width: 0, height: 30)))
@@ -274,7 +277,8 @@ struct Facts: View {
     }
 }
 
-/// Video + audio codec badges ("AV1" "OPUS") for the info bar over a music video.
+/// Video + audio codec badges ("AV1" "OPUS") for the info bar over a music video, then the version chip
+/// ("▶ 2 videos" on a song, "Live at Wembley 1986" on a video with other versions).
 struct CodecBadges: View {
     let item: MediaItem
     let theme: AppTheme
@@ -282,7 +286,9 @@ struct CodecBadges: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(item.codecBadges, id: \.self) { FactChip(text: $0, theme: theme, size: size) }
+            ForEach(item.codecBadges + [item.versionBadge].compactMap { $0 }, id: \.self) {
+                FactChip(text: $0, theme: theme, size: size)
+            }
         }
         .fixedSize()
     }

@@ -92,6 +92,8 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// waits in `seekAfterStart` (a jump queued before the input opens would be merged with its start-time seek).
     private var reopenedForSeek = false
     private var seekAfterStart: Double?
+    /// Apple TV: the item waits for the TV to switch its frame rate before VLC starts (see DisplayMatch).
+    private var awaitingDisplay = false
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -269,6 +271,17 @@ final class PlayerEngine: NSObject, ObservableObject {
         load(item, position: position, autoplay: wantPlaying, present: false, force: true)
     }
 
+    /// A newer copy of the loaded item (the queue state after a rescan linked other versions, or a ♥ changed): take its
+    /// version links and heart without reloading, so the chips and the quick panel's Version / Love rows are current.
+    func refreshLinks(_ item: MediaItem) {
+        guard var loaded = current, loaded.id == item.id,
+              loaded.versions != item.versions || loaded.videos != item.videos || loaded.loved != item.loved else { return }
+        loaded.versions = item.versions
+        loaded.videos = item.videos
+        loaded.loved = item.loved
+        current = loaded
+    }
+
     func load(_ item: MediaItem, position startAt: Double, autoplay: Bool, present: Bool = false,
               retry: Bool = false, force: Bool = false) {
         if !autoplay, !force, current?.id == item.id, vlc.media != nil {
@@ -316,21 +329,55 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
         vlc.media = media
         log("load '\(item.title)' id \(item.id) at \(Int(startAt)) s autoplay=\(autoplay) present=\(present)\(retry ? " RETRY" : "") player \(playerTag)")
+        #if os(tvOS)
+        // The TV switches its mode first (Match frame rate); the start timeout counts from the real start.
+        awaitingDisplay = true
+        let generation = loadGeneration
+        // In the background no mode is asked (system mode there); appDidBecomeActive asks on return.
+        DisplayMatch.prepare(for: item, allowed: !inBackground, log: { [weak self] in self?.log($0) }) { [weak self] in
+            guard let self, generation == self.loadGeneration else { return }
+            self.awaitingDisplay = false
+            if autoplay { self.startAfterDisplay(item) }
+            self.scheduleDiagnostics(for: item)  // counts from the real start, not from before the wait
+        }
+        #else
         if autoplay {
             vlc.play()
-            if present { startCounter += 1 }
             armStartTimeout(for: item)
         }
+        scheduleDiagnostics(for: item)
+        #endif
+        if autoplay, present { startCounter += 1 }
         clock.position = startAt
         clock.duration = duration
-        scheduleDiagnostics(for: item)
         fetchArtwork(for: item)
         updateNowPlaying()
     }
 
+    #if os(tvOS)
+    /// Deferred start of a load once the TV has its mode; not if the user paused meanwhile.
+    private func startAfterDisplay(_ item: MediaItem) {
+        guard wantPlaying else {
+            log("display: '\(item.title)' not started (paused or stopped while the TV switched)")
+            return
+        }
+        vlc.play()
+        armStartTimeout(for: item)
+    }
+
+    /// Settings: "Match frame rate" was turned off.
+    func matchFrameRateTurnedOff() {
+        DisplayMatch.reset("switch turned off") { [weak self] in self?.log($0) }
+    }
+    #endif
+
     /// Nothing loaded any more (switching between server and no-server mode).
     func unload() {
         loadGeneration += 1  // cancels the start / seek watchdogs of the old item
+        awaitingDisplay = false
+        #if os(tvOS)
+        DisplayMatch.reset("unload") { [weak self] in self?.log($0) }
+        #endif
         startCheck?.cancel()
         startTimeout?.cancel()
         diagTask?.cancel()
@@ -364,13 +411,14 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// VLC reported stopped/error before the item ever played. Re-check 1.5 s later (VLC also emits
     /// a stop for the previous media when a new one is set), then treat it as a failed start.
     private func checkStartSoon() {
-        guard wantPlaying, !startedPlaying, let item = current else { return }
+        // A load waiting for the TV's mode switch is stopped on purpose (VLC posts Stopped for the previous media).
+        guard wantPlaying, !startedPlaying, !awaitingDisplay, let item = current else { return }
         let generation = loadGeneration
         startCheck?.cancel()
         startCheck = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard let self, !Task.isCancelled, generation == self.loadGeneration,
-                  self.wantPlaying, !self.startedPlaying else { return }
+                  self.wantPlaying, !self.startedPlaying, !self.awaitingDisplay else { return }
             let state = self.vlc.state
             guard state == .stopped || state == .error || state == .ended else { return }
             self.startFailed(item, "VLC \(VLCMediaPlayerStateToString(state)) before playback started")
@@ -407,6 +455,9 @@ final class PlayerEngine: NSObject, ObservableObject {
             vlc.stop()
             setPlaying(false)
             updateNowPlaying()
+            #if os(tvOS)
+            DisplayMatch.reset("stop") { [weak self] in self?.log($0) }
+            #endif
         default: break
         }
     }
@@ -505,8 +556,9 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func seek(to seconds: Double) {
         let target = max(0, seconds)
-        if reopenedForSeek, !startedPlaying {
-            log("seek to \(Int(target)) s: input still opening after the fast-seek reopen, jumping once it starts")
+        if reopenedForSeek || awaitingDisplay, !startedPlaying {
+            // VLC ignores a jump before its input is open (fast-seek reopen, or waiting for the TV's mode switch).
+            log("seek to \(Int(target)) s: input not open yet (\(awaitingDisplay ? "TV switching mode" : "fast-seek reopen")), jumping once it starts")
             seekAfterStart = target
             position = target
             clock.position = target
@@ -658,6 +710,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// returning then restarts the picture as before. A video that LOADS while in the background still starts with
     /// the track off (the vout cannot be created then, see applyTracks).
     func appDidEnterBackground() {
+        #if os(tvOS)
+        defer { DisplayMatch.reset("background") { [weak self] in self?.log($0) } }  // after a video is paused
+        #endif
         inBackground = true
         UserDefaults.standard.set("background", forKey: Self.lastStateKey)
         #if os(iOS)
@@ -700,6 +755,13 @@ final class PlayerEngine: NSObject, ObservableObject {
             }
         }
         if !lyricsCover { showVideo() }
+        #if os(tvOS)
+        // The mode was reset in the background: ask for the current video's rate again (no deferred start), but only
+        // while it is still open in VLC (a stopped / ended item asks again when play() reopens it).
+        if let item = current, item.isVideo, !awaitingDisplay, ![VLCMediaPlayerState.stopped, .ended, .error].contains(vlc.state) {
+            DisplayMatch.prepare(for: item, allowed: true, log: { [weak self] in self?.log($0) }) {}
+        }
+        #endif
     }
 
     #if os(iOS)
@@ -989,7 +1051,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             startTimeout?.cancel()
             if let target = seekAfterStart {
                 seekAfterStart = nil
-                log("seek to \(Int(target)) s after the fast-seek reopen started")
+                log("seek to \(Int(target)) s now that playback started (queued jump)")
                 vlc.time = VLCTime(int: Int32(target * 1000))
                 position = target
                 clock.position = target

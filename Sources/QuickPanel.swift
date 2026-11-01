@@ -1,19 +1,20 @@
 import SwiftUI
 
 /// Apple TV: every start of playback (folder, playlist, collection, a single item in a list) begins shuffled with
-/// repeat all; both can be changed in the player's quick panel (hold the remote's centre button).
+/// repeat all; both can be changed in the player's quick panel (hold the remote's centre button). Auto-playlists also
+/// offer Play in order (shuffle: false).
 extension ServerConnection {
-    func startPlayback(_ arguments: [String: Any]) {
+    func startPlayback(_ arguments: [String: Any], shuffle: Bool = true) {
         var args = arguments
-        args["shuffle"] = true
+        args["shuffle"] = shuffle
         command("play_collection", args)
         command("repeat", ["mode": "all"])
     }
 }
 
-/// Quick panel over the player: shuffle, repeat, the lyrics / subtitle track, equalizer and fast seek. Opens on a
-/// click-and-hold of the centre button; ▲▼ moves, click changes the focused row, Back closes it. ⏯ keeps
-/// pausing / resuming.
+/// Quick panel over the player: shuffle, repeat, the lyrics / subtitle track, equalizer, fast seek, the version of the
+/// song (song / music videos), "Prefer videos" and ♥ Love. Opens on a click-and-hold of the centre button; ▲▼ moves, click
+/// changes the focused row, Back closes it. ⏯ keeps pausing / resuming. Sized for 8 rows on a 1080p screen.
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -26,7 +27,7 @@ struct QuickPanel: View {
     @FocusState private var focus: Row?
     let close: () -> Void
 
-    enum Row: String { case shuffle, repeatMode, subtitles, equalizer, fastSeek }
+    enum Row: String { case shuffle, repeatMode, subtitles, equalizer, fastSeek, version, preferVideos, love }
 
     /// Equalizer choices in click order (same values as Settings → Sound). Any other preset (a VLC one chosen in
     /// Settings) is shown by name and the next click goes to the first of these.
@@ -38,6 +39,14 @@ struct QuickPanel: View {
     ]
 
     private var shuffleOn: Bool { connection.state?.shuffle == true }
+    private var preferVideosOn: Bool { connection.state?.preferVideos == true }
+    /// ♥ of the playing item (kept current by the queue state, PlayerEngine.refreshLinks).
+    private var lovedOn: Bool { engine.current?.loved == true }
+    /// The playing item's versions (song first, then its videos); empty when it has no other version.
+    private var versions: [MediaVersion] {
+        guard let item = engine.current, item.hasVersions else { return [] }
+        return item.versions ?? []
+    }
     private var repeatMode: String { connection.state?.repeatMode ?? "all" }
     private var subtitleIndex: Int {
         guard subsOn else { return 3 }
@@ -46,7 +55,7 @@ struct QuickPanel: View {
 
     var body: some View {
         let accent = theme.accent(artwork.palette)
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("PLAYBACK").font(theme.eyebrow(24)).tracking(5).foregroundStyle(accent)
             row(.shuffle, "Shuffle", "shuffle", shuffleOn ? "On" : "Off") {
                 connection.command("shuffle", ["on": !shuffleOn])
@@ -75,9 +84,27 @@ struct QuickPanel: View {
                 connection.send(["type": "log", "message": "quick panel: fast seek -> \(fastSeek ? "on" : "off")"])
                 // PlayerEngine applies it at the next seek (VLC reads it only when an item starts).
             }
+            row(.version, "Version", "rectangle.stack", versions.isEmpty ? "—" : (engine.current?.versionLabel ?? "—")) {
+                let list = versions
+                guard let item = engine.current, !list.isEmpty else { return }
+                let at = list.firstIndex(where: { $0.id == item.id }) ?? -1
+                let next = list[(at + 1) % list.count]
+                connection.send(["type": "log", "message": "quick panel: version \(item.id) -> \(next.id) (\(next.label))"])
+                connection.switchVersion(to: next.id, position: engine.livePosition)
+            }
+            row(.preferVideos, "Prefer videos", "play.rectangle", preferVideosOn ? "On" : "Off") {
+                connection.command("prefer_videos", ["on": !preferVideosOn])
+                connection.send(["type": "log", "message": "quick panel: prefer videos -> \(preferVideosOn ? "off" : "on")"])
+            }
+            row(.love, "Love", lovedOn ? "heart.fill" : "heart", lovedOn ? "On" : "Off") {
+                guard let item = engine.current else { return }
+                connection.command("love", ["id": item.id, "on": !lovedOn])
+                connection.send(["type": "log", "message": "quick panel: love \(item.id) -> \(lovedOn ? "off" : "on")"])
+            }
             Text("Click changes  ·  Back closes  ·  ⏯ pauses").font(theme.font(20)).opacity(0.5).padding(.top, 6)
         }
-        .padding(44)
+        .padding(.horizontal, 44)
+        .padding(.vertical, 36)
         .frame(width: 760)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
         .focusSection()
@@ -97,7 +124,7 @@ struct QuickPanel: View {
             }
             .font(theme.font(30, .medium))
             .padding(.horizontal, 28)
-            .padding(.vertical, 18)
+            .padding(.vertical, 12)
             .frame(maxWidth: .infinity)
         }
         .focused($focus, equals: id)
@@ -107,9 +134,10 @@ struct QuickPanel: View {
     }
 }
 
-/// Small shuffle / repeat state icons for the player's info lines (lit = on).
+/// Small shuffle / repeat state icons for the player's info lines (lit = on), and a ♥ when the playing item is loved.
 struct PlayModeIcons: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var engine: PlayerEngine
     var accent: Color = .accentColor
     var size: CGFloat = 24
 
@@ -120,6 +148,11 @@ struct PlayModeIcons: View {
                 .foregroundStyle(connection.state?.shuffle == true ? accent : Color.secondary.opacity(0.5))
             Image(systemName: repeatMode == "one" ? "repeat.1" : "repeat")
                 .foregroundStyle(repeatMode == "off" ? Color.secondary.opacity(0.5) : accent)
+            if engine.current?.loved == true {
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(accent)
+                    .accessibilityLabel("Loved")
+            }
         }
         .font(.system(size: size, weight: .semibold))
     }

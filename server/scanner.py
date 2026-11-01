@@ -7,6 +7,7 @@ so a rescan only touches new or modified files.
 import base64
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -42,6 +43,8 @@ CREATE TABLE IF NOT EXISTS items (
   duration REAL,
   codec TEXT,
   acodec TEXT,
+  fps REAL,
+  dyn TEXT,
   lossless INTEGER NOT NULL DEFAULT 0,
   channels INTEGER,
   bitrate INTEGER,
@@ -70,8 +73,8 @@ CREATE TABLE IF NOT EXISTS lyrics (item_id INTEGER PRIMARY KEY, data TEXT NOT NU
 
 COLUMNS = (
     "root", "relpath", "folder", "kind", "title", "artist", "album", "albumartist", "track", "disc",
-    "year", "duration", "codec", "acodec", "lossless", "channels", "bitrate", "width", "height", "size", "mtime",
-    "has_art", "audio_track", "audio_ord", "sub_track", "sub_ord", "subs", "added",
+    "year", "duration", "codec", "acodec", "fps", "dyn", "lossless", "channels", "bitrate", "width", "height", "size",
+    "mtime", "has_art", "audio_track", "audio_ord", "sub_track", "sub_ord", "subs", "added",
 )
 
 
@@ -94,6 +97,11 @@ def connect(db_path):
     if "acodec" not in cols:  # added 2026-10-31 (codec badges). Songs: = codec; videos: NULL = re-probed once
         con.execute("ALTER TABLE items ADD COLUMN acodec TEXT")
         con.execute("UPDATE items SET acodec = codec WHERE kind = 'audio'")
+        con.commit()
+    if "fps" not in cols:  # added 2026-11-01 (frame rate matching, HDR badge). Songs: 0 / ''; videos: NULL = re-probed once
+        con.execute("ALTER TABLE items ADD COLUMN fps REAL")
+        con.execute("ALTER TABLE items ADD COLUMN dyn TEXT")
+        con.execute("UPDATE items SET fps = 0, dyn = '' WHERE kind = 'audio'")
         con.commit()
     return con
 
@@ -214,6 +222,27 @@ def folder_art(dirpath):
     return None
 
 
+def frame_rate(s):
+    """ffprobe rational ("24000/1001") -> float; 0.0 = unknown."""
+    try:
+        num, _, den = (s or "0/1").partition("/")
+        num, den = float(num), float(den or 1)
+        rate = num / den if num > 0 and den > 0 else 0.0
+        return rate if math.isfinite(rate) else 0.0
+    except ValueError:
+        return 0.0
+
+
+def dynamic_range(video):
+    """'dv' / 'pq' / 'hlg' / 'sdr' of a video stream ('' = no video stream)."""
+    if not video:
+        return ""
+    if any(sd.get("side_data_type") == "DOVI configuration record" for sd in video.get("side_data_list") or []):
+        return "dv"
+    trc = (video.get("color_transfer") or "").lower()
+    return {"smpte2084": "pq", "arib-std-b67": "hlg"}.get(trc, "sdr")
+
+
 def probe_video(path):
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
@@ -250,6 +279,10 @@ def probe_video(path):
         "codec": (video or {}).get("codec_name"),
         # Codec of the audio track the app plays; "" = no audio (so the file is not re-probed again).
         "acodec": (audio_def or {}).get("codec_name") or "",
+        # Average rate (r_frame_rate is a timebase guess for VFR clips); 0 = unknown, so not re-probed again.
+        "fps": round(frame_rate((video or {}).get("avg_frame_rate"))
+                     or frame_rate((video or {}).get("r_frame_rate")), 3),
+        "dyn": dynamic_range(video),
         "width": (video or {}).get("width"),
         "height": (video or {}).get("height"),
         "channels": (audio_def or {}).get("channels"),
@@ -277,6 +310,7 @@ def build_record(root, base, full, st, kind):
     rec.update(root=root, relpath=rel, folder=os.path.dirname(rel), kind=kind,
                size=st.st_size, mtime=st.st_mtime, lossless=0, has_art=0, added=time.time())
     if kind == "audio":
+        rec.update(fps=0, dyn="")  # no frame rate: never re-probed for it
         info = read_audio(full) or {}
         rec.update({k: v for k, v in info.items() if v is not None})
         art = embedded_art(full) is not None or folder_art(os.path.dirname(full)) is not None
@@ -363,8 +397,11 @@ def carry_over_ids(con, gone, new_keys):
     for old_id, new in pairs.items():
         if claims[new["id"]] != 1:
             continue
+        before = con.execute("SELECT added FROM items WHERE id = ?", (old_id,)).fetchone()
         con.execute("DELETE FROM items WHERE id = ?", (old_id,))
-        con.execute("UPDATE items SET id = ? WHERE id = ?", (old_id, new["id"]))
+        # keeps its "added" time too: a renamed file is not new (server auto-playlist "Recently added")
+        con.execute("UPDATE items SET id = ?, added = COALESCE(?, added) WHERE id = ?",
+                    (old_id, before["added"] if before else None, new["id"]))
         log.info("renamed: id %s now %s/%s", old_id, new["root"], new["relpath"])
         carried.add(old_id)
     return carried
@@ -374,7 +411,7 @@ def scan(db_path, roots, force=False):
     started = time.time()
     con = connect(db_path)
     existing = {(r["root"], r["relpath"]): r for r in con.execute(
-        "SELECT id, root, relpath, folder, kind, size, mtime, duration, subs, acodec FROM items")}
+        "SELECT id, root, relpath, folder, kind, size, mtime, duration, subs, acodec, fps, dyn FROM items")}
     seen, added, updated, failed = set(), 0, 0, 0
     new_keys = []
     found = {root: 0 for root in roots}
@@ -404,8 +441,9 @@ def scan(db_path, roots, force=False):
                     continue
                 old = existing.get(key)
                 unchanged = old is not None and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1
-                # one-time re-probe of unchanged videos scanned before "subs" / "acodec" existed
-                backfill = unchanged and kind == "video" and (old["subs"] is None or old["acodec"] is None)
+                # one-time re-probe of unchanged videos scanned before "subs" / "acodec" / "fps" existed
+                backfill = unchanged and kind == "video" and (
+                    old["subs"] is None or old["acodec"] is None or old["fps"] is None or old["dyn"] is None)
                 if not force and unchanged and not backfill:
                     continue
                 try:
