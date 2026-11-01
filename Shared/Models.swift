@@ -199,6 +199,28 @@ struct SessionState: Codable {
     let version: String?
     /// "Prefer videos" for this queue (server 0.16.3+; nil = older server).
     var preferVideos: Bool? = nil
+    /// The atv-audio sink of the Apple TV's session (nil for the iPhone's, older servers and no-server mode).
+    var sink: SinkState? = nil
+}
+
+/// state.sink: the optional atv-audio program that plays the TV's sound. All optional: a decode failure would drop
+/// the whole state message.
+struct SinkState: Codable, Equatable {
+    var connected: Bool? = nil
+    var name: String? = nil
+    var output: SinkOutput? = nil
+
+    var isConnected: Bool { connected == true }
+    /// Connected and its output device present and usable.
+    var isUsable: Bool { isConnected && output?.ready == true }
+}
+
+/// The sink's output device: kind "bluetooth" | "usb" | "other", codec nil when unknown (USB dongles).
+struct SinkOutput: Codable, Equatable {
+    var kind: String? = nil
+    var name: String? = nil
+    var codec: String? = nil
+    var ready: Bool? = nil
 }
 
 /// Every server push uses this one shape; unused fields are nil.
@@ -211,6 +233,10 @@ struct ServerMessage: Decodable {
     let present: Bool?
     let action: String?
     let state: SessionState?
+    /// pong: ping number and server time (monotonic seconds); sink_ready: the item id the sink has ready.
+    let n: Int?
+    let t: Double?
+    let id: Int?
 }
 
 struct ItemList: Decodable {

@@ -145,6 +145,31 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertFalse(onRoot, "the page should stay open")
     }
 
+    /// Sound page: ▼ reaches "Sound output", its choice list starts on "Apple TV" (the demo server has no sink, so
+    /// atv-audio is not offered), Back returns to the Sound page and then to the Settings root. Never picks anything.
+    func test7SoundOutputChoice() {
+        launch("sound")
+        report("7a sound page")
+        XCTAssertFalse(onRoot, "the Sound page should be open")
+        for _ in 0..<8 where !focused.contains("Sound output") {
+            press(.down, wait: 1)
+        }
+        report("7b sound output row")
+        XCTAssertTrue(focused.contains("Sound output"), "▼ should reach Sound output, has '\(focused)'")
+        XCTAssertTrue(app.staticTexts["atv-audio: not connected"].exists, "the status line should say not connected")
+        press(.select)
+        report("7c sound output choices")
+        XCTAssertTrue(focused.contains("Apple TV"), "the choice list should start on Apple TV, has '\(focused)'")
+        press(.menu)
+        report("7d back to sound page")
+        XCTAssertFalse(onRoot, "Back should return one page, to Sound")
+        XCTAssertTrue(app.staticTexts["atv-audio: not connected"].exists, "the Sound page should be shown again")
+        press(.menu)
+        report("7e back to settings root")
+        XCTAssertTrue(onRoot)
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     /// On a page, Back with the focus on the Now Playing card closes the page (not Settings, not the app).
     func test4BackFromCardOnPage() {
         launch("sound")

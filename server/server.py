@@ -3,6 +3,7 @@
 
 - Library: scans the read-only roots (scanner.py) into SQLite, served as JSON.
 - Streaming: /media/<id> serves the original file with HTTP Range (VLC on the Apple TV plays it as is).
+- atv-audio (optional): a sink process (role=sink) plays the TV's sound elsewhere, from /media/<id>?audio=main.
 - Artwork: /art/<id> embedded/folder cover for audio, a frame grab for video (cached).
 - Queue + remote control: one queue per player kind (Apple TV app = "tv", iPhone app = "phone"), so the
   devices play independently. Player apps connect as role=player&kind=<kind>; the web UI at / is a
@@ -17,6 +18,7 @@ import mimetypes
 import os
 import random
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -42,7 +44,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.4"
+VERSION = "0.16.5"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -57,6 +59,10 @@ LAST_SCAN: dict = {}
 SCANNING = False
 PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone")
 REMOTES: dict = {}  # ws -> session kind the web remote controls
+SINKS: dict = {}  # session kind -> the atv-audio sink's ws (only "tv"; a new sink replaces the old one)
+SINK_INFO: dict = {}  # session kind -> {"name", "output"} as last reported by its sink
+RELAY_TYPES = ("route", "sound", "lip_sync", "clock")  # TV -> sink, replayed in this order on sink connect
+SINK_RELAY: dict = {}  # session kind -> {type: last message of that type from its TV}
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
@@ -75,6 +81,7 @@ def summary(it, keys=SUMMARY_KEYS):
     d["art"] = bool(it.get("has_art"))
     d["videos"] = (video_count(it["id"]) or None) if it["kind"] == "audio" else None  # linked music videos
     d["loved"] = is_loved(it["id"])
+    d["audio_copy"] = it["id"] in AUDIO_COPIES  # web remote badge: the sink's main-track copy exists
     return d
 
 
@@ -268,6 +275,12 @@ class Session:
         return [ws for ws, kind in PLAYERS.items() if kind == self.kind]
 
     @property
+    def listeners(self):
+        """Players plus the session's sink: everything that follows load/control/state."""
+        sink = SINKS.get(self.kind)
+        return self.players + ([sink] if sink is not None else [])
+
+    @property
     def current_id(self):
         return self.queue[self.index] if 0 <= self.index < len(self.queue) else None
 
@@ -287,6 +300,7 @@ class Session:
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
+            "sink": sink_state(self.kind) if self.kind == "tv" else None,
         }
 
     def save(self):
@@ -705,7 +719,7 @@ async def playlists_changed(pl_id=None):
             s.save()
             await broadcast_state(s)
     msg = {"type": "playlists", "id": pl_id}
-    for ws in list(PLAYERS) + list(REMOTES):
+    for ws in list(PLAYERS) + list(SINKS.values()) + list(REMOTES):
         await send(ws, msg)
 
 
@@ -713,7 +727,7 @@ async def loved_changed():
     """A heart changed: every queue's state (current / upcoming carry "loved"), and {"type": "auto"} to every client
     so open auto-playlist screens reload."""
     await broadcast_all()
-    for ws in list(PLAYERS) + list(REMOTES):
+    for ws in list(PLAYERS) + list(SINKS.values()) + list(REMOTES):
         await send(ws, {"type": "auto"})
 
 
@@ -727,8 +741,9 @@ async def send(ws, msg):
 async def broadcast_state(s):
     """State of session s to its players and to the remotes watching it."""
     msg = {"type": "state", "state": s.to_dict()}
-    for ws in s.players + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
+    for ws in s.listeners + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
         await send(ws, msg)
+    prefetch_copies(s)
     # Remotes watching ANOTHER queue only get who is connected/playing, so a web page in "Auto" mode
     # can follow whichever app starts playing.
     other = {"type": "sessions", "sessions": sessions_summary()}
@@ -752,8 +767,227 @@ def load_message(s, autoplay, position=0.0, present=False):
 
 
 async def to_players(s, msg):
-    for ws in s.players:
+    for ws in s.listeners:
         await send(ws, msg)
+
+
+# ---------------------------------------------------------------- atv-audio sink
+# A separate process (server/sink/atv_audio.py) plays the TV's sound on another output. It connects as role=sink to
+# session "tv", follows the same load/control/state as the players, gets the TV's route/sound/lip_sync/clock messages
+# relayed and reports its output; it never counts as a player.
+
+def sink_state(kind):
+    if SINKS.get(kind) is None:
+        return {"connected": False, "name": None, "output": None}
+    info = SINK_INFO.get(kind) or {}
+    return {"connected": True, "name": info.get("name"), "output": info.get("output")}
+
+
+def clean_output(out):
+    if not isinstance(out, dict):
+        return None
+    kind = out.get("kind") if out.get("kind") in ("bluetooth", "usb", "other") else "other"
+    codec = out.get("codec")
+    return {"kind": kind, "name": str(out.get("name") or "")[:120],
+            "codec": str(codec)[:40] if codec else None, "ready": bool(out.get("ready"))}
+
+
+def pong(data):
+    return {"type": "pong", "n": data.get("n"), "t": time.monotonic()}
+
+
+async def sink_connected(s, ws):
+    old = SINKS.get(s.kind)
+    SINKS[s.kind] = ws
+    SINK_INFO.pop(s.kind, None)
+    if old is not None:
+        log.info("sink (%s) replaced by a new connection", s.kind)
+        asyncio.create_task(old.close(message=b"replaced"))
+    await send(ws, {"type": "state", "state": s.to_dict()})
+    if s.current and file_exists(s.current):
+        await send(ws, load_message(s, s.want_play, s.position))
+    for kind in RELAY_TYPES:
+        last = SINK_RELAY.get(s.kind, {}).get(kind)
+        if last is not None:
+            await send(ws, last)
+    PREFETCHED.pop(s.kind, None)  # queue copies for what plays now
+    await broadcast_state(s)
+
+
+async def sink_message(s, ws, data):
+    kind = data.get("type")
+    if SINKS.get(s.kind) is not ws and kind != "ping":  # a replaced sink's late messages
+        return
+    if kind == "ping":
+        await send(ws, pong(data))
+    elif kind == "sink":
+        SINK_INFO[s.kind] = {"name": str(data.get("name") or "")[:120] or None, "output": clean_output(data.get("output"))}
+        out = SINK_INFO[s.kind]["output"]
+        log.info("sink[%s]: %s, output %s", s.kind, SINK_INFO[s.kind]["name"],
+                 f"{out['kind']} '{out['name']}' {out['codec'] or 'codec unknown'} ready={out['ready']}" if out else "none")
+        await broadcast_state(s)
+    elif kind == "ready":
+        await asyncio.gather(*(send(p, {"type": "sink_ready", "id": data.get("item")}) for p in s.players))
+    elif kind == "log":
+        log.info("sink[%s]: %s", s.kind, str(data.get("message"))[:1500])
+
+
+async def relay_to_sink(s, data):
+    """TV player -> sink: remembered for the next sink connect, forwarded unchanged."""
+    SINK_RELAY.setdefault(s.kind, {})[data["type"]] = data
+    sink = SINKS.get(s.kind)
+    if sink is not None:
+        await send(sink, data)
+
+
+# ---------------------------------------------------------------- main audio track copies (for the sink)
+# CACHE/audio/<id>.main.mka = the video's default audio track only (stream copy), so the sink does not read the
+# picture over the LAN. One ffmpeg at a time (low priority) for all of it: the next items of the TV queue while a
+# sink is connected, missing copies on request, and the web remote's "Extract missing audio" job.
+
+AUDIO_COPIES: set = set()  # ids of videos with a fresh main copy (the summary's audio_copy)
+COPY_QUEUE: list = []  # ids waiting for the worker, first = next
+COPY_FAILED: dict = {}  # id -> item mtime the copy failed for (not retried automatically)
+COPY_WAKE = asyncio.Event()
+COPY_WORKER = None
+COPY_JOB = {"running": False, "done": 0, "total": 0, "ids": set()}
+COPY_PUSH = {"at": 0.0, "pending": False}
+PREFETCHED: dict = {}  # session kind -> the queue slice copies were last queued for
+PREFETCH = 4  # current item + the next 3
+
+
+def main_copy_path(item_id):
+    return AUDIO_DIR / f"{item_id}.main.mka"
+
+
+def main_copy_fresh(it):
+    try:
+        return main_copy_path(it["id"]).stat().st_mtime >= it["mtime"]
+    except OSError:
+        return False
+
+
+def wants_copy(it):
+    return it is not None and it["kind"] == "video" and it.get("acodec") != ""  # "" = no audio track
+
+
+def load_audio_copies():
+    """AUDIO_COPIES from the files in CACHE/audio (startup and after every scan)."""
+    AUDIO_COPIES.clear()
+    for f in AUDIO_DIR.glob("*.main.mka"):
+        try:
+            it = LIB.get(int(f.name.split(".", 1)[0]))
+        except ValueError:
+            continue
+        if wants_copy(it) and main_copy_fresh(it):
+            AUDIO_COPIES.add(it["id"])
+
+
+def make_main_copy(it, out):
+    """Stream copy of the default audio track (audio_ord; None = the only / first track) into a .mka."""
+    tmp = out.with_name(f"{out.stem}.{os.getpid()}.{time.monotonic_ns()}.tmp.mka")
+    low = ["nice", "-n", "10"] + (["ionice", "-c3"] if shutil.which("ionice") else [])
+    try:
+        res = subprocess.run(
+            low + ["ffmpeg", "-v", "error", "-y", "-i", item_path(it), "-map", f"0:a:{it.get('audio_ord') or 0}",
+                   "-c", "copy", "-f", "matroska", str(tmp)],
+            capture_output=True, timeout=900,
+        )
+    except BaseException:  # timeout, no nice/ffmpeg: no partial file left behind
+        tmp.unlink(missing_ok=True)
+        raise
+    if res.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        log.warning("main audio copy of %s failed: %s", it["id"], res.stderr.decode("utf-8", "replace")[-200:])
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(out)
+    return True
+
+
+def copy_candidates():
+    return [it for it in LIB.values() if not it["hidden"] and wants_copy(it)]
+
+
+def copies_status():
+    videos = copy_candidates()
+    copies = sum(1 for it in videos if it["id"] in AUDIO_COPIES)
+    return {"running": COPY_JOB["running"], "done": COPY_JOB["done"], "total": COPY_JOB["total"],
+            "missing": len(videos) - copies, "copies": copies}
+
+
+async def push_copies(force=False):
+    """Progress to the web remotes, at most ~2 per second (the last state always goes out)."""
+    wait = COPY_PUSH["at"] + 0.5 - time.monotonic()
+    if wait > 0 and not force:
+        if not COPY_PUSH["pending"]:
+            COPY_PUSH["pending"] = True
+            asyncio.get_running_loop().call_later(wait, lambda: asyncio.create_task(push_copies(force=True)))
+        return
+    COPY_PUSH["at"], COPY_PUSH["pending"] = time.monotonic(), False
+    msg = dict(type="audio_copies", **copies_status())
+    for ws in list(REMOTES):
+        await send(ws, msg)
+
+
+def queue_copies(ids, front=False):
+    """Queue main copies (missing / stale ones only). front: before everything else, in the given order."""
+    ids = [i for i in ids if wants_copy(LIB.get(i)) and i not in AUDIO_COPIES and COPY_FAILED.get(i) != LIB[i]["mtime"]]
+    if not ids:
+        return
+    if front:
+        COPY_QUEUE[:] = ids + [i for i in COPY_QUEUE if i not in ids]
+    else:
+        COPY_QUEUE.extend(i for i in ids if i not in COPY_QUEUE)
+    global COPY_WORKER
+    if COPY_WORKER is None or COPY_WORKER.done():
+        COPY_WORKER = asyncio.create_task(copy_worker())
+    COPY_WAKE.set()
+
+
+def job_step(item_id):
+    if COPY_JOB["running"] and item_id in COPY_JOB["ids"]:
+        COPY_JOB["ids"].discard(item_id)
+        COPY_JOB["done"] += 1
+        if not COPY_JOB["ids"]:
+            COPY_JOB["running"] = False
+            log.info("audio copies: job done, %d items", COPY_JOB["total"])
+
+
+async def copy_worker():
+    loop = asyncio.get_running_loop()
+    while True:
+        if not COPY_QUEUE:
+            COPY_WAKE.clear()
+            await COPY_WAKE.wait()
+            continue
+        item_id = COPY_QUEUE.pop(0)
+        it = LIB.get(item_id)
+        if wants_copy(it) and not main_copy_fresh(it) and os.path.isfile(item_path(it)):
+            started = time.time()
+            try:
+                ok = await loop.run_in_executor(None, make_main_copy, it, main_copy_path(item_id))
+            except Exception as e:  # noqa: BLE001 - the worker must keep running (and the job must end)
+                log.warning("main audio copy of %s: %s", item_id, e)
+                ok = False
+            if ok:
+                log.info("main audio copy %s in %.1f s ('%s')", item_id, time.time() - started, it["title"])
+            else:
+                COPY_FAILED[item_id] = it["mtime"]
+        if it is not None and main_copy_fresh(it):
+            AUDIO_COPIES.add(item_id)
+        job_step(item_id)
+        await push_copies(force=not COPY_JOB["running"])
+
+
+def prefetch_copies(s):
+    """While a sink is connected to the session: copies for the current item and the next 3 (queue order)."""
+    if SINKS.get(s.kind) is None or s.index < 0:
+        return
+    ahead = tuple(s.queue[s.index:s.index + PREFETCH])
+    if PREFETCHED.get(s.kind) == ahead:
+        return
+    PREFETCHED[s.kind] = ahead
+    queue_copies(list(ahead), front=True)
 
 
 def file_exists(it):
@@ -1108,10 +1342,14 @@ async def handle_cmd(s, msg):
         asyncio.create_task(run_scan())
 
 
-async def on_message(s, data, role):
+async def on_message(s, data, role, ws=None):
     kind = data.get("type")
     if kind == "cmd":
         await handle_cmd(s, data)
+    elif kind == "ping" and ws is not None:
+        await send(ws, pong(data))
+    elif role == "player" and kind in RELAY_TYPES and s.kind == "tv":
+        await relay_to_sink(s, data)
     elif role == "player" and kind == "status":
         if data.get("item") != s.current_id:
             return
@@ -1155,10 +1393,12 @@ async def api_no_store(request, handler):
 
 async def ws_handler(request):
     q = request.query
-    role = "player" if q.get("role") == "player" else "remote"
+    role = q.get("role") if q.get("role") in ("player", "sink") else "remote"
     ws = web.WebSocketResponse(heartbeat=45)
     await ws.prepare(request)
-    if role == "player":
+    if role == "sink":
+        kind = "tv"  # only the TV session has a sink
+    elif role == "player":
         kind = q.get("kind") if q.get("kind") in KINDS else "tv"  # apps before 0.11 send no kind: the TV
         PLAYERS[ws] = kind
     else:
@@ -1166,7 +1406,10 @@ async def ws_handler(request):
         REMOTES[ws] = kind
     s = SESSIONS[kind]
     log.info("%s (%s) connected from %s", role, kind, request.remote)
-    await send(ws, {"type": "state", "state": s.to_dict()})
+    if role == "sink":
+        await sink_connected(s, ws)
+    else:
+        await send(ws, {"type": "state", "state": s.to_dict()})
     if role == "player":
         if s.current and await ensure_current_file(s):
             await send(ws, load_message(s, s.want_play, s.position))
@@ -1184,15 +1427,26 @@ async def ws_handler(request):
                 REMOTES[ws] = s.kind
                 await send(ws, {"type": "state", "state": s.to_dict()})
                 continue
-            await on_message(s, data, role)
+            if role == "sink":
+                await sink_message(s, ws, data)
+                continue
+            await on_message(s, data, role, ws)
     finally:
         log.info("%s (%s) disconnected", role, s.kind)
-        if role == "player":
+        if role == "sink":
+            if SINKS.get(s.kind) is ws:  # not when a newer sink replaced this one
+                SINKS.pop(s.kind, None)
+                SINK_INFO.pop(s.kind, None)
+                PREFETCHED.pop(s.kind, None)
+                await broadcast_state(s)
+        elif role == "player":
             PLAYERS.pop(ws, None)
             if not s.players:
                 s.playing = False
                 s.want_play = False
                 s.save()
+                if s.kind == "tv":  # the TV plays its own sound again: silence the sink now, and on its next connect
+                    await relay_to_sink(s, {"type": "route", "sink": False})
             await broadcast_all()
         else:
             REMOTES.pop(ws, None)
@@ -1541,6 +1795,24 @@ async def media(request):
         log.warning("media %s: file missing (%s), rescanning", it["id"], it["relpath"])
         asyncio.create_task(run_scan())
         raise web.HTTPNotFound()
+    if request.query.get("audio") == "main":  # the sink: only the track the TV plays
+        variant = request.query.get("v")
+        if it["kind"] == "video" and variant not in ("copy", "orig"):
+            # Redirect to a fixed variant, so an open stream's later Range requests never switch files when the
+            # copy appears. Cacheable: ffmpeg re-requests the first URL on every seek unless the redirect is cached.
+            variant = "copy" if main_copy_fresh(it) else "orig"
+            if variant == "orig":  # no waiting: the original now (the sink picks the track), the copy later
+                queue_copies([it["id"]], front=True)
+            raise web.HTTPFound(f"/media/{it['id']}?audio=main&v={variant}",
+                                headers={"Cache-Control": "private, max-age=86400",
+                                         "X-Audio-Copy": "main" if variant == "copy" else "original"})
+        if it["kind"] == "video" and variant == "copy":
+            if not main_copy_path(it["id"]).is_file():
+                raise web.HTTPNotFound()
+            return web.FileResponse(main_copy_path(it["id"]), chunk_size=512 * 1024,
+                                    headers={"Content-Type": "audio/x-matroska", "X-Audio-Copy": "main"})
+        ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return web.FileResponse(path, chunk_size=512 * 1024, headers={"Content-Type": ctype, "X-Audio-Copy": "original"})
     if request.query.get("audio") == "1" and it["kind"] == "video":
         out = AUDIO_DIR / f"{it['id']}.mka"
         fresh = lambda: out.exists() and out.stat().st_mtime >= it["mtime"]  # noqa: E731
@@ -1706,6 +1978,21 @@ async def api_lyrics_status(request):
     return web.json_response(counts)
 
 
+async def api_audio_copies(request):
+    """GET: progress. POST: build every missing main audio copy in the background (409 while that job runs)."""
+    if request.method == "POST":
+        if COPY_JOB["running"]:
+            return web.json_response({"running": True}, status=409)
+        ids = [it["id"] for it in copy_candidates() if it["id"] not in AUDIO_COPIES]
+        for i in ids:
+            COPY_FAILED.pop(i, None)  # the button retries failed ones
+        COPY_JOB.update(running=bool(ids), done=0, total=len(ids), ids=set(ids))
+        log.info("audio copies: job started, %d missing", len(ids))
+        queue_copies(ids)
+        await push_copies(force=True)
+    return web.json_response(copies_status())
+
+
 async def api_loudness(request):
     counts = await asyncio.get_running_loop().run_in_executor(None, loudness.counts, DB)
     counts["running"] = LOUDNESS_TASK is not None and not LOUDNESS_TASK.done()
@@ -1728,6 +2015,7 @@ async def run_scan(force=False, wait=False):
                 for stale in (*(CACHE / "art").glob(f"{item_id}.*"), *AUDIO_DIR.glob(f"{item_id}.*")):
                     stale.unlink(missing_ok=True)
             load_library()
+            load_audio_copies()  # stale / removed copies drop out of the badge set
             for s in SESSIONS.values():
                 s.prune()
                 s.save()
@@ -1790,7 +2078,10 @@ async def on_startup(app):
     DATA.mkdir(parents=True, exist_ok=True)
     (CACHE / "art").mkdir(parents=True, exist_ok=True)
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    for f in AUDIO_DIR.glob("*.tmp.mka"):  # partial copies of a server that was stopped mid-copy
+        f.unlink(missing_ok=True)
     load_library()
+    load_audio_copies()
     for s in SESSIONS.values():
         s.load()
     load_playlists()
@@ -1822,6 +2113,8 @@ def make_app():
     app.router.add_delete("/api/playlists/{id:\\d+}", api_playlist_delete)
     app.router.add_post("/api/rescan", api_rescan)
     app.router.add_get("/api/loudness", api_loudness)
+    app.router.add_get("/api/audio_copies", api_audio_copies)
+    app.router.add_post("/api/audio_copies", api_audio_copies)
     app.router.add_get("/api/lyrics", api_lyrics_status)
     app.router.add_get("/api/lyrics/{id:\\d+}", api_lyrics)
     app.router.add_get("/api/keyframes/{id:\\d+}", api_keyframes)

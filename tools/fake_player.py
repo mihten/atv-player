@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Fake player app for testing the web remote against a THROWAWAY server (no real playback).
 
-    ATV_URL=http://127.0.0.1:18097 python3 tools/fake_player.py [tv|phone]
+    ATV_URL=http://127.0.0.1:18097 python3 tools/fake_player.py [tv|phone|sink]
 
 Connects like the Apple TV / iPhone app (role=player&kind=...), follows load/control messages and
 reports status once a second, so the web remote shows a playing item with a moving progress bar.
+"sink" acts as a fake atv-audio sink instead (role=sink&session=tv): reports a ready Bluetooth output,
+answers every load with "ready", pings for the clock offset and prints each message it gets (one JSON
+line, state messages shortened to their "sink" part).
 Never point this at a real server while a real app is connected: it would take part in that queue.
 """
 import asyncio
+import json
 import os
 import sys
 import time
@@ -16,6 +20,36 @@ import aiohttp
 
 URL = os.environ.get("ATV_URL", "http://127.0.0.1:8080")
 KIND = sys.argv[1] if len(sys.argv) > 1 else "tv"
+
+
+async def sink():
+    output = {"kind": "bluetooth", "name": "Fake headphones", "codec": "aptx_hd", "ready": True}
+    async with aiohttp.ClientSession() as http:
+        async with http.ws_connect(f"{URL}/ws?role=sink&session=tv") as ws:
+            await ws.send_json({"type": "sink", "name": "fake-sink", "output": output})
+            sent = {}
+
+            async def pinger():
+                n = 0
+                while True:
+                    n += 1
+                    sent[n] = time.monotonic()
+                    await ws.send_json({"type": "ping", "n": n})
+                    await asyncio.sleep(2 if n < 8 else 15)
+
+            task = asyncio.create_task(pinger())
+            async for raw in ws:
+                m = raw.json()
+                if m.get("type") == "state":
+                    m = {"type": "state", "sink": (m.get("state") or {}).get("sink")}
+                elif m.get("type") == "pong" and m.get("n") in sent:
+                    t0, t1 = sent.pop(m["n"]), time.monotonic()
+                    m["offset"], m["rtt"] = round(m["t"] - (t0 + t1) / 2, 4), round(t1 - t0, 4)
+                elif m.get("type") == "load" and m.get("item"):
+                    await ws.send_json({"type": "ready", "item": m["item"]["id"]})
+                    m = dict(m, item={"id": m["item"]["id"], "title": m["item"].get("title")})
+                print(json.dumps(m), flush=True)
+            task.cancel()
 
 
 async def main():
@@ -62,4 +96,4 @@ async def main():
             task.cancel()
 
 
-asyncio.run(main())
+asyncio.run(sink() if KIND == "sink" else main())

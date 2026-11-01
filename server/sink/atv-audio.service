@@ -1,0 +1,26 @@
+# atv-audio sink: plays the Apple TV's sound on this machine (see atv_audio.py).
+#
+# PipeWire / PulseAudio run per user, so this is a USER unit for the account that owns the audio session:
+#   sudo install -D atv_audio.py /opt/atv-audio/atv_audio.py   (the only step as root)
+#   install -D atv-audio.service ~/.config/systemd/user/atv-audio.service
+#   install -D env.example ~/.config/atv-audio/env   (then edit it)
+#   loginctl enable-linger $USER          (start at boot without a login)
+#   systemctl --user enable --now atv-audio
+# With ATV_AUDIO_OUTPUT=alsa:<device> it can run as a system unit instead: copy it to /etc/systemd/system,
+# add User=<account> and SupplementaryGroups=audio under [Service], and WantedBy=multi-user.target.
+
+[Unit]
+Description=atv-audio: Apple TV sound on this machine (ATV Player sink)
+After=network-online.target pipewire.service pipewire-pulse.service wireplumber.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/atv-audio/atv_audio.py
+EnvironmentFile=-/etc/atv-audio/env
+EnvironmentFile=-%h/.config/atv-audio/env
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

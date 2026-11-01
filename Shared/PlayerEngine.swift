@@ -99,6 +99,31 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var seekAfterStart: Double?
     /// Apple TV: the item waits for the TV to switch its frame rate before VLC starts (see DisplayMatch).
     private var awaitingDisplay = false
+    /// atv-audio (Apple TV only, always false on the iPhone): the sink plays this item's sound and VLC is muted.
+    private var sinkActive = false
+    /// A server load waits for the sink's `ready` (max 3 s) before VLC starts.
+    private var sinkWaiting = false
+    #if os(tvOS)
+    /// Short message over the player and the menus (atv-audio fallbacks), cleared after 4 s.
+    @Published private(set) var notice: String?
+    private var noticeTask: Task<Void, Never>?
+    private var sinkWaitTask: Task<Void, Never>?
+    private var sinkWaitStart: Double = 0
+    /// The TV's mode switch finished while waiting for the sink: VLC starts on `ready` or at the timeout.
+    private var sinkStartPending = false
+    /// Last item the sink reported ready, and whether it already had the current item when its load came in.
+    private var sinkReadyItem: Int?
+    private var sinkHadItem = false
+    private var vlcMuted = false
+    private var sinkTimer: Timer?
+    private var positionFit = PositionFit()
+    /// Last VLC time that changed, and when (ServerClock.now()); a seek waits for two samples before "playing".
+    private var lastSampleTime: Double = -1
+    private var lastSampleAt: Double = 0
+    private var sinkSeekPending = false
+    private var sentClockState = ""
+    private var sentSound = ""
+    #endif
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -113,6 +138,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// the chain to "equalizer"), then the fixed chain equalizer → limiter and the limiter's share of the gain.
     /// Unprocessed = no equalizer, no chain.
     private func configureAudio() {
+        defer { sinkSound() }
         levelGain = SoundSettings.levelGain(for: current)
         appliedGain = nil
         appliedBands = []
@@ -156,6 +182,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// values on the running player, no rebuild and no `vlc.equalizer = …` (that would restart the filters).
     /// `item`: the track the loudness gain is for. One log line per change.
     private func applySound(for item: MediaItem?, why: String) {
+        defer { sinkSound() }
         guard appliedGain != nil, SoundSettings.processed else {
             levelGain = 0  // unprocessed player (processed ↔ unprocessed rebuilds, see applySettings)
             return
@@ -332,11 +359,15 @@ final class PlayerEngine: NSObject, ObservableObject {
         current = loaded
     }
 
+    /// `fromServer`: a load message (the atv-audio sink got the same one); the app's own reopens pass false.
     func load(_ item: MediaItem, position startAt: Double, autoplay: Bool, present: Bool = false,
-              retry: Bool = false, force: Bool = false) {
+              retry: Bool = false, force: Bool = false, fromServer: Bool = false) {
         if !autoplay, !force, current?.id == item.id, vlc.media != nil {
             return  // resume sync after a reconnect: keep whatever is playing now
         }
+        #if os(tvOS)
+        let previousID = current?.id
+        #endif
         current = item
         applySound(for: item, why: "track")
         videoHidden = false  // new media starts with its picture track on
@@ -380,6 +411,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         vlc.media = media
         log("load '\(item.title)' id \(item.id) at \(Int(startAt)) s autoplay=\(autoplay) present=\(present)\(retry ? " RETRY" : "") player \(playerTag)")
         #if os(tvOS)
+        beginSinkItem(item, previousID: previousID, autoplay: autoplay, fromServer: fromServer)
         // The TV switches its mode first (Match frame rate); the start timeout counts from the real start.
         awaitingDisplay = true
         let generation = loadGeneration
@@ -411,6 +443,10 @@ final class PlayerEngine: NSObject, ObservableObject {
             log("display: '\(item.title)' not started (paused or stopped while the TV switched)")
             return
         }
+        if sinkWaiting {
+            sinkStartPending = true  // sinkReady or the timeout starts VLC
+            return
+        }
         vlc.play()
         armStartTimeout(for: item)
     }
@@ -427,6 +463,10 @@ final class PlayerEngine: NSObject, ObservableObject {
         awaitingDisplay = false
         #if os(tvOS)
         DisplayMatch.reset("unload") { [weak self] in self?.log($0) }
+        setSinkActive(false, log: sinkActive ? "atv-audio: off (unload)" : nil)
+        sinkWaitTask?.cancel()
+        sinkWaiting = false
+        sinkStartPending = false
         #endif
         startCheck?.cancel()
         startTimeout?.cancel()
@@ -463,13 +503,13 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// a stop for the previous media when a new one is set), then treat it as a failed start.
     private func checkStartSoon() {
         // A load waiting for the TV's mode switch is stopped on purpose (VLC posts Stopped for the previous media).
-        guard wantPlaying, !startedPlaying, !awaitingDisplay, let item = current else { return }
+        guard wantPlaying, !startedPlaying, !awaitingDisplay, !sinkWaiting, let item = current else { return }
         let generation = loadGeneration
         startCheck?.cancel()
         startCheck = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard let self, !Task.isCancelled, generation == self.loadGeneration,
-                  self.wantPlaying, !self.startedPlaying, !self.awaitingDisplay else { return }
+                  self.wantPlaying, !self.startedPlaying, !self.awaitingDisplay, !self.sinkWaiting else { return }
             let state = self.vlc.state
             guard state == .stopped || state == .error || state == .ended else { return }
             self.startFailed(item, "VLC \(VLCMediaPlayerStateToString(state)) before playback started")
@@ -506,6 +546,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             vlc.stop()
             setPlaying(false)
             updateNowPlaying()
+            sinkClock(force: true)
             #if os(tvOS)
             DisplayMatch.reset("stop") { [weak self] in self?.log($0) }
             #endif
@@ -547,6 +588,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         default:
             traceSeek(to: Double(vlc.time.intValue) / 1000, label: "resume")
             vlc.play()
+            sinkRestartFit(afterSeek: false)
         }
     }
 
@@ -562,6 +604,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         } else {
             vlc.stop()
         }
+        sinkClock(force: true)
     }
 
     private func logRequest(_ action: String, _ source: String) {
@@ -607,12 +650,14 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func seek(to seconds: Double) {
         let target = max(0, seconds)
-        if reopenedForSeek || awaitingDisplay, !startedPlaying {
-            // VLC ignores a jump before its input is open (fast-seek reopen, or waiting for the TV's mode switch).
-            log("seek to \(Int(target)) s: input not open yet (\(awaitingDisplay ? "TV switching mode" : "fast-seek reopen")), jumping once it starts")
+        if reopenedForSeek || awaitingDisplay || sinkWaiting, !startedPlaying {
+            // VLC ignores a jump before its input is open (fast-seek reopen, waiting for the TV's mode switch or the
+            // atv-audio sink).
+            log("seek to \(Int(target)) s: input not open yet (\(awaitingDisplay ? "TV switching mode" : sinkWaiting ? "waiting for atv-audio" : "fast-seek reopen")), jumping once it starts")
             seekAfterStart = target
             position = target
             clock.position = target
+            sinkRestartFit(afterSeek: true)
             report()
             updateNowPlaying()
             return
@@ -638,6 +683,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         vlc.time = VLCTime(int: Int32(target * 1000))
         position = target
         clock.position = target
+        sinkRestartFit(afterSeek: true)
         report()
         updateNowPlaying()
     }
@@ -1035,6 +1081,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         vlc.stop()
         vlc = Self.makePlayer(vlcOptions)
         videoHidden = false
+        #if os(tvOS)
+        vlcMuted = false  // a new instance starts with its sound on; the next load mutes it again for atv-audio
+        #endif
         vlc.delegate = self
         vlc.drawable = videoView
         configureAudio()
@@ -1073,6 +1122,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             }
             wantPlaying = false
             setPlaying(false)
+            sinkClock(force: true)
         case .error:
             setPlaying(false)
             log("state Error, started \(startedPlaying), player \(playerTag)")
@@ -1086,6 +1136,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             // playback; while the user wants playback, those count as playing.
             if state == .playing || state == .esAdded {
                 applyTracks()
+                sinkMuteAgain()
             }
             setPlaying(state == .playing || wantPlaying)
         }
@@ -1101,6 +1152,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             startedPlaying = true
             startCheck?.cancel()
             startTimeout?.cancel()
+            sinkMuteAgain()
             // Same values once more: a set made while the filters were opening (stream start) is not seen by
             // them. Re-setting only runs their callbacks, the chain stays.
             if let plan = appliedGain {
@@ -1114,10 +1166,12 @@ final class PlayerEngine: NSObject, ObservableObject {
                 vlc.time = VLCTime(int: Int32(target * 1000))
                 position = target
                 clock.position = target
+                sinkRestartFit(afterSeek: true)
                 return
             }
         }
         position = Double(vlc.time.intValue) / 1000
+        sinkTimeSample()
         if let length = vlc.media?.length, length.intValue > 0 {
             duration = Double(length.intValue) / 1000
         }
@@ -1146,6 +1200,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         guard !endedSent, let item = current else { return }
         endedSent = true
         connection?.send(["type": "ended", "item": item.id])
+        sinkClock(force: true)
     }
 
     private func report() {
@@ -1355,6 +1410,233 @@ extension PlayerEngine {
                 self.pause(source: "headphones removed")
             }
         }
+    }
+}
+#endif
+
+// MARK: - atv-audio (Apple TV: a separate program plays the sound, see AtvAudio)
+
+extension PlayerEngine {
+    /// sound {processed, gain, freqs, bands} for the sink when it changed (`force`: on connect / sink connect).
+    private func sinkSound(force: Bool = false) {
+        #if os(tvOS)
+        let processed = SoundSettings.processed
+        let gain = processed ? SoundSettings.gainPlan(loudnessGain: levelGain).total : 0
+        let bands: [Float] = processed ? SoundSettings.curve().1 : Array(repeating: 0, count: SoundSettings.frequencies.count)
+        func r(_ value: Float) -> Double { (Double(value) * 100).rounded() / 100 }
+        let key = "\(processed)|\(r(gain))|\(bands.map(r))"
+        guard force || key != sentSound else { return }
+        sentSound = key
+        connection?.send([
+            "type": "sound", "processed": processed, "gain": r(gain),
+            "freqs": SoundSettings.frequencies.map(r), "bands": bands.map(r),
+        ])
+        #endif
+    }
+
+    /// clock {item, position, at (server time), state} for the sink: every 0.25 s while playing (sinkTimer), at once
+    /// on pause / seek / stall / end. Nothing before the first pong (no server time yet).
+    private func sinkClock(force: Bool = false) {
+        #if os(tvOS)
+        guard sinkActive, let item = current else { return }
+        let now = ServerClock.now()
+        guard let at = connection?.serverClock.serverTime(now) else { return }
+        let state: String
+        var reported = position
+        if endedSent {
+            state = "ended"
+            reported = max(position, livePosition)
+        } else if !wantPlaying {
+            state = "paused"
+            reported = sinkSeekPending ? position : livePosition  // right after a seek VLC may still show the old time
+        } else if !startedPlaying || sinkWaiting || awaitingDisplay || now - lastSampleAt > 1
+                    || positionFit.count < (sinkSeekPending ? 2 : 1) {
+            state = "stalled"  // not started, buffering, or a seek that has not played yet
+        } else {
+            state = "playing"
+            reported = positionFit.position(at: now) ?? livePosition
+        }
+        guard force || state == "playing" || state != sentClockState else { return }
+        sentClockState = state
+        connection?.send(["type": "clock", "item": item.id, "position": reported, "at": at, "state": state])
+        #endif
+    }
+
+    /// Seek / resume: the position fit starts again; after a seek "playing" waits until VLC's time has moved twice
+    /// (VLC shows the target at once, before playback really continues).
+    private func sinkRestartFit(afterSeek: Bool) {
+        #if os(tvOS)
+        positionFit.reset()
+        sinkSeekPending = afterSeek
+        if afterSeek { lastSampleTime = -1 }
+        lastSampleAt = 0
+        sinkClock(force: true)
+        #endif
+    }
+
+    /// A VLC time event: one sample for the fit when the time moved.
+    private func sinkTimeSample() {
+        #if os(tvOS)
+        guard position != lastSampleTime else { return }
+        let now = ServerClock.now()
+        lastSampleTime = position
+        lastSampleAt = now
+        positionFit.add(wall: now, time: position)
+        if positionFit.count >= 2 { sinkSeekPending = false }
+        #endif
+    }
+
+    /// A new stream may come up with its sound on: mute again while atv-audio plays it.
+    private func sinkMuteAgain() {
+        #if os(tvOS)
+        if sinkActive { setMuted(true) }
+        #endif
+    }
+}
+
+#if os(tvOS)
+extension PlayerEngine {
+    private var sinkUsable: Bool { !Config.localMode && connection?.state?.sink?.isUsable == true }
+
+    /// Item start: atv-audio is used when chosen and the sink and its output are ready. The app's own reopen of the same
+    /// item (stall, settings rebuild, resume after a long pause) keeps the current choice: the sound never moves to the
+    /// sink mid-song. A server load with autoplay waits for the sink's `ready` (max 3 s) before VLC starts.
+    fileprivate func beginSinkItem(_ item: MediaItem, previousID: Int?, autoplay: Bool, fromServer: Bool) {
+        sinkWaitTask?.cancel()
+        sinkWaiting = false
+        sinkStartPending = false
+        positionFit.reset()
+        lastSampleTime = -1
+        lastSampleAt = 0
+        sinkSeekPending = false
+        sentClockState = ""
+        let reopen = !fromServer && previousID == item.id
+        let use = AtvAudio.selected && sinkUsable && (!reopen || sinkActive)
+        if use != sinkActive {
+            let why = use ? "start of '\(item.title)'" : AtvAudio.selected ? "not ready at '\(item.title)'" : "Settings: Apple TV"
+            setSinkActive(use, log: "atv-audio: \(use ? "on" : "off") (\(why)), VLC \(use ? "muted" : "sound on"); \(AtvAudio.statusText(connection?.state?.sink))")
+        }
+        if use { setMuted(true) }  // new media: once more
+        if fromServer {
+            sinkHadItem = sinkReadyItem == item.id
+            sinkReadyItem = nil
+        }
+        guard use, fromServer, autoplay else { return }
+        sinkWaiting = true
+        sinkWaitStart = ServerClock.now()
+        let generation = loadGeneration
+        sinkWaitTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, !Task.isCancelled, generation == self.loadGeneration, self.sinkWaiting else { return }
+            if self.sinkHadItem {  // e.g. the TV reconnected: the sink got no new load, it has the item open
+                self.log("atv-audio: no ready within 3 s, the sink already has '\(item.title)' open -> starting")
+                self.endSinkWait()
+            } else {
+                self.sinkFallback("atv-audio: timeout, TV sound", notice: "atv-audio did not answer: sound on the Apple TV")
+            }
+        }
+    }
+
+    /// Route + mute + the 0.25 s clock timer. `log`: the one line for this switch (nil = none).
+    fileprivate func setSinkActive(_ on: Bool, log line: String?) {
+        guard on != sinkActive else { return }
+        sinkActive = on
+        setMuted(on)
+        connection?.send(["type": "route", "sink": on])
+        sinkTimer?.invalidate()
+        sinkTimer = nil
+        sentClockState = ""
+        if on {
+            let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sinkClock() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            sinkTimer = timer
+        }
+        if let line { log(line) }
+    }
+
+    /// VLC's own sound off / on. Only touched once atv-audio has muted it (with the TV's sound nothing changes).
+    fileprivate func setMuted(_ on: Bool) {
+        guard on || vlcMuted else { return }
+        let audio: VLCAudio? = vlc.audio
+        audio?.isMuted = on
+        vlcMuted = on
+    }
+
+    /// The start waited for the sink: start VLC now (if the TV's mode switch is done and playback is still wanted).
+    fileprivate func endSinkWait() {
+        guard sinkWaiting else { return }
+        sinkWaiting = false
+        sinkWaitTask?.cancel()
+        guard sinkStartPending else { return }
+        sinkStartPending = false
+        guard wantPlaying, let item = current, !awaitingDisplay else { return }
+        vlc.play()
+        armStartTimeout(for: item)
+    }
+
+    /// Back to the TV's own sound at once, at the same position.
+    private func sinkFallback(_ line: String, notice text: String = "Sound back on the Apple TV") {
+        guard sinkActive else { return }
+        setSinkActive(false, log: line)
+        showNotice(text)
+        endSinkWait()
+    }
+
+    private func showNotice(_ text: String) {
+        notice = text
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.notice = nil
+        }
+    }
+
+    /// Server: {"type": "sink_ready", "id": …}, the sink has the item open and buffered.
+    func sinkReady(_ id: Int) {
+        sinkReadyItem = id
+        guard sinkWaiting, current?.id == id else { return }
+        log("atv-audio: ready after \(Int((ServerClock.now() - sinkWaitStart) * 1000)) ms")
+        endSinkWait()
+    }
+
+    /// state.sink changed: config again when the sink (re)connects; its loss or its output's ends atv-audio at once.
+    func sinkChanged(from old: SinkState?, to new: SinkState?) {
+        if new?.isConnected == true, old?.isConnected != true { sendSinkConfig() }
+        guard sinkActive, new?.isUsable != true else { return }
+        sinkFallback(new?.isConnected == true ? "atv-audio: output gone, TV sound" : "atv-audio: disconnected, TV sound")
+    }
+
+    /// On connect and when the sink connects: route, sound, lip sync (and the clock while it plays).
+    func sendSinkConfig() {
+        connection?.send(["type": "route", "sink": sinkActive])
+        sinkSound(force: true)
+        connection?.send(["type": "lip_sync", "ms": AtvAudio.lipSyncMs])
+        sinkClock(force: true)
+    }
+
+    /// Settings → Sound output. Apple TV: VLC's sound comes back at once. atv-audio: only stored; the next item start
+    /// turns it on (the sink opens an item only while routed, so a switch mid-song would be silent until it buffered).
+    func soundOutputChanged() {
+        if !AtvAudio.selected {
+            setSinkActive(false, log: sinkActive ? "atv-audio: off (Settings: Apple TV), VLC sound on" : nil)
+            endSinkWait()
+            return
+        }
+        guard !sinkActive, let item = current else { return }
+        log("atv-audio: chosen in Settings, used from the next item ('\(item.title)' keeps the TV sound); \(AtvAudio.statusText(connection?.state?.sink))")
+    }
+
+    /// The server socket failed: the sink gets no clock (and no stream) any more.
+    func serverConnectionLost() {
+        sinkFallback("atv-audio: server connection lost, TV sound")
+    }
+
+    /// Settings → Lip sync: sent live.
+    func lipSyncChanged() {
+        connection?.send(["type": "lip_sync", "ms": AtvAudio.lipSyncMs])
     }
 }
 #endif

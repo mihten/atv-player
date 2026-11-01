@@ -30,6 +30,7 @@ struct NowPlayingView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: panel)
+        .overlay(alignment: .top) { EngineNotice() }
     }
 
     private var player: some View {
@@ -163,6 +164,29 @@ struct NowPlayingView: View {
                 withAnimation { overlay = false }
             }
         }
+    }
+}
+
+/// The engine's short notice (atv-audio: "Sound back on the Apple TV"), a capsule at the top for 4 s. Not focusable and
+/// no hit testing: the remote keeps working on whatever is underneath.
+struct EngineNotice: View {
+    @EnvironmentObject var engine: PlayerEngine
+
+    var body: some View {
+        ZStack {
+            if let text = engine.notice {
+                Text(text)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 18)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 50)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.easeOut(duration: 0.3), value: engine.notice)
+        .allowsHitTesting(false)
     }
 }
 

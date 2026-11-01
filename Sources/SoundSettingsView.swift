@@ -4,10 +4,27 @@ import TVVLCKit
 /// Settings → Sound.
 struct SoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var connection: ServerConnection
     @Environment(\.settingsNav) private var nav
     @AppStorage(SoundSettings.presetKey) private var preset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(SoundSettings.boostKey) private var boost = 0
+    @AppStorage(AtvAudio.outputKey) private var soundOutput = AtvAudio.tvOutput
+    @AppStorage(AtvAudio.lipSyncKey) private var lipSync = AtvAudio.defaultLipSync
+
+    /// atv-audio can only be chosen while a sink is connected; a stored choice stays (and is shown) without one.
+    private var outputOptions: [(label: String, value: String)] {
+        if connection.state?.sink?.isConnected == true {
+            return [("Apple TV", AtvAudio.tvOutput), ("atv-audio", AtvAudio.sinkOutput)]
+        }
+        var options: [(label: String, value: String)] = [("Apple TV", AtvAudio.tvOutput)]
+        if soundOutput == AtvAudio.sinkOutput { options.append(("atv-audio (not connected)", AtvAudio.sinkOutput)) }
+        return options
+    }
+
+    private var lipSyncChoice: Binding<Int> {
+        Binding(get: { AtvAudio.clampLipSync(lipSync) }, set: { lipSync = $0 })
+    }
 
     private var loudnessOn: Binding<Bool> {
         Binding(get: { loudness != SoundSettings.Loudness.off.rawValue },
@@ -55,9 +72,32 @@ struct SoundSettingsView: View {
                 Text(SoundSettings.loudnessNote)
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }
+            Section {
+                ChoiceRow("Sound output", selection: $soundOutput, options: outputOptions)
+                Text(AtvAudio.statusText(connection.state?.sink))
+                    .font(.system(size: 24)).foregroundStyle(.secondary)
+                if soundOutput == AtvAudio.sinkOutput {
+                    ChoiceRow("Lip sync", selection: lipSyncChoice,
+                              options: AtvAudio.lipSyncValues.map { (AtvAudio.lipSyncLabel($0), $0) })
+                }
+            } header: {
+                Text("Sound output")
+            } footer: {
+                Text(soundOutput == AtvAudio.sinkOutput
+                     ? "atv-audio plays the sound from the next song on, while it is connected; the Apple TV shows the picture. Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early."
+                     : "atv-audio: a separate box plays the sound (e.g. aptX headphones), the Apple TV shows the picture. It can be chosen while it is connected.")
+                    .font(.system(size: 22)).foregroundStyle(.secondary)
+            }
         }
         .onChange(of: "\(preset)|\(loudness)|\(boost)") {
             engine.applySettings()
+        }
+        // Sent live to the sink: no player rebuild.
+        .onChange(of: soundOutput) {
+            engine.soundOutputChanged()
+        }
+        .onChange(of: lipSync) {
+            engine.lipSyncChanged()
         }
     }
 }

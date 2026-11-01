@@ -53,6 +53,7 @@ struct ContentView: View {
         .onChange(of: engine.startCounter) {
             showPlayer = true
         }
+        .overlay(alignment: .top) { EngineNotice() }  // the player has its own (full-screen cover)
     }
 
     /// The original main menu (Classic look).

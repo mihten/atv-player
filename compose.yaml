@@ -1,0 +1,69 @@
+# ATV Player in Docker (Linux Docker hosts only: host networking for Bonjour, /dev/snd and the Pulse socket).
+#
+#   docker compose up -d                      media server only
+#   docker compose --profile audio up -d      plus the atv-audio sink (pick an output variant below first)
+#
+# Site settings live in .env next to this file (your paths: never commit it). Create it with your own values:
+#
+#   ATV_MUSIC_DIR=/path/to/music              host folders, mounted read-only as /media/music and /media/videos
+#   ATV_VIDEOS_DIR=/path/to/videos
+#   ATV_ROOTS='{"music": "/media/music", "videos": "/media/videos"}'   container paths; keys are stored in the
+#   ATV_ROOT_NAMES='{"music": "Music", "videos": "Music videos"}'       library DB, never rename them later
+#   #ATV_PORT=8080
+#   #ATV_AUDIO_UID=1000                       sink, Pulse variant: uid/gid of the host user that runs PipeWire
+#   #ATV_AUDIO_GID=1000
+#
+# Same format as server/site.example/env (single quotes keep the JSON literal).
+
+services:
+  atv-media:
+    build: .
+    image: atv-media:local
+    restart: unless-stopped
+    network_mode: host            # Bonjour (_atvmedia._tcp) needs the host's network
+    env_file: .env
+    environment:
+      ATV_PORT: ${ATV_PORT:-8080}
+    volumes:
+      - atv-data:/data
+      - atv-cache:/cache
+      - ${ATV_MUSIC_DIR:?set ATV_MUSIC_DIR in .env}:/media/music:ro
+      - ${ATV_VIDEOS_DIR:?set ATV_VIDEOS_DIR in .env}:/media/videos:ro
+
+  # Optional sink: the Apple TV keeps the video, this plays the sound (Settings > Sound > Sound output = atv-audio).
+  # It reads the sound over HTTP from atv-media (no media mounts). Uncomment ONE output variant.
+  atv-audio:
+    profiles: [audio]
+    build: server/sink
+    image: atv-audio:local
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [atv-media]
+    environment:
+      ATV_AUDIO_SERVER: http://127.0.0.1:${ATV_PORT:-8080}
+      ATV_AUDIO_NAME: atv-audio
+
+      # (a) The Docker host's PipeWire (pipewire-pulse) or PulseAudio: built-in Bluetooth paired on the host,
+      #     or a dongle the host's audio system already uses. Runs as the host user that owns the audio session
+      #     (ATV_AUDIO_UID / ATV_AUDIO_GID in .env) so its socket in XDG_RUNTIME_DIR (/run/user/<uid>) is usable.
+      # ATV_AUDIO_OUTPUT: pulse
+      # PULSE_SERVER: unix:/run/pulse/native
+
+      # (b) A USB dongle used directly through ALSA (no audio system on the host). Device name: 'aplay -L'
+      #     on the host, e.g. plughw:CARD=<card>,DEV=0.
+      # ATV_AUDIO_OUTPUT: alsa:plughw:CARD=<card>,DEV=0
+
+    # (a) Pulse socket:
+    # user: "${ATV_AUDIO_UID:-1000}:${ATV_AUDIO_GID:-1000}"
+    # volumes:
+    #   - /run/user/${ATV_AUDIO_UID:-1000}/pulse/native:/run/pulse/native
+
+    # (b) USB dongle (if the host's audio group has another gid than the image's 29, put the number here):
+    # devices:
+    #   - /dev/snd:/dev/snd
+    # group_add:
+    #   - audio
+
+volumes:
+  atv-data:
+  atv-cache:

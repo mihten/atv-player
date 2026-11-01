@@ -1,0 +1,7 @@
+# Build context of the server image (Dockerfile at the repo root): only the server code and the web remote.
+*
+!server/*.py
+!server/static
+server/test_*.py
+server/site
+server/**/__pycache__

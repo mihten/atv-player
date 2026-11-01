@@ -22,6 +22,11 @@ final class ServerConnection: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var retryDelay: Double = 1
     private var failures = 0
+    /// Server time for the atv-audio clock messages (ping / pong, Apple TV only).
+    let serverClock = ServerClock()
+    private var pingTask: Task<Void, Never>?
+    /// The socket whose first message has arrived (pings and the atv-audio config start then).
+    private var openedSocket: URLSessionWebSocketTask?
 
     func start() {
         if Config.localMode { startLocal(); return }
@@ -34,6 +39,11 @@ final class ServerConnection: ObservableObject {
         stopLocal()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        openedSocket = nil
+        pingTask?.cancel()
+        #if os(tvOS)
+        engine?.serverConnectionLost()  // the old socket's failure is ignored now (task !== socket)
+        #endif
         connected = false
         retryDelay = 1
         connect()
@@ -56,6 +66,8 @@ final class ServerConnection: ObservableObject {
     func startLocal() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        pingTask?.cancel()
+        openedSocket = nil
         retryDelay = 1
         failures = 0
         connected = true
@@ -111,6 +123,10 @@ final class ServerConnection: ObservableObject {
                         self.launchReported = true
                         self.engine?.reportLaunch()
                     }
+                    if self.openedSocket !== socket {
+                        self.openedSocket = socket
+                        self.socketOpened(socket)
+                    }
                     switch message {
                     case .string(let text):
                         self.handle(Data(text.utf8))
@@ -123,6 +139,11 @@ final class ServerConnection: ObservableObject {
                 case .failure:
                     self.connected = false
                     self.task = nil
+                    self.openedSocket = nil
+                    self.pingTask?.cancel()
+                    #if os(tvOS)
+                    self.engine?.serverConnectionLost()
+                    #endif
                     socket.cancel()
                     self.failures += 1
                     if self.failures == 3 { self.onUnreachable?() }
@@ -137,18 +158,41 @@ final class ServerConnection: ObservableObject {
         }
     }
 
+    /// First message on a new socket: Apple TV pings for the server clock (2 s for the first 8, then every 15 s) and
+    /// sends its atv-audio config (route, sound, lip sync) for the sink.
+    private func socketOpened(_ socket: URLSessionWebSocketTask) {
+        #if os(tvOS)
+        pingTask?.cancel()
+        serverClock.reset()
+        pingTask = Task { [weak self] in
+            var count = 0
+            while !Task.isCancelled {
+                guard let self, self.task === socket, !Config.localMode else { return }
+                self.send(["type": "ping", "n": self.serverClock.nextPing()])
+                count += 1
+                try? await Task.sleep(nanoseconds: count < 8 ? 2_000_000_000 : 15_000_000_000)
+            }
+        }
+        engine?.sendSinkConfig()
+        #endif
+    }
+
     private func handle(_ data: Data) {
         guard let message = try? JSONDecoder.server().decode(ServerMessage.self, from: data) else { return }
         switch message.type {
         case "state":
             if let newState = message.state {
+                let oldSink = state?.sink
                 state = newState
                 if let item = newState.current { engine?.refreshLinks(item) }
+                #if os(tvOS)
+                if oldSink != newState.sink { engine?.sinkChanged(from: oldSink, to: newState.sink) }
+                #endif
             }
         case "load":
             if let item = message.item {
                 engine?.load(item, position: message.position ?? 0, autoplay: message.autoplay ?? true,
-                             present: message.present ?? false)
+                             present: message.present ?? false, fromServer: true)
             }
         case "control":
             if let action = message.action { engine?.control(action, position: message.position) }
@@ -156,6 +200,13 @@ final class ServerConnection: ObservableObject {
             playlistsVersion += 1
         case "auto":
             autoVersion += 1
+        case "pong":
+            if let n = message.n, let t = message.t { serverClock.pong(n: n, t: t) }
+        case "sink_ready":
+            #if os(tvOS)
+            if let id = message.id { engine?.sinkReady(id) }
+            #endif
+            break
         default:
             break
         }
