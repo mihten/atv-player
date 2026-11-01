@@ -45,9 +45,10 @@ def make_library(lib):
     ff(*src, "-c:v", "libx264", str(lib / "A - Silent.mkv"))
     # HDR10-tagged 23.976 fps and HLG-tagged 50 fps (only the stream's colour tags matter to the probe)
     ff("-f", "lavfi", "-i", "testsrc=size=160x90:rate=24000/1001:duration=2", "-c:v", "libx264",
-       "-color_trc", "smpte2084", "-color_primaries", "bt2020", "-colorspace", "bt2020nc", str(lib / "A - HDR.mkv"))
+       # setparams tags the frames: ffmpeg 7.1 drops a plain output -color_trc for libx264 (stream read back as SDR)
+       "-vf", "setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc", str(lib / "A - HDR.mkv"))
     ff("-f", "lavfi", "-i", "testsrc=size=160x90:rate=50:duration=2", "-c:v", "libx264",
-       "-color_trc", "arib-std-b67", "-color_primaries", "bt2020", "-colorspace", "bt2020nc", str(lib / "A - HLG.mp4"))
+       "-vf", "setparams=color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc", str(lib / "A - HLG.mp4"))
     ff(*tone, "-metadata", "title=Song", str(lib / "song.flac"))
     ff(*tone, "-metadata", "title=Tune", str(lib / "tune.mp3"))
     ff(*tone, "-c:a", "libopus", "-metadata", "title=Oggopus", str(lib / "oggopus.ogg"))
