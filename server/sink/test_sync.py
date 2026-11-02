@@ -345,26 +345,60 @@ class SinkTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sink.loaded_id, item["id"])
         self.assertEqual(sink.mpv.sets("start")[-1], "40.000")
 
-    async def test_output_gone_silent_until_next_play(self):
+    async def test_output_back_while_playing_resumes(self):
+        # headphones off mid-song -> the TV pauses (notice) -> Play: the TV plays muted -> headphones on 15 s later:
+        # the sink resumes at the TV's position by itself (no new clock edge, no Play / seek on the TV)
         sink, clock, sent = make_sink(lip=0)
         item = await start_item(sink, clock)
         await play(sink, clock, item["id"], 0.0)
+        await sink.tick()
+        self.assertIs(sink.mpv.props["pause"], False)
         sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False})
         await sink.tick()
         self.assertIs(sink.mpv.props["pause"], True)
         self.assertIn({"type": "sink", "name": "atv-audio",
                        "output": {"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False,
                                   "volume": 100, "muted": False}}, sent)
-        clock.t += 0.5
-        await play(sink, clock, item["id"], 0.5)                   # the TV plays on without sound
+        await sink.on_control({"action": "pause"})                 # the app pauses + notice
+        clock.t += 2.0
+        await play(sink, clock, item["id"], 0.5, state="paused")
+        clock.t += 3.0
+        tv_start = clock.t
+        await run_for(sink, clock, 15.0, tv_start, item["id"], 0.5)  # Play: the TV plays muted for 15 s
+        self.assertIs(sink.mpv.props["pause"], True)
+        self.assertEqual(sink.lost_item, item["id"])
+        seeks = len(sink.mpv.seeks())
+        clock_seq = sink.clock_seq
         sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
+        self.assertIsNone(sink.lost_item)
+        self.assertTrue(any("output back while playing 7 -> resume at 15.5 s" in m.get("message", "")
+                            for m in sent if m.get("type") == "log"))
+        clock.t += A.TICK
+        await sink.tick()                                          # no clock message in between
+        self.assertEqual(sink.clock_seq, clock_seq)
+        self.assertIs(sink.mpv.props["pause"], False)
+        self.assertGreater(len(sink.mpv.seeks()), seeks)
+        self.assertAlmostEqual(sink.mpv.seeks()[-1][1], 15.6, delta=0.3)  # the clock position, not 0.5
+
+    async def test_output_back_while_paused_waits_for_play(self):
+        sink, clock, _ = make_sink(lip=0)
+        item = await start_item(sink, clock)
+        await play(sink, clock, item["id"], 0.0)
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False})
+        await sink.on_control({"action": "pause"})
         clock.t += 0.5
-        await play(sink, clock, item["id"], 1.0)
-        self.assertIs(sink.mpv.props["pause"], True)               # back, but not mid-play
+        await play(sink, clock, item["id"], 0.5, state="paused")
+        clock.t += 5.0
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
+        await sink.tick()
+        self.assertEqual(sink.lost_item, item["id"])
+        self.assertIs(sink.mpv.props["pause"], True)               # paused TV: nothing plays
+        clock.t += 1.0
+        await play(sink, clock, item["id"], 0.5, state="paused")
+        await sink.tick()
+        self.assertIs(sink.mpv.props["pause"], True)
         clock.t += 0.5
-        await play(sink, clock, item["id"], 1.5, state="paused")   # the TV paused (or seeks: "stalled")
-        clock.t += 0.5
-        await play(sink, clock, item["id"], 1.5)                   # Play: sound again
+        await play(sink, clock, item["id"], 0.5)                   # Play: sound again
         self.assertIs(sink.mpv.props["pause"], False)
 
     async def test_output_gone_next_item_plays(self):
@@ -385,19 +419,15 @@ class SinkTest(unittest.IsolatedAsyncioTestCase):
         item = await start_item(sink, clock)
         await play(sink, clock, item["id"], 0.0)
         self.assertIs(sink.mpv.props["pause"], True)
-        clock.t += A.PLAY_EDGE_KEEP
-        await play(sink, clock, item["id"], A.PLAY_EDGE_KEEP)
+        self.assertEqual(sum(1 for c in sink.mpv.calls if c[0] == "loadfile"), 0)  # not opened without an output
+        clock.t += 8.0
+        await play(sink, clock, item["id"], 8.0)
         sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
         clock.t += 0.5
-        await play(sink, clock, item["id"], 0.5)
-        self.assertIs(sink.mpv.props["pause"], True)               # came back mid-play: wait for Play / seek
-        clock.t += 0.1
-        await play(sink, clock, item["id"], 9.0, state="stalled")  # the TV seeks
-        clock.t += 0.1
-        await play(sink, clock, item["id"], 9.0)
-        self.assertEqual(sink.mpv.sets("start")[-1], "9.000")      # opened only now, at the TV's position
+        await sink.tick()                                          # came back mid-play: opened at the TV's position
+        self.assertEqual(sink.mpv.sets("start")[-1], "8.500")
         await sink.on_file_loaded()
-        await play(sink, clock, item["id"], 9.0)
+        await play(sink, clock, item["id"], 8.5)
         self.assertIs(sink.mpv.props["pause"], False)
 
     async def test_same_item_load_ready_again(self):

@@ -47,7 +47,6 @@ SEEK_WAIT = 2.0        # s at most a reopen seek waits for mpv's playback-restar
 PENDING = object()     # loadfile sent, its reply (playlist entry id) not read yet
 PING_FAST, PING_SLOW, PING_FAST_COUNT = 2.0, 15.0, 8
 VOLUME_KEEP = 2.0      # s the output poll keeps a volume just set (pactl may still report the old one)
-PLAY_EDGE_KEEP = 2 * OUTPUT_POLL + 2  # s a Play counts for an output the poll reports back only afterwards
 
 
 def log(msg):
@@ -632,8 +631,7 @@ class Sink:
         self.af_text = None          # the 'af' property as last set (af-command changes do not update it)
         self.output = None
         self.output_ok = False
-        self.lost_item = None        # output gone during this item: silent until the TV's next play / seek / load
-        self.play_edge_at = None     # when the TV's clock last went to "playing" while the output was missing
+        self.lost_item = None        # output gone during this item: silent until it is back while the TV plays
         self.volume_backend = None   # async (percent, muted) -> bool (pactl); None: mpv's own volume (ALSA output)
         self.want_volume = None
         self.volume_task = None
@@ -763,7 +761,7 @@ class Sink:
             self.item = msg.get("item")
             self.load_position = float(msg.get("position") or 0)
             self.failed_id = None
-            # output missing at the start: this item stays silent until the TV's next play / seek
+            # output missing at the start: silent until the output is back while the TV plays (or the next play)
             self.lost_item = None if self.output_ok else (self.item or {}).get("id")
             self.want_loaded = bool(self.item) and self.routed
             if self.want_loaded and self.loaded_id is not None and self.loaded_id == self.item.get("id"):
@@ -786,9 +784,7 @@ class Sink:
             if msg.get("state") == "playing" and (not prev or prev.get("state") != "playing"
                                                  or prev.get("item") != msg.get("item")):
                 if self.lost_item is not None and self.output_ok:
-                    self._sound_back()  # Play / seek on the TV after the output came back
-                elif not self.output_ok:
-                    self.play_edge_at = self.mono()  # Play / seek while the output is still reported missing
+                    self._sound_back()  # Play / seek on the TV after the output came back while it was paused
         elif t == "control":
             await self.on_control(msg)
         elif t == "lip_sync":
@@ -870,16 +866,25 @@ class Sink:
             self.log("output: none found")
         if old_ok and not self.output_ok and self.item:
             self.lost_item = self.item.get("id")
-            self.play_edge_at = None
-        elif (not old_ok and self.output_ok and self.lost_item is not None and self.play_edge_at is not None
-              and self.mono() - self.play_edge_at < PLAY_EDGE_KEEP and (self.clock or {}).get("state") == "playing"
-              and (self.clock or {}).get("item") == self.lost_item):
-            self._sound_back()  # Play pressed just before the output poll saw the headphones again
+        elif not old_ok and self.output_ok and self._tv_playing():
+            # headphones back while the TV plays (muted): resume now at the TV's position (the next tick loads /
+            # seeks to the clock), no Play or seek on the TV needed
+            c = self.clock
+            pos = self.target(self.server_now())
+            self.log(f"output back while playing {c.get('item')} -> resume at "
+                     f"{float(c.get('position') or 0) if pos is None else pos:.1f} s")
+            self._sound_back()
         self.send(self.status_message())
         return True
 
+    def _tv_playing(self):
+        """The TV's last clock says playing and is fresh (the TV is still there)."""
+        c, snow = self.clock, self.server_now()
+        return bool(c and c.get("state") == "playing" and snow is not None
+                    and snow - float(c.get("at") or 0) < STALE_CLOCK)
+
     def _sound_back(self):
-        """Output usable again and the TV just played / seeked: this item has sound again."""
+        """Output usable again and the TV plays: this item has sound again."""
         if self.failed_id == self.lost_item:
             self.failed_id = None  # mpv dropped the file when the output went: open it again
         self.lost_item = None

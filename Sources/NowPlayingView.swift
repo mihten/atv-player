@@ -2,8 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Full-screen player. Siri Remote: down = next, up = previous, left/right = jump back/forward
-/// (Settings), play/pause = toggle, click = lyrics on/off (and show the info), click-and-hold = quick panel (shuffle,
-/// repeat, lyrics / subtitle track, equalizer, fast seek), Back = close the panel / return to the menu.
+/// (Settings), play/pause = toggle, click = quick panel (♥ love, shuffle, repeat, lyrics / subtitle track, equalizer,
+/// ...), click-and-hold = lyrics on/off (and show the info), Back = close the panel / return to the menu.
 struct NowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -14,7 +14,7 @@ struct NowPlayingView: View {
     @State private var hideTask: Task<Void, Never>?
     /// Direction of the last skip: themed screens slide the next song in from that side.
     @State private var forward = true
-    /// Lyrics instead of cover / video; remembered on this device, switched with the remote's click button.
+    /// Lyrics instead of cover / video; remembered on this device, switched by holding the remote's centre button.
     @AppStorage("lyricsMode") private var lyricsMode = false
     @State private var panel = false
     /// When the current press of the centre button began (nil = not pressed).
@@ -108,12 +108,14 @@ struct NowPlayingView: View {
             flash()
         }
         // One handler for both. tvOS reports "pressing ended" at the moment the hold is recognised, BEFORE the
-        // long-press action runs and while the button is still down (server log 2026-10-28/29: "click -> lyrics"
-        // and "held -> quick panel" in the same millisecond). So a click is decided by how long the press lasted:
-        // under 0.4 s = click (lyrics), longer = hold (quick panel only).
+        // long-press action runs and while the button is still down (server log 2026-10-28/29: "click" and "held"
+        // in the same millisecond). So a click is decided by how long the press lasted: under 0.4 s = click (quick
+        // panel, opened on the release), longer = hold (lyrics, switched once when the hold is recognised).
         .onLongPressGesture(minimumDuration: 0.5) {
-            panel = true
-            remoteLog("remote: centre held -> quick panel open")
+            guard !panel else { return }
+            lyricsMode.toggle()
+            remoteLog("remote: centre held -> lyrics \(lyricsMode ? "on" : "off")")
+            flash()
         } onPressingChanged: { pressing in
             if pressing {
                 pressStart = Date()
@@ -122,9 +124,8 @@ struct NowPlayingView: View {
             guard let start = pressStart else { return }
             pressStart = nil
             guard Date().timeIntervalSince(start) < 0.4, !panel else { return }
-            lyricsMode.toggle()
-            remoteLog("remote: centre click -> lyrics \(lyricsMode ? "on" : "off")")
-            flash()
+            panel = true
+            remoteLog("remote: centre click -> quick panel open")
         }
         .onExitCommand {
             engine.acknowledgeNotice("back")  // the atv-audio notice ends with leaving the player
@@ -220,7 +221,7 @@ struct InfoBar: View {
             HStack(spacing: 30) {
                 Label(engine.isPlaying ? "Playing" : "Paused", systemImage: engine.isPlaying ? "play.fill" : "pause.fill")
                 PlayModeIcons(size: 22)
-                Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● lyrics   hold ● options")
+                Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● options   hold ● lyrics")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)

@@ -277,8 +277,8 @@ struct AboutSettingsView: View {
             Section("Siri Remote in the player") {
                 info("▼  ▲", "Next / previous")
                 info("◀  ▶", "Jump back / forward (Settings → Playback)")
-                info("Click", "Lyrics on / off")
-                info("Hold", "Shuffle, repeat, lyrics language, video version, prefer videos, ♥ love")
+                info("Click", "♥ love, volume, shuffle, repeat, lyrics language, sound, video version")
+                info("Hold", "Lyrics on / off")
                 info("⏯", "Pause / resume, also in the menus")
             }
             Section("Good to know") {

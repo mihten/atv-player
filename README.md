@@ -136,8 +136,9 @@ plugins, e.g. Debian's `libspa-0.2-bluetooth`).
 - **Lost or changed:** if, during playback, the sink disconnects, its output goes away (headphones off), the
   server connection drops, or Sound output is changed, playback **pauses** with a notice that stays until ⏯ /
   Play or Back. Play then plays normally (without sound while the headphones are still off, no second
-  notice); headphones back on = sound again from the next Play or seek.
-- **Volume** (hold the centre button in the player: the quick panel's second row, only with atv-audio):
+  notice); headphones back on while it plays = sound again by itself within a few seconds at the right place
+  (while paused: from the next Play).
+- **Volume** (click the centre button in the player: the quick panel's second row, only with atv-audio):
   ◀ ▶ −/+5 %, click = mute. It is the output's own volume (with Bluetooth through PipeWire: the headphones'
   volume, no extra digital attenuation); the web remote shows the same as a slider.
 

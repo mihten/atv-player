@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Quick panel over the player: ♥ Love, Volume (atv-audio only), shuffle, repeat, the lyrics / subtitle track,
-/// equalizer, loudness, boost, fast seek, "Prefer videos" and the version of the song. Opens on a click-and-hold of the
-/// centre button with Love focused; ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
+/// equalizer, loudness, boost, fast seek, "Prefer videos" and the version of the song. Opens on a click of the centre
+/// button with Love focused (row clicks are ignored for a moment so that click never hearts the item); ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
 /// Row kinds: toggle (click flips), ◀▶ value (◀ previous / ▶ next, stop at the ends), ◀▶ level bar (Volume, Boost),
 /// inline list (click opens a short list under the row; ▲▼ picks, click confirms, Back closes only the list).
 /// The rows are full-width buttons in one column, so ◀▶ never has a focusable neighbour and reaches onMoveCommand.
@@ -30,6 +30,8 @@ struct QuickPanel: View {
     @State private var volumeEdit: VolumeEdit?
     /// Repeat chosen here, until the queue state echoes it (two quick ▶ go All → One → Off).
     @State private var repeatEdit: (index: Int, at: Date)?
+    /// When the panel appeared: the click that opened it must not reach the Love row (see `guarded`).
+    @State private var openedAt = Date()
     let close: () -> Void
 
     enum Row: String {
@@ -97,7 +99,10 @@ struct QuickPanel: View {
         .frame(width: 760)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
         .focusSection()
-        .onAppear { focus = .love }  // one click hearts the playing item
+        .onAppear {
+            openedAt = Date()
+            focus = .love  // one click hearts the playing item
+        }
         .onExitCommand {
             if openList != nil { closeList() } else { close() }  // Back closes only an open list
         }
@@ -243,6 +248,17 @@ struct QuickPanel: View {
         }
     }
 
+    /// Runs a row's action, except within 0.5 s of opening: tvOS may deliver the select of the click that opened the
+    /// panel to the newly focused Love row.
+    private func guarded(_ id: Row, _ action: () -> Void) {
+        let age = Date().timeIntervalSince(openedAt)
+        guard age >= 0.5 else {
+            log("select on \(id.rawValue) \(Int(age * 1000)) ms after opening ignored")
+            return
+        }
+        action()
+    }
+
     private func showList(_ id: Row, current: Int) {
         openList = id
         listFocus = nil
@@ -303,7 +319,7 @@ struct QuickPanel: View {
                      bar: (Double, Bool)? = nil, steps: (Bool, Bool)? = nil, step: ((Int) -> Void)? = nil,
                      opens: Bool = false, action: @escaping () -> Void) -> some View {
         let focused = focus == id
-        return Button(action: action) {
+        return Button(action: { guarded(id, action) }) {
             HStack(spacing: 22) {
                 Image(systemName: symbol).frame(width: 44)
                 Text(title)

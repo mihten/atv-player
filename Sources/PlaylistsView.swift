@@ -175,7 +175,7 @@ struct AutoListView: View {
                         // A button that does nothing: a Text cannot take focus, and a screen without a focusable view
                         // (nothing playing: no Now Playing card) leaves Back to the system.
                         Button {} label: {
-                            Text(list.key == "loved" ? "Nothing loved yet. Hold the centre button in the player: Love."
+                            Text(list.key == "loved" ? "Nothing loved yet. Click the centre button in the player: Love."
                                  : "Nothing here yet.")
                                 .foregroundStyle(.secondary)
                         }

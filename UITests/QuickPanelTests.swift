@@ -1,6 +1,6 @@
 import XCTest
 
-/// Siri Remote checks of the player's quick panel (hold the centre button) on the tvOS simulator (CI, design workflow
+/// Siri Remote checks of the player's quick panel (click the centre button) on the tvOS simulator (CI, design workflow
 /// with ui_test=true). Needs the throwaway demo server on 127.0.0.1:8080 with something in the TV queue.
 /// Every step prints a "UITEST:" line and saves a screenshot to $UI_SHOTS. Settings changed here are clicked back.
 final class QuickPanelTests: XCTestCase {
@@ -48,7 +48,7 @@ final class QuickPanelTests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: "quickPanel.\(id).list").firstMatch
     }
 
-    /// One launch: hold centre in the player; the panel opens on Love. Row kinds (task 18): toggles (Love, Shuffle,
+    /// One launch: click centre in the player; the panel opens on Love. Row kinds (task 18): toggles (Love, Shuffle,
     /// Loudness, Fast seek, Prefer videos: a click flips, a second restores), ◀▶ values (Repeat, Lyrics / subtitles:
     /// stop at the ends, a click does nothing), level bars (Boost ◀▶ 1 dB), inline lists (Equalizer: click opens a list
     /// under the row on the current value, Back closes only the list, ▼ + click picks the next preset; Version "—" for
@@ -58,7 +58,8 @@ final class QuickPanelTests: XCTestCase {
         app.launchArguments = ["-serverAddress", "127.0.0.1:8080", "-appTheme", "aurora", "-demoRoute", "player"]
         app.launch()
         sleep(10)  // the player opens once the queue has loaded
-        remote.press(.select, forDuration: 1.2)
+        remote.press(.select)  // a click opens the panel (a hold switches the lyrics)
+        sleep(1)  // past the panel's 0.5 s guard against the opening click
         XCTAssertTrue(row("equalizer").waitForExistence(timeout: 5), "the panel should have an Equalizer row")
         XCTAssertTrue(row("loudness").exists, "the panel should have a Loudness row")
         XCTAssertTrue(row("boost").exists, "the panel should have a Boost row")

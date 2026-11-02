@@ -382,7 +382,7 @@ struct RemoteHints: View {
             if !topPlacement { Spacer() }
             HStack(spacing: 26) {
                 PlayModeIcons(accent: .white, size: 20)
-                Text("▼ next     ▲ previous     ◀ −\(Int(PlayerSettings.seekBack)) s     ▶ +\(Int(PlayerSettings.seekForward)) s     ⏯ pause     ● lyrics     hold ● options")
+                Text("▼ next     ▲ previous     ◀ −\(Int(PlayerSettings.seekBack)) s     ▶ +\(Int(PlayerSettings.seekForward)) s     ⏯ pause     ● options     hold ● lyrics")
             }
                 .font(theme.font(22, .medium))
                 .padding(.horizontal, 26)
@@ -427,7 +427,7 @@ struct ThemedInfoBar: View {
                         }
                         Spacer()
                         PlayModeIcons(accent: accent, size: 20)
-                        Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● lyrics   hold ● options")
+                        Text("▼ next   ▲ previous   ◀ −\(Int(PlayerSettings.seekBack)) s   ▶ +\(Int(PlayerSettings.seekForward)) s   ● options   hold ● lyrics")
                     }
                     .font(theme.font(20))
                     .opacity(0.55)

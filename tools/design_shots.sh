@@ -140,7 +140,7 @@ if [[ $PLATFORMS == *tv* ]]; then
       sleep 12
       shot "$TV" "tv-$theme-$name"
     done
-    # Quick panel (hold the centre button in the player), opened at launch
+    # Quick panel (click the centre button in the player), opened at launch
     LAUNCH_EXTRA="-quickPanel YES"
     launch "$TV" "$TV_ID" "$theme" player
     play tv
