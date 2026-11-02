@@ -1367,14 +1367,17 @@ $("rescan").onclick = async () => {
   } catch (e) { toast(`Rescan failed: ${e.message || e}`); }
   finally { b.disabled = false; b.innerHTML = rescanLabel(false); b.classList.remove("busy"); }
 };
-// "Extract missing audio": main audio track copies for the atv-audio sink (server job, progress pushed over the WebSocket)
+// "Extract missing audio": main audio track copies for the atv-audio sink (server job, progress pushed over the WebSocket).
+// Always shown; greyed out (disabled) while a job runs or when every video already has a fresh copy.
 let copiesRunning = false;
 function drawCopies(j) {
   const b = $("acopy");
-  b.hidden = !j.running && !j.missing;
-  b.disabled = j.running;
+  b.hidden = false;
+  b.disabled = j.running || !j.missing;
   b.classList.toggle("busy", j.running);
-  b.innerHTML = `${ic("refresh")}<span>${j.running ? `Extracting audio ${j.done} / ${j.total}` : `Extract missing audio (${j.missing})`}</span>`;
+  const label = j.running ? `Extracting audio ${j.done} / ${j.total}`
+    : j.missing ? `Extract missing audio (${j.missing})` : `All audio extracted (${j.copies})`;
+  b.innerHTML = `${ic("refresh")}<span>${label}</span>`;
   if (copiesRunning && !j.running) { toast(`Audio extracted: ${j.copies} videos ready for atv-audio`); loadLibrary(); }
   copiesRunning = j.running;
 }
