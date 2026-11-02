@@ -30,8 +30,12 @@ final class ServerConnection: ObservableObject {
     /// The socket whose first message has arrived (pings and the atv-audio config start then).
     private var openedSocket: URLSessionWebSocketTask?
 
+    /// Idempotent: the app and a Siri intent (app launched in the background) may both call it.
     func start() {
-        if Config.localMode { startLocal(); return }
+        if Config.localMode {
+            if local == nil { startLocal() }
+            return
+        }
         if task == nil { connect() }
     }
 
@@ -64,6 +68,21 @@ final class ServerConnection: ObservableObject {
         }
     }
 
+    /// Siri woke the app in the background (no scene, so `resume()` did not run): a socket kept from before a
+    /// suspension may be dead. Ping it; no answer within `timeout` s = reconnect.
+    func ensureAlive(timeout: Double = 3) async {
+        guard !Config.localMode, let socket = task, connected else { return }
+        final class Answer: @unchecked Sendable { var ok: Bool? }
+        let answer = Answer()
+        socket.sendPing { error in DispatchQueue.main.async { answer.ok = error == nil } }
+        let deadline = Date().addingTimeInterval(timeout)
+        while answer.ok == nil, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard task === socket, answer.ok != true else { return }
+        restart()
+    }
+
     /// No-server mode: no socket; LocalQueue plays the saved queue and the library is scanned on the device.
     func startLocal() {
         task?.cancel(with: .goingAway, reason: nil)
@@ -77,6 +96,9 @@ final class ServerConnection: ObservableObject {
         let queue = LocalQueue(engine: engine, publish: { [weak self] newState in
             self?.state = newState
             if let item = newState.current { self?.engine?.refreshLinks(item) }
+            #if os(iOS)
+            self?.engine?.syncSystemControls()
+            #endif
         }, autoChanged: { [weak self] in
             self?.autoVersion += 1
         })
@@ -188,6 +210,9 @@ final class ServerConnection: ObservableObject {
                 let oldSink = state?.sink
                 state = newState
                 if let item = newState.current { engine?.refreshLinks(item) }
+                #if os(iOS)
+                engine?.syncSystemControls()
+                #endif
                 #if os(tvOS)
                 // Also the first state on a new socket (the old one may be stale): the engine re-checks atv-audio.
                 if oldSink != newState.sink || !sinkSynced {

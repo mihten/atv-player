@@ -6,11 +6,12 @@ import SwiftUI
 @main
 struct PhoneApp: App {
     @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
-    @StateObject private var locator = ServerLocator()
-    @StateObject private var connection = ServerConnection()
-    @StateObject private var engine = PlayerEngine()
-    @StateObject private var library = LibraryStore()
-    @StateObject private var artwork = ArtworkStore()
+    // Owned by PhoneServices: a Siri intent may use them while the app runs in the background without a window.
+    @StateObject private var locator = PhoneServices.shared.locator
+    @StateObject private var connection = PhoneServices.shared.connection
+    @StateObject private var engine = PhoneServices.shared.engine
+    @StateObject private var library = PhoneServices.shared.library
+    @StateObject private var artwork = PhoneServices.shared.artwork
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -29,34 +30,10 @@ struct PhoneApp: App {
             .environmentObject(engine)
             .environmentObject(library)
             .environmentObject(artwork)
-            .onAppear {
-                engine.connection = connection
-                connection.engine = engine
-                OrientationLock.shared.log = { [weak engine] in engine?.diag($0) }
-                connection.onUnreachable = { [weak locator] in locator?.serverUnreachable() }
-                if locator.url != nil { connection.start() }
-            }
+            // Wiring, a new server address and no-server mode on/off: PhoneServices.
+            .onAppear { PhoneServices.shared.start() }
             .onChange(of: connection.autoVersion) {
                 Task { await library.refreshLoved() }
-            }
-            .onChange(of: locator.url) { _, url in
-                guard url != nil else { return }
-                connection.restart()
-                library.reset()
-                engine.streamChanged()
-            }
-            // Switching no-server mode on is handled above (new url); switching it off stops the local queue.
-            .onChange(of: locator.localMode) { _, on in
-                if !on {
-                    connection.stopLocal()
-                    engine.unload()
-                }
-                // Server and no-server item ids overlap: drop covers, lyrics and keyframes cached by id.
-                artwork.reset()
-                LyricsStore.shared.reset()
-                KeyframeStore.shared.reset()
-                let store = artwork, player = engine
-                Task { store.follow(player.current) }  // after this update, when the new mode's item is loaded
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {

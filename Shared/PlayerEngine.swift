@@ -361,6 +361,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         loaded.videos = item.videos
         loaded.loved = item.loved
         current = loaded
+        #if os(iOS)
+        syncSystemControls()
+        #endif
     }
 
     /// `fromServer`: a load message (the atv-audio sink got the same one); the app's own reopens pass false.
@@ -370,6 +373,9 @@ final class PlayerEngine: NSObject, ObservableObject {
             return  // resume sync after a reconnect: keep whatever is playing now
         }
         current = item
+        #if os(iOS)
+        syncSystemControls()
+        #endif
         applySound(for: item, why: "track")
         videoHidden = false  // new media starts with its picture track on
         traceTask?.cancel()
@@ -1249,6 +1255,9 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     // MARK: - Now Playing / remote commands
 
+    /// Lock screen, Control Center, headphones and CarPlay's Now Playing. Never enable skipForward / skipBackward /
+    /// seekForward / seekBackward: iOS and CarPlay then show ±N s buttons in place of Previous / Next (owner's choice).
+    /// iPhone only: Shuffle, Repeat and Love (the Apple TV stays as it is).
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in
@@ -1277,7 +1286,74 @@ final class PlayerEngine: NSObject, ObservableObject {
             MainActor.assumeIsolated { self?.seek(to: target) }
             return .success
         }
+        #if os(iOS)
+        center.changeShuffleModeCommand.isEnabled = true
+        center.changeShuffleModeCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangeShuffleModeCommandEvent else { return .commandFailed }
+            let on = event.shuffleType != .off
+            MainActor.assumeIsolated {
+                self?.log("remote: system shuffle \(on ? "on" : "off")")
+                self?.connection?.command("shuffle", ["on": on])
+            }
+            return .success
+        }
+        center.changeRepeatModeCommand.isEnabled = true
+        center.changeRepeatModeCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangeRepeatModeCommandEvent else { return .commandFailed }
+            let mode: String
+            switch event.repeatType {
+            case .one: mode = "one"
+            case .all: mode = "all"
+            default: mode = "off"
+            }
+            MainActor.assumeIsolated {
+                self?.log("remote: system repeat \(mode)")
+                self?.connection?.command("repeat", ["mode": mode])
+            }
+            return .success
+        }
+        center.likeCommand.localizedTitle = "Love"
+        center.likeCommand.localizedShortTitle = "Love"
+        center.likeCommand.isEnabled = true
+        center.likeCommand.addTarget { [weak self] _ in
+            let sent: Bool = MainActor.assumeIsolated {
+                guard let self, let item = self.current else { return false }
+                let on = item.loved != true
+                self.log("remote: system love \(on ? "on" : "off") '\(item.title)'")
+                self.connection?.command("love", ["id": item.id, "on": on])
+                return true
+            }
+            return sent ? .success : .noActionableNowPlayingItem
+        }
+        center.dislikeCommand.isEnabled = false
+        center.bookmarkCommand.isEnabled = false
+        syncSystemControls()
+        #endif
     }
+
+    #if os(iOS)
+    /// Shuffle / Repeat / Love on the system Now Playing follow the queue state and the current item's heart, whoever
+    /// changed them (in-app buttons, web remote, the system controls). Called on every state and item change.
+    func syncSystemControls() {
+        let center = MPRemoteCommandCenter.shared()
+        let state = connection?.state
+        let shuffle: MPShuffleType = state?.shuffle == true ? .items : .off
+        if center.changeShuffleModeCommand.currentShuffleType != shuffle {
+            center.changeShuffleModeCommand.currentShuffleType = shuffle
+        }
+        let repeatType: MPRepeatType
+        switch state?.repeatMode {
+        case "one": repeatType = .one
+        case "all": repeatType = .all
+        default: repeatType = .off
+        }
+        if center.changeRepeatModeCommand.currentRepeatType != repeatType {
+            center.changeRepeatModeCommand.currentRepeatType = repeatType
+        }
+        let loved = current?.loved == true
+        if center.likeCommand.isActive != loved { center.likeCommand.isActive = loved }
+    }
+    #endif
 
     /// iPhone: while only the sound of a video plays (background, lyrics view) it is "audio", because iOS can pause
     /// "video" playing in the background. Apple TV: always the item's real type. tvOS shows a system "Now Playing"
