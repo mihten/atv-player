@@ -44,7 +44,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.7"
+VERSION = "0.16.8"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -671,8 +671,13 @@ def follow_playlist(s, pl_id):
     queue = [s.swapped.get(i, i) for i in s.queue]
     cur = queue[s.index] if 0 <= s.index < len(queue) else None
     if s.shuffle:
-        keep = set(new)
-        played = [i for i in queue[:max(s.index, 0)] if i in keep]
+        # Played part: each id once, in the order first heard, and never the current item (it is playing again, not
+        # behind). Without this a playlist that holds an entry twice could put that id twice into the rebuilt queue.
+        keep, seen, played = set(new), {cur}, []
+        for i in queue[:max(s.index, 0)]:
+            if i in keep and i not in seen:
+                seen.add(i)
+                played.append(i)
         rest = list(new)
         for i in played + ([cur] if cur is not None else []):
             if i in rest:

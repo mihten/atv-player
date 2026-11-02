@@ -122,7 +122,11 @@ async def main(tmp):
             st = await state(http)
             q = st["queue"]
             check(q[st["index"]] == cur, "shuffle: current kept")
-            check(q[:st["index"]] == [i for i in played if i in new], "shuffle: played items still in the playlist stay behind")
+            behind = []  # played items still in the playlist: each once, first-heard order, not the current one
+            for i in played:
+                if i in new and i != cur and i not in behind:
+                    behind.append(i)
+            check(q[:st["index"]] == behind, "shuffle: played items still in the playlist stay behind (once each)")
             want = sorted(new + ([cur] if cur not in new else []))
             check(sorted(q) == want, f"shuffle: queue holds every playlist item once (+ current if removed): {len(q)}")
 
