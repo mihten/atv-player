@@ -48,7 +48,7 @@ final class QuickPanelTests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: "quickPanel.\(id).list").firstMatch
     }
 
-    /// One launch: click centre in the player; the panel opens on Love. Row kinds (task 18): toggles (Love, Shuffle,
+    /// One launch: click centre in the player; the panel opens on Love (Volume first only with atv-audio, not in the demo). Row kinds (task 18): toggles (Love, Shuffle,
     /// Loudness, Fast seek, Prefer videos: a click flips, a second restores), ◀▶ values (Repeat, Lyrics / subtitles:
     /// stop at the ends, a click does nothing), level bars (Boost ◀▶ 1 dB), inline lists (Equalizer: click opens a list
     /// under the row on the current value, Back closes only the list, ▼ + click picks the next preset; Version "—" for
