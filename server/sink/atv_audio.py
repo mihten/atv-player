@@ -3,7 +3,8 @@
 
 Connects to the media server as the sink of session "tv" (/ws?role=sink&session=tv), opens the item the TV
 plays over HTTP (/media/<id>?audio=main) in mpv, and follows the TV's clock messages: seek when it is more than
-150 ms off, otherwise trim mpv's speed by at most 0.2 % until aligned.
+150 ms off, otherwise trim mpv's speed by at most 0.2 % until aligned. `volume` messages set the output's own
+volume (PipeWire / Pulse sink volume = a Bluetooth headset's absolute volume; ALSA device: mpv's volume).
 
 Requirements: Python 3.9+, aiohttp, mpv on PATH (optional: pactl for PipeWire/PulseAudio output status).
 
@@ -45,6 +46,8 @@ AO_RETRY = 30.0        # s an output mpv could not open is reported not ready
 SEEK_WAIT = 2.0        # s at most a reopen seek waits for mpv's playback-restart
 PENDING = object()     # loadfile sent, its reply (playlist entry id) not read yet
 PING_FAST, PING_SLOW, PING_FAST_COUNT = 2.0, 15.0, 8
+VOLUME_KEEP = 2.0      # s the output poll keeps a volume just set (pactl may still report the old one)
+PLAY_EDGE_KEEP = 2 * OUTPUT_POLL + 2  # s a Play counts for an output the poll reports back only afterwards
 
 
 def log(msg):
@@ -387,24 +390,46 @@ def sound_commands(old, new):
 
 # ---------------------------------------------------------------- output status
 
-def _sink_output(name, desc, props):
+def _sink_output(name, desc, props, vol=None):
     props = props or {}
     display = props.get("device.description") or desc or name
     if (props.get("device.api") == "bluez5" or props.get("device.bus") == "bluetooth"
             or name.startswith("bluez")):
-        return {"kind": "bluetooth", "name": display, "codec": props.get("api.bluez5.codec") or None,
-                "ready": True}
-    usb = (props.get("device.bus") == "usb" or "usb" in (props.get("device.bus-path") or "")
-           or "usb" in (props.get("device.bus_path") or "") or props.get("alsa.driver_name") == "snd_usb_audio")
-    return {"kind": "usb" if usb else "other", "name": display, "codec": None, "ready": True}
+        out = {"kind": "bluetooth", "name": display, "codec": props.get("api.bluez5.codec") or None,
+               "ready": True}
+    else:
+        usb = (props.get("device.bus") == "usb" or "usb" in (props.get("device.bus-path") or "")
+               or "usb" in (props.get("device.bus_path") or "") or props.get("alsa.driver_name") == "snd_usb_audio")
+        out = {"kind": "usb" if usb else "other", "name": display, "codec": None, "ready": True}
+    if vol and vol.get("volume") is not None:
+        out["volume"], out["muted"] = vol["volume"], bool(vol.get("muted"))
+    return out
+
+
+def _percent(values):
+    """Sink volume in % (the loudest channel), never above 100 for the status."""
+    nums = []
+    for v in values:
+        m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*%", str(v))
+        if m:
+            nums.append(float(m.group(1)))
+    return min(100, int(round(max(nums)))) if nums else None
+
+
+def _json_volume(s):
+    vol = s.get("volume")
+    if not isinstance(vol, dict):
+        return {}
+    pct = _percent(ch.get("value_percent") for ch in vol.values() if isinstance(ch, dict))
+    return {} if pct is None else {"volume": pct, "muted": bool(s.get("mute"))}
 
 
 def parse_pactl_json(text):
-    """[(name, description, properties)] from 'pactl -f json list sinks'."""
+    """[(name, description, properties, {volume, muted})] from 'pactl -f json list sinks'."""
     out = []
     for s in json.loads(text or "[]"):
         if isinstance(s, dict) and s.get("name"):
-            out.append((s["name"], s.get("description") or "", s.get("properties") or {}))
+            out.append((s["name"], s.get("description") or "", s.get("properties") or {}, _json_volume(s)))
     return out
 
 
@@ -413,7 +438,7 @@ def parse_pactl_text(text):
     out, cur, in_props = [], None, False
     for line in (text or "").splitlines():
         if line.startswith("Sink #"):
-            cur = {"name": "", "desc": "", "props": {}}
+            cur = {"name": "", "desc": "", "props": {}, "vol": {}}
             out.append(cur)
             in_props = False
             continue
@@ -426,10 +451,22 @@ def parse_pactl_text(text):
                 cur["name"] = s[5:].strip()
             elif s.startswith("Description:"):
                 cur["desc"] = s[12:].strip()
+            elif s.startswith("Mute:"):
+                cur["vol"]["muted"] = s[5:].strip().lower() == "yes"
+            elif s.startswith("Volume:"):
+                pct = _percent(re.findall(r"(\d+(?:\.\d+)?%)", s))
+                if pct is not None:
+                    cur["vol"]["volume"] = pct
         elif in_props and " = " in s:
             k, _, v = s.partition(" = ")
             cur["props"][k.strip()] = v.strip().strip('"')
-    return [(c["name"], c["desc"], c["props"]) for c in out if c["name"]]
+    return [(c["name"], c["desc"], c["props"], c["vol"]) for c in out if c["name"]]
+
+
+def choose_sink(sinks, default):
+    """The sink mpv plays on: the default one, else the first (never PipeWire's dummy)."""
+    sinks = [s for s in sinks if not s[0].startswith("auto_null")]
+    return next((s for s in sinks if s[0] == default), None) or (sinks[0] if sinks else None)
 
 
 def pick_output(sinks, default, preferred):
@@ -437,7 +474,7 @@ def pick_output(sinks, default, preferred):
     sink seen ({"key", "output"}): when it is gone, it is reported with ready false even if a fallback exists."""
     sinks = [s for s in sinks if not s[0].startswith("auto_null")]
     by_name = {s[0]: s for s in sinks}
-    chosen = by_name.get(default) or (sinks[0] if sinks else None)
+    chosen = choose_sink(sinks, default)
     if chosen:
         out = _sink_output(*chosen)
         if out["kind"] in ("bluetooth", "usb"):
@@ -504,6 +541,24 @@ class OutputWatch:
         self.no_tool = False
         self.last = None
         self.fails = 0
+        self.key = None          # pactl name of the sink the reported output is (None: not ready / unknown)
+
+    def _pactl(self):
+        kind, _, arg = self.cfg.output.partition(":")
+        return ["pactl"] + (["-s", arg] if kind == "pulse" and arg else [])
+
+    @property
+    def has_pactl(self):
+        return not self.cfg.output.startswith("alsa") and shutil.which("pactl") is not None
+
+    async def set_volume(self, percent, muted):
+        """The output's own volume (a Bluetooth sink's = the headset's absolute volume). True when pactl took it."""
+        if not self.key:
+            return False
+        pa = self._pactl()
+        vol = await _run(*pa, "set-sink-volume", self.key, f"{int(percent)}%")
+        mute = await _run(*pa, "set-sink-mute", self.key, "1" if muted else "0")
+        return vol is not None and mute is not None
 
     async def detect(self):
         kind, _, arg = self.cfg.output.partition(":")
@@ -517,7 +572,7 @@ class OutputWatch:
         if shutil.which("pactl") is None:
             self.no_tool = True  # status unknown: assume the output works
             return {"kind": "other", "name": self.cfg.output, "codec": None, "ready": True}
-        pa = ["pactl"] + (["-s", arg] if kind == "pulse" and arg else [])
+        pa = self._pactl()
         default = (await _run(*pa, "get-default-sink") or "").strip()
         text = await _run(*pa, "-f", "json", "list", "sinks")
         sinks = None
@@ -531,6 +586,8 @@ class OutputWatch:
             sinks = parse_pactl_text(text)
         self.fails = 0
         out, self.preferred = pick_output(sinks, default, self.preferred)
+        chosen = choose_sink(sinks, default)
+        self.key = chosen[0] if chosen and out and out.get("ready") else None
         self.last = out
         return out
 
@@ -540,6 +597,7 @@ class OutputWatch:
         self.fails += 1
         if self.last is not None and self.fails < 2:
             return self.last
+        self.key = None
         if kind == "pipewire" and pipewire_socket():
             return {"kind": "other", "name": "PipeWire", "codec": None, "ready": True}  # no Pulse layer
         return dict(self.last or {"kind": "other", "name": self.cfg.output, "codec": None}, ready=False)
@@ -568,12 +626,19 @@ class Sink:
         self.clock_seq = 0
         self.block_seq = -1          # pause/seek/stop control: ignore clocks received before it ...
         self.block_at = None         # ... and clocks the TV sent before it (server time)
-        self.lip_ms = 200
+        self.lip_ms = -100           # the TV sends its own on connect (default -100 ms)
         self.sound = None
         self.applied_sound = None
+        self.af_text = None          # the 'af' property as last set (af-command changes do not update it)
         self.output = None
         self.output_ok = False
-        self.lost_item = None        # output vanished while this item played: stay silent until the next load
+        self.lost_item = None        # output gone during this item: silent until the TV's next play / seek / load
+        self.play_edge_at = None     # when the TV's clock last went to "playing" while the output was missing
+        self.volume_backend = None   # async (percent, muted) -> bool (pactl); None: mpv's own volume (ALSA output)
+        self.want_volume = None
+        self.volume_task = None
+        self.volume_at = -1e9        # last volume set: the output poll keeps it for a moment (pactl may lag)
+        self.mpv_volume = (100, False)
         self.failed_id = None        # mpv could not play this item: no reload until the next load / route on
         self.ao_error_until = 0.0    # mpv could not open the output: reported not ready until then
         self.want_loaded = False
@@ -625,10 +690,12 @@ class Sink:
         self.loaded_id, self.file_loaded, self.pending_ready = None, False, None
         self.expect_entry, self.failed_id, self.seek_wait = None, None, None
         self.load_gen += 1
-        self.applied_sound, self.speed = None, 1.0
+        self.applied_sound, self.af_text, self.speed = None, None, 1.0
         self.ctl.reset(self.mono())
         if restarted:
             self.log("mpv restarted")
+        if self.volume_backend is None and self.mpv_volume != (100, False):
+            await self._mpv_set_volume(*self.mpv_volume)  # a new mpv starts at 100 %
         await self.apply_sound()
         await self.tick()
 
@@ -695,7 +762,9 @@ class Sink:
         if t == "load":
             self.item = msg.get("item")
             self.load_position = float(msg.get("position") or 0)
-            self.lost_item = self.failed_id = None
+            self.failed_id = None
+            # output missing at the start: this item stays silent until the TV's next play / seek
+            self.lost_item = None if self.output_ok else (self.item or {}).get("id")
             self.want_loaded = bool(self.item) and self.routed
             if self.want_loaded and self.loaded_id is not None and self.loaded_id == self.item.get("id"):
                 await self._reopen()
@@ -712,8 +781,14 @@ class Sink:
                     # the TV may wait for 'ready' (it reconnected and got the load again; this sink did not)
                     self.pending_ready, self.load_t = self.loaded_id, self.mono()
         elif t == "clock":
-            self.clock = msg
+            prev, self.clock = self.clock, msg
             self.clock_seq += 1
+            if msg.get("state") == "playing" and (not prev or prev.get("state") != "playing"
+                                                 or prev.get("item") != msg.get("item")):
+                if self.lost_item is not None and self.output_ok:
+                    self._sound_back()  # Play / seek on the TV after the output came back
+                elif not self.output_ok:
+                    self.play_edge_at = self.mono()  # Play / seek while the output is still reported missing
         elif t == "control":
             await self.on_control(msg)
         elif t == "lip_sync":
@@ -723,6 +798,9 @@ class Sink:
         elif t == "sound":
             self.sound = msg
             await self.apply_sound()
+            return
+        elif t == "volume":
+            self.on_volume(msg)
             return
         else:
             return
@@ -767,41 +845,133 @@ class Sink:
         return {"type": "ping", "n": n}
 
     # -- output
-    def set_output(self, out):
+    def set_output(self, out, volume_set=False):
         if out and out.get("ready") and self.mono() < self.ao_error_until:
             out = dict(out, ready=False)  # mpv could not open it a moment ago
+        if out and self.volume_backend is None:
+            out = dict(out, volume=self.mpv_volume[0], muted=self.mpv_volume[1])  # mpv's own volume
+        elif (out and not volume_set and self.output and "volume" in self.output and out.get("name") == self.output.get("name")
+              and self.mono() - self.volume_at < VOLUME_KEEP):
+            out = dict(out, volume=self.output["volume"], muted=self.output["muted"])  # just set, pactl may lag
         if out == self.output:
             return False
         old_ok = self.output_ok
+        old = self.output or {}
         self.output = out
         self.output_ok = bool(out and out.get("ready"))
-        if out:
+        same = {k: v for k, v in old.items() if k not in ("volume", "muted")}
+        if out and same == {k: v for k, v in out.items() if k not in ("volume", "muted")}:
+            pass  # only the volume moved: no log line (a slider sends 10 per second)
+        elif out:
             self.log(f"output: {out['kind']} {out['name']} codec {out['codec'] or 'unknown'}"
-                     f"{'' if out['ready'] else ' (not ready)'}")
+                     f"{'' if out['ready'] else ' (not ready)'}"
+                     f"{'' if out.get('volume') is None else ' volume %d %%%s' % (out['volume'], ' muted' if out.get('muted') else '')}")
         else:
             self.log("output: none found")
         if old_ok and not self.output_ok and self.item:
             self.lost_item = self.item.get("id")
+            self.play_edge_at = None
+        elif (not old_ok and self.output_ok and self.lost_item is not None and self.play_edge_at is not None
+              and self.mono() - self.play_edge_at < PLAY_EDGE_KEEP and (self.clock or {}).get("state") == "playing"
+              and (self.clock or {}).get("item") == self.lost_item):
+            self._sound_back()  # Play pressed just before the output poll saw the headphones again
         self.send(self.status_message())
         return True
 
+    def _sound_back(self):
+        """Output usable again and the TV just played / seeked: this item has sound again."""
+        if self.failed_id == self.lost_item:
+            self.failed_id = None  # mpv dropped the file when the output went: open it again
+        self.lost_item = None
+
+    # -- volume
+    def on_volume(self, msg):
+        """volume {percent 0..100, muted}: the output's own volume. Nothing while the output is missing (the
+        headphones keep their own volume when they come back). The latest value wins while one is being set."""
+        try:
+            percent = max(0, min(100, int(round(float(msg.get("percent"))))))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        muted = bool(msg.get("muted"))
+        if not self.output_ok and self.volume_backend is not None:
+            return None  # pactl: the device keeps its own volume
+        self.want_volume = (percent, muted)
+        if self.volume_backend is None:
+            self.mpv_volume = (percent, muted)  # mpv's own volume: kept (and applied) without an output too
+        self.volume_at = self.mono()
+        if self.output:
+            self.set_output(dict(self.output, volume=percent, muted=muted), volume_set=True)  # status now, poll confirms
+        if self.volume_task is None or self.volume_task.done():
+            self.volume_task = asyncio.ensure_future(self._apply_volume())
+        return self.volume_task
+
+    async def _apply_volume(self):
+        while self.want_volume is not None:
+            (percent, muted), self.want_volume = self.want_volume, None
+            try:
+                if self.volume_backend is None:
+                    ok = await self._mpv_set_volume(percent, muted)
+                else:
+                    ok = await self.volume_backend(percent, muted)
+            except Exception as e:
+                ok = False
+                self.warn(f"volume: {e!r}")
+            if not ok:
+                self.warn(f"volume {percent} %{' muted' if muted else ''}: not set")
+
+    async def _mpv_set_volume(self, percent, muted):
+        mpv = self.mpv
+        if not mpv:
+            return True  # set when mpv (re)starts
+        try:
+            await mpv.set_property("volume", percent)
+            await mpv.set_property("mute", muted)
+        except MpvError:
+            return False
+        return True
+
     # -- sound
+    def _chain_live(self):
+        """mpv has a file open with its filters built: values can change live with af-command."""
+        return self.file_loaded and self.loaded_id is not None and self.expect_entry is not PENDING
+
+    async def _set_af(self, mpv, chain):
+        await mpv.set_property("af", chain)
+        self.af_text = chain
+
     async def apply_sound(self):
+        """Live when a file plays (af-command on the labelled filters, no gap). With no file open (idle, or a
+        load in progress: the TV sends the next track's gain right with its load) the 'af' property is set: the
+        new file builds its chain from it, nothing plays, so nothing is rebuilt audibly."""
         mpv = self.mpv
         if not mpv or self.sound is None:
             return
-        cmds = sound_commands(self.applied_sound, self.sound)
+        cmds = sound_commands(self.applied_sound, self.sound) if self._chain_live() else None
         try:
             if cmds is None:
-                await mpv.set_property("af", sound_chain(self.sound))
+                chain = sound_chain(self.sound)
+                if chain != self.af_text or self._chain_live():
+                    await self._set_af(mpv, chain)
             else:
                 for c in cmds:
                     await mpv.command("af-command", *c)
             self.applied_sound = self.sound
         except MpvError as e:
-            self.log(f"sound: {e}, rebuilding the filter chain")
+            playing = mpv.props.get("pause") is False
+            self.log(f"sound: {e}, rebuilding the filter chain ({'playing: a short gap' if playing else 'paused: inaudible'})")
             with contextlib.suppress(MpvError):
-                await mpv.set_property("af", sound_chain(self.sound))
+                await self._set_af(mpv, sound_chain(self.sound))
+                self.applied_sound = self.sound
+
+    async def _af_for_next_file(self, mpv):
+        """Before a loadfile: a new file builds its filters from the 'af' property, which af-command does not
+        update. Paused here, so setting it is inaudible."""
+        if self.sound is None:
+            return
+        chain = sound_chain(self.sound)
+        if chain != self.af_text:
+            with contextlib.suppress(MpvError):
+                await self._set_af(mpv, chain)
                 self.applied_sound = self.sound
 
     # -- playback
@@ -856,6 +1026,7 @@ class Sink:
         gen = self.load_gen
         self.expect_entry = PENDING
         await self._pause()
+        await self._af_for_next_file(mpv)
         try:
             self.req_pos = max(0.0, position + self.paused_lead)
             await mpv.set_property("start", f"{self.req_pos:.3f}")
@@ -1003,6 +1174,8 @@ async def run(cfg):
 
     sink = Sink(cfg, send)
     outputs = OutputWatch(cfg)
+    if outputs.has_pactl:
+        sink.volume_backend = outputs.set_volume
     sink.set_output(await outputs.detect())
     if outputs.no_tool:
         log("pactl not available: output status not detected")

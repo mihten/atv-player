@@ -197,6 +197,14 @@ enum SoundSettings {
     /// Band centre frequencies (Hz) of VLC's 10-band equalizer.
     static var frequencies: [Float] { VLCAudioEqualizer().bands.map(\.frequency) }
 
+    /// Every equalizer choice in display order (Apple TV Settings → Sound and the quick panel's list).
+    static var presetChoices: [(label: String, value: String)] {
+        [("Off", "off")]
+            + appPresets.map { ($0.name, "a:\($0.id)") }
+            + presets.map { ($0.name, "p:\($0.index)") }
+            + [("Custom", "custom")]
+    }
+
     static func presetName(_ value: String) -> String {
         switch value {
         case "off": return "Off"

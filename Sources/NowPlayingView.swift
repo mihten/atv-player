@@ -126,7 +126,10 @@ struct NowPlayingView: View {
             remoteLog("remote: centre click -> lyrics \(lyricsMode ? "on" : "off")")
             flash()
         }
-        .onExitCommand { dismiss() }
+        .onExitCommand {
+            engine.acknowledgeNotice("back")  // the atv-audio notice ends with leaving the player
+            dismiss()
+        }
         .onChange(of: engine.current?.id) {
             // auto-advance after a "previous" goes forward again
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { forward = true }
@@ -167,8 +170,8 @@ struct NowPlayingView: View {
     }
 }
 
-/// The engine's short notice (atv-audio: "Sound back on the Apple TV"), a capsule at the top for 4 s. Not focusable and
-/// no hit testing: the remote keeps working on whatever is underneath.
+/// The engine's notice (atv-audio lost / Sound output changed: playback paused), a capsule at the top until ⏯ / Play or
+/// Back out of the player. Not focusable and no hit testing: the remote keeps working on whatever is underneath.
 struct EngineNotice: View {
     @EnvironmentObject var engine: PlayerEngine
 
@@ -177,6 +180,7 @@ struct EngineNotice: View {
             if let text = engine.notice {
                 Text(text)
                     .font(.system(size: 28, weight: .semibold))
+                    .multilineTextAlignment(.center)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 36)
                     .padding(.vertical, 18)

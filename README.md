@@ -127,14 +127,19 @@ plugins, e.g. Debian's `libspa-0.2-bluetooth`).
 - **Settings → Sound → Sound output = atv-audio** (selectable while the sink is connected; the choice is
   kept when it is not). The status line under it shows `atv-audio: not connected`, or
   `connected · <headphones> · <codec>`; a USB dongle shows `codec unknown` (it encodes by itself).
-- **Lip sync** (only with atv-audio): how much earlier the sink plays, −200 … +400 ms, default +200
+- **Lip sync** (only with atv-audio): how much earlier the sink plays, −200 … +400 ms, default −100
   (Bluetooth adds a delay that cannot be measured). Set it by ear on a video with clear drum hits or speech:
   raise it if the sound comes late, lower it if it comes early. Changes apply live.
-- Each item starts after a short pause while the sink buffers (at most 3 s; otherwise the TV plays its
-  own sound for that item).
-- **Fallback:** if the sink disconnects or its output goes away (headphones off), the Apple TV plays the
-  sound itself at once ("Sound back on the Apple TV"). When it comes back, the sink takes over at the next
-  item start, not mid-song.
+- With atv-audio chosen the Apple TV **never** plays its own sound (VLC stays muted), whatever the sink's
+  state. Only Settings → Sound output changes it, and the change applies at once.
+- Each item starts after a short pause while the sink buffers (at most 3 s; then it starts anyway).
+- **Lost or changed:** if, during playback, the sink disconnects, its output goes away (headphones off), the
+  server connection drops, or Sound output is changed, playback **pauses** with a notice that stays until ⏯ /
+  Play or Back. Play then plays normally (without sound while the headphones are still off, no second
+  notice); headphones back on = sound again from the next Play or seek.
+- **Volume** (hold the centre button in the player: the quick panel's second row, only with atv-audio):
+  ◀ ▶ −/+5 %, click = mute. It is the output's own volume (with Bluetooth through PipeWire: the headphones'
+  volume, no extra digital attenuation); the web remote shows the same as a slider.
 
 ### Web remote
 
@@ -144,3 +149,7 @@ the background, for the current item and the next 3 in the queue while a sink is
 missing audio** (status bar, shown while copies are missing) builds every missing copy in the background,
 with progress (n / total). The **atv-audio** badge on a music video means its copy exists. Copies are only
 made by the button or for the queue, never after a library scan.
+
+While the Apple TV plays its sound through atv-audio and the sink has its output, the player card shows a
+**volume slider** and a mute button (the same volume as the TV's quick panel row; it follows changes made on
+the headphones).

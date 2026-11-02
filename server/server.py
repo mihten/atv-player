@@ -44,7 +44,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.5"
+VERSION = "0.16.6"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -61,8 +61,9 @@ PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone")
 REMOTES: dict = {}  # ws -> session kind the web remote controls
 SINKS: dict = {}  # session kind -> the atv-audio sink's ws (only "tv"; a new sink replaces the old one)
 SINK_INFO: dict = {}  # session kind -> {"name", "output"} as last reported by its sink
-RELAY_TYPES = ("route", "sound", "lip_sync", "clock")  # TV -> sink, replayed in this order on sink connect
+RELAY_TYPES = ("route", "sound", "lip_sync", "clock", "volume")  # TV -> sink, replayed in this order on sink connect
 SINK_RELAY: dict = {}  # session kind -> {type: last message of that type from its TV}
+SINK_LOGGED: dict = {}  # session kind -> the last output line logged
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
@@ -777,10 +778,21 @@ async def to_players(s, msg):
 # relayed and reports its output; it never counts as a player.
 
 def sink_state(kind):
+    # route: the TV's Sound output is atv-audio (its last route message; false once the TV is gone)
+    route = bool((SINK_RELAY.get(kind, {}).get("route") or {}).get("sink"))
     if SINKS.get(kind) is None:
-        return {"connected": False, "name": None, "output": None}
+        return {"connected": False, "name": None, "output": None, "route": route}
     info = SINK_INFO.get(kind) or {}
-    return {"connected": True, "name": info.get("name"), "output": info.get("output")}
+    return {"connected": True, "name": info.get("name"), "output": info.get("output"), "route": route}
+
+
+def clean_volume(data):
+    """{percent 0..100, muted} or None."""
+    try:
+        percent = max(0, min(100, int(round(float(data.get("percent"))))))
+    except (TypeError, ValueError, AttributeError, OverflowError):  # OverflowError: Infinity / 1e999
+        return None
+    return {"percent": percent, "muted": bool(data.get("muted"))}
 
 
 def clean_output(out):
@@ -788,8 +800,12 @@ def clean_output(out):
         return None
     kind = out.get("kind") if out.get("kind") in ("bluetooth", "usb", "other") else "other"
     codec = out.get("codec")
-    return {"kind": kind, "name": str(out.get("name") or "")[:120],
-            "codec": str(codec)[:40] if codec else None, "ready": bool(out.get("ready"))}
+    clean = {"kind": kind, "name": str(out.get("name") or "")[:120],
+             "codec": str(codec)[:40] if codec else None, "ready": bool(out.get("ready"))}
+    vol = clean_volume({"percent": out.get("volume"), "muted": out.get("muted")})
+    if vol is not None:  # the output's own volume (sink 0.16.6+)
+        clean["volume"], clean["muted"] = vol["percent"], vol["muted"]
+    return clean
 
 
 def pong(data):
@@ -800,6 +816,7 @@ async def sink_connected(s, ws):
     old = SINKS.get(s.kind)
     SINKS[s.kind] = ws
     SINK_INFO.pop(s.kind, None)
+    SINK_LOGGED.pop(s.kind, None)
     if old is not None:
         log.info("sink (%s) replaced by a new connection", s.kind)
         asyncio.create_task(old.close(message=b"replaced"))
@@ -823,8 +840,13 @@ async def sink_message(s, ws, data):
     elif kind == "sink":
         SINK_INFO[s.kind] = {"name": str(data.get("name") or "")[:120] or None, "output": clean_output(data.get("output"))}
         out = SINK_INFO[s.kind]["output"]
-        log.info("sink[%s]: %s, output %s", s.kind, SINK_INFO[s.kind]["name"],
-                 f"{out['kind']} '{out['name']}' {out['codec'] or 'codec unknown'} ready={out['ready']}" if out else "none")
+        if out and out["ready"] and "volume" in out:  # a reconnecting sink gets the last volume again
+            SINK_RELAY.setdefault(s.kind, {})["volume"] = {"type": "volume", "percent": out["volume"],
+                                                           "muted": out["muted"]}
+        line = f"{out['kind']} '{out['name']}' {out['codec'] or 'codec unknown'} ready={out['ready']}" if out else "none"
+        if SINK_LOGGED.get(s.kind) != line:  # volume-only changes (a slider) are not logged
+            SINK_LOGGED[s.kind] = line
+            log.info("sink[%s]: %s, output %s", s.kind, SINK_INFO[s.kind]["name"], line)
         await broadcast_state(s)
     elif kind == "ready":
         await asyncio.gather(*(send(p, {"type": "sink_ready", "id": data.get("item")}) for p in s.players))
@@ -1348,8 +1370,14 @@ async def on_message(s, data, role, ws=None):
         await handle_cmd(s, data)
     elif kind == "ping" and ws is not None:
         await send(ws, pong(data))
+    elif kind == "volume" and role in ("player", "remote") and s.kind == "tv":  # TV quick panel, web remote
+        vol = clean_volume(data)
+        if vol is not None:
+            await relay_to_sink(s, {"type": "volume", **vol})
     elif role == "player" and kind in RELAY_TYPES and s.kind == "tv":
         await relay_to_sink(s, data)
+        if kind == "route":
+            await broadcast_state(s)  # web remote: the volume slider follows the TV's sound output
     elif role == "player" and kind == "status":
         if data.get("item") != s.current_id:
             return

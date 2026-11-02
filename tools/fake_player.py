@@ -6,7 +6,7 @@
 Connects like the Apple TV / iPhone app (role=player&kind=...), follows load/control messages and
 reports status once a second, so the web remote shows a playing item with a moving progress bar.
 "sink" acts as a fake atv-audio sink instead (role=sink&session=tv): reports a ready Bluetooth output,
-answers every load with "ready", pings for the clock offset and prints each message it gets (one JSON
+answers every load with "ready", follows "volume" (reports it back as the output's volume), pings for the clock offset and prints each message it gets (one JSON
 line, state messages shortened to their "sink" part).
 Never point this at a real server while a real app is connected: it would take part in that queue.
 """
@@ -23,7 +23,8 @@ KIND = sys.argv[1] if len(sys.argv) > 1 else "tv"
 
 
 async def sink():
-    output = {"kind": "bluetooth", "name": "Fake headphones", "codec": "aptx_hd", "ready": True}
+    output = {"kind": "bluetooth", "name": "Fake headphones", "codec": "aptx_hd", "ready": True, "volume": 70,
+              "muted": False}
     async with aiohttp.ClientSession() as http:
         async with http.ws_connect(f"{URL}/ws?role=sink&session=tv") as ws:
             await ws.send_json({"type": "sink", "name": "fake-sink", "output": output})
@@ -48,6 +49,9 @@ async def sink():
                 elif m.get("type") == "load" and m.get("item"):
                     await ws.send_json({"type": "ready", "item": m["item"]["id"]})
                     m = dict(m, item={"id": m["item"]["id"], "title": m["item"].get("title")})
+                elif m.get("type") == "volume":
+                    output.update(volume=max(0, min(100, int(m.get("percent") or 0))), muted=bool(m.get("muted")))
+                    await ws.send_json({"type": "sink", "name": "fake-sink", "output": output})
                 print(json.dumps(m), flush=True)
             task.cancel()
 

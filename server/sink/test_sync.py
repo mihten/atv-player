@@ -345,7 +345,7 @@ class SinkTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sink.loaded_id, item["id"])
         self.assertEqual(sink.mpv.sets("start")[-1], "40.000")
 
-    async def test_output_gone_stays_silent_until_next_item(self):
+    async def test_output_gone_silent_until_next_play(self):
         sink, clock, sent = make_sink(lip=0)
         item = await start_item(sink, clock)
         await play(sink, clock, item["id"], 0.0)
@@ -353,14 +353,51 @@ class SinkTest(unittest.IsolatedAsyncioTestCase):
         await sink.tick()
         self.assertIs(sink.mpv.props["pause"], True)
         self.assertIn({"type": "sink", "name": "atv-audio",
-                       "output": {"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False}},
-                      sent)
+                       "output": {"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False,
+                                  "volume": 100, "muted": False}}, sent)
+        clock.t += 0.5
+        await play(sink, clock, item["id"], 0.5)                   # the TV plays on without sound
         sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
+        clock.t += 0.5
         await play(sink, clock, item["id"], 1.0)
-        self.assertIs(sink.mpv.props["pause"], True)               # not mid-song
+        self.assertIs(sink.mpv.props["pause"], True)               # back, but not mid-play
+        clock.t += 0.5
+        await play(sink, clock, item["id"], 1.5, state="paused")   # the TV paused (or seeks: "stalled")
+        clock.t += 0.5
+        await play(sink, clock, item["id"], 1.5)                   # Play: sound again
+        self.assertIs(sink.mpv.props["pause"], False)
+
+    async def test_output_gone_next_item_plays(self):
+        sink, clock, _ = make_sink(lip=0)
+        item = await start_item(sink, clock)
+        await play(sink, clock, item["id"], 0.0)
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False})
+        await sink.tick()
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
         await sink.handle({"type": "load", "item": {"id": 8, "kind": "audio"}, "position": 0})
         await sink.on_file_loaded()
         await play(sink, clock, 8, 0.0)
+        self.assertIs(sink.mpv.props["pause"], False)
+
+    async def test_output_missing_at_load(self):
+        sink, clock, _ = make_sink(lip=0)
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False})
+        item = await start_item(sink, clock)
+        await play(sink, clock, item["id"], 0.0)
+        self.assertIs(sink.mpv.props["pause"], True)
+        clock.t += A.PLAY_EDGE_KEEP
+        await play(sink, clock, item["id"], A.PLAY_EDGE_KEEP)
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
+        clock.t += 0.5
+        await play(sink, clock, item["id"], 0.5)
+        self.assertIs(sink.mpv.props["pause"], True)               # came back mid-play: wait for Play / seek
+        clock.t += 0.1
+        await play(sink, clock, item["id"], 9.0, state="stalled")  # the TV seeks
+        clock.t += 0.1
+        await play(sink, clock, item["id"], 9.0)
+        self.assertEqual(sink.mpv.sets("start")[-1], "9.000")      # opened only now, at the TV's position
+        await sink.on_file_loaded()
+        await play(sink, clock, item["id"], 9.0)
         self.assertIs(sink.mpv.props["pause"], False)
 
     async def test_same_item_load_ready_again(self):
@@ -481,6 +518,7 @@ class SinkTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sound_live_commands(self):
         sink, clock, _ = make_sink()
+        await start_item(sink, clock)
         s1 = {"type": "sound", "processed": True, "gain": -2.0, "freqs": FREQS, "bands": [0] * 10}
         await sink.handle(s1)
         self.assertEqual(sink.mpv.sets("af"), [A.sound_chain(s1)])
@@ -490,6 +528,146 @@ class SinkTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sink.mpv.sets("af")), 1)              # no rebuild
         await sink.handle(dict(s1, processed=False))
         self.assertEqual(sink.mpv.sets("af")[-1], "")
+
+    async def test_sound_during_load_no_rebuild(self):
+        # the TV sends the next track's gain right with its load: no af-command to a chain mpv has not built yet
+        sink, clock, sent = make_sink()
+        await start_item(sink, clock)
+        s1 = {"type": "sound", "processed": True, "gain": -2.0, "freqs": FREQS, "bands": [0] * 10}
+        await sink.handle(s1)
+        await sink.handle({"type": "load", "item": {"id": 8, "kind": "audio"}, "position": 0})
+        self.assertFalse(sink.file_loaded)                         # loadfile sent, file not loaded yet
+        command = sink.mpv.command
+
+        async def no_chain(*args):
+            if args[0] == "af-command":                            # what mpv answers while no chain is built
+                raise A.MpvError("error running command")
+            return await command(*args)
+        sink.mpv.command = no_chain
+        await sink.handle(dict(s1, gain=-4.0))
+        self.assertFalse(any(c[0] == "af-command" for c in sink.mpv.calls))
+        self.assertEqual(sink.mpv.sets("af")[-1], A.sound_chain(dict(s1, gain=-4.0)))
+        self.assertFalse(any("rebuilding" in m.get("message", "") for m in sent))
+
+    async def test_af_property_current_for_the_next_file(self):
+        # af-command changes only the running filters: the next file must not start with the old values
+        sink, clock, _ = make_sink()
+        await start_item(sink, clock)
+        s1 = {"type": "sound", "processed": True, "gain": -2.0, "freqs": FREQS, "bands": [0] * 10}
+        await sink.handle(s1)
+        s2 = dict(s1, bands=[0, 0, 0, 0, 0, 0, 0, 0, 0, 5])
+        await sink.handle(s2)
+        self.assertEqual(len(sink.mpv.sets("af")), 1)              # live
+        await sink.handle({"type": "load", "item": {"id": 8, "kind": "audio"}, "position": 0})
+        self.assertEqual(sink.mpv.sets("af")[-1], A.sound_chain(s2))
+        i_af = max(i for i, c in enumerate(sink.mpv.calls) if c[:2] == ("set", "af"))
+        i_load = max(i for i, c in enumerate(sink.mpv.calls) if c[0] == "loadfile")
+        self.assertLess(i_af, i_load)                              # set before the new file opens (paused)
+        await sink.on_file_loaded()
+        await sink.handle({"type": "load", "item": {"id": 9, "kind": "audio"}, "position": 0})
+        self.assertEqual(len(sink.mpv.sets("af")), 2)              # unchanged: not set again
+
+    async def test_volume_mpv_output(self):
+        # ALSA device output (no pactl): mpv's own volume, reported in the status
+        sink, clock, sent = make_sink()
+        sent.clear()
+        task = sink.on_volume({"type": "volume", "percent": 62, "muted": False})
+        await task
+        self.assertEqual(sink.mpv.sets("volume"), [62])
+        self.assertEqual(sink.mpv.sets("mute"), [False])
+        self.assertEqual(sent[-1]["output"]["volume"], 62)
+        self.assertIs(sent[-1]["output"]["muted"], False)
+        self.assertFalse(any(m["type"] == "log" for m in sent))   # a volume change logs nothing
+        await sink.handle({"type": "volume", "percent": 140, "muted": True})
+        await sink.volume_task
+        self.assertEqual(sink.mpv.sets("volume")[-1], 100)        # never above 100 %
+        self.assertEqual(sink.mpv.sets("mute")[-1], True)
+        self.assertEqual((sent[-1]["output"]["volume"], sent[-1]["output"]["muted"]), (100, True))
+        await sink.handle({"type": "volume", "percent": "x"})     # ignored
+        # a new mpv starts at 100 %: the last volume is set again
+        mpv = FakeMpv(clock)
+        await sink.on_mpv(mpv)
+        self.assertEqual(mpv.sets("volume"), [100])
+        self.assertEqual(mpv.sets("mute"), [True])
+
+    async def test_volume_without_output(self):
+        # pactl: nothing to set while the device is missing (it keeps its own volume)
+        sink, clock, sent = make_sink()
+        calls = []
+
+        async def backend(percent, muted):
+            calls.append((percent, muted))
+            return True
+        sink.volume_backend = backend
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False})
+        self.assertIsNone(sink.on_volume({"type": "volume", "percent": 30, "muted": False}))
+        self.assertEqual(calls, [])
+        self.assertIsNone(sink.on_volume({"type": "volume", "percent": float("inf")}))  # not a number we can use
+        # mpv's own volume (ALSA): kept, so a device plugged in later does not play at 100 %
+        sink, clock, sent = make_sink()
+        sink.set_output({"kind": "usb", "name": "DAC", "codec": None, "ready": False})
+        await sink.on_volume({"type": "volume", "percent": 30, "muted": False})
+        self.assertEqual(sink.mpv.sets("volume"), [30])
+        sink.set_output({"kind": "usb", "name": "DAC", "codec": None, "ready": True})
+        self.assertEqual((sent[-1]["output"]["volume"], sent[-1]["output"]["ready"]), (30, True))
+
+    async def test_play_just_before_the_poll_sees_the_output(self):
+        sink, clock, _ = make_sink(lip=0)
+        item = await start_item(sink, clock)
+        await play(sink, clock, item["id"], 0.0)
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": False})
+        clock.t += 0.5
+        await play(sink, clock, item["id"], 0.5, state="paused")
+        clock.t += 1.0
+        await play(sink, clock, item["id"], 0.5)                   # Play while the poll still says not ready
+        clock.t += 2.0
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
+        clock.t += 0.1
+        await play(sink, clock, item["id"], 2.6)
+        self.assertIs(sink.mpv.props["pause"], False)
+
+    async def test_reopen_after_audio_output_error_on_play(self):
+        sink, clock, _ = make_sink(lip=0)
+        item = await start_item(sink, clock)
+        await play(sink, clock, item["id"], 0.0)
+        entry = sink.mpv.entry
+        sink.on_mpv_event({"event": "end-file", "reason": "error", "playlist_entry_id": entry,
+                           "file_error": "audio output device lost"})
+        self.assertEqual((sink.failed_id, sink.lost_item), (7, 7))
+        clock.t += A.AO_RETRY + 1
+        sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
+        await play(sink, clock, item["id"], 30.0, state="paused")
+        clock.t += 0.2
+        await play(sink, clock, item["id"], 30.0)                  # Play: opened again at the TV's position
+        self.assertEqual(sum(1 for c in sink.mpv.calls if c[0] == "loadfile"), 2)
+        await sink.on_file_loaded()
+        await play(sink, clock, item["id"], 30.0)
+        self.assertIs(sink.mpv.props["pause"], False)
+
+    async def test_volume_pactl_backend(self):
+        sink, clock, sent = make_sink()
+        calls = []
+
+        async def backend(percent, muted):
+            calls.append((percent, muted))
+            await asyncio.sleep(0)
+            return True
+        sink.volume_backend = backend
+        out = {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": True, "volume": 81,
+               "muted": False}
+        sink.set_output(out)
+        self.assertEqual(sent[-1]["output"]["volume"], 81)
+        t = sink.on_volume({"type": "volume", "percent": 50, "muted": False})
+        for p in (55, 60, 65):                                     # a slider: the latest wins, none queued up
+            sink.on_volume({"type": "volume", "percent": p, "muted": False})
+        await t
+        self.assertEqual(calls[-1], (65, False))
+        self.assertLessEqual(len(calls), 2)
+        self.assertEqual(sent[-1]["output"]["volume"], 65)
+        self.assertFalse(sink.set_output(out))                     # a poll right after: pactl may lag, keep 65
+        clock.t += A.VOLUME_KEEP + 0.1
+        self.assertTrue(sink.set_output(dict(out, volume=40)))     # changed on the headphones
+        self.assertEqual(sent[-1]["output"]["volume"], 40)
 
 
 class ClockOffsetTest(unittest.TestCase):
@@ -554,7 +732,9 @@ PACTL_JSON = json.dumps([
      "properties": {"device.api": "alsa", "device.bus": "pci", "device.description": "Built-in Audio",
                     "node.name": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
     {"index": 63, "state": "RUNNING", "name": "bluez_output.00_1B_66_00_00_01.1",
-     "description": "MOMENTUM 4", "driver": "PipeWire",
+     "description": "MOMENTUM 4", "driver": "PipeWire", "mute": False,
+     "volume": {"front-left": {"value": 53080, "value_percent": "81%", "db": "-5.49 dB"},
+                "front-right": {"value": 53080, "value_percent": "81%", "db": "-5.49 dB"}},
      "properties": {"api.bluez5.address": "00:1B:66:00:00:01", "api.bluez5.codec": "aptx_hd",
                     "api.bluez5.profile": "a2dp-sink", "device.api": "bluez5", "device.bus": "bluetooth",
                     "device.description": "MOMENTUM 4", "media.class": "Audio/Sink"}},
@@ -570,6 +750,9 @@ PACTL_TEXT = """Sink #63
 \tDescription: MOMENTUM 4
 \tDriver: PipeWire
 \tSample Specification: s24le 2ch 48000Hz
+\tMute: yes
+\tVolume: front-left: 40632 /  62% / -12.46 dB,   front-right: 40632 /  62% / -12.46 dB
+\t        balance 0.00
 \tProperties:
 \t\tapi.bluez5.codec = "aptx_hd"
 \t\tdevice.api = "bluez5"
@@ -599,7 +782,8 @@ class OutputTest(unittest.TestCase):
     def test_pactl_json_bluetooth_default(self):
         sinks = A.parse_pactl_json(PACTL_JSON)
         out, pref = A.pick_output(sinks, "bluez_output.00_1B_66_00_00_01.1", None)
-        self.assertEqual(out, {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": True})
+        self.assertEqual(out, {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": True,
+                               "volume": 81, "muted": False})
         self.assertEqual(pref["key"], "bluez_output.00_1B_66_00_00_01.1")
 
     def test_pactl_json_usb_dongle(self):
@@ -618,7 +802,8 @@ class OutputTest(unittest.TestCase):
         rest = [s for s in sinks if not s[0].startswith("bluez")]
         # the default falls back to the built-in output: still report the headphones, not ready
         out, pref = A.pick_output(rest, "alsa_output.pci-0000_00_1f.3.analog-stereo", pref)
-        self.assertEqual(out, {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": False})
+        self.assertEqual(out, {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": False,
+                               "volume": 81, "muted": False})
         out, _ = A.pick_output([], "auto_null", pref)
         self.assertFalse(out["ready"])
         out, _ = A.pick_output(sinks, "bluez_output.00_1B_66_00_00_01.1", pref)  # back
@@ -634,6 +819,7 @@ class OutputTest(unittest.TestCase):
                                                  "alsa_output.usb-Sennheiser_BTD_700-00.analog-stereo"])
         out, _ = A.pick_output(sinks, "bluez_output.00_1B_66_00_00_01.1", None)
         self.assertEqual(out["codec"], "aptx_hd")
+        self.assertEqual((out["volume"], out["muted"]), (62, True))
         out, _ = A.pick_output(sinks, "alsa_output.usb-Sennheiser_BTD_700-00.analog-stereo", None)
         self.assertEqual(out, {"kind": "usb", "name": "BTD 700", "codec": None, "ready": True})
 
@@ -682,6 +868,34 @@ class DetectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(w.no_tool)
         w = A.OutputWatch(A.Config({}))                            # never answered
         self.assertIs((await w.detect())["ready"], False)
+
+
+    async def test_volume_through_pactl(self):
+        A.shutil.which = lambda name: "/usr/bin/pactl"
+        runs = []
+
+        async def run(*args, **kw):
+            runs.append(args)
+            if "get-default-sink" in args:
+                return "bluez_output.00_1B_66_00_00_01.1\n"
+            if "list" in args:
+                return PACTL_JSON
+            return ""
+        A._run = run
+        w = A.OutputWatch(A.Config({"ATV_AUDIO_OUTPUT": "pipewire"}))
+        self.assertTrue(w.has_pactl)
+        out = await w.detect()
+        self.assertEqual((out["volume"], out["muted"]), (81, False))
+        self.assertTrue(await w.set_volume(62, True))
+        self.assertIn(("pactl", "set-sink-volume", "bluez_output.00_1B_66_00_00_01.1", "62%"), runs)
+        self.assertIn(("pactl", "set-sink-mute", "bluez_output.00_1B_66_00_00_01.1", "1"), runs)
+        w = A.OutputWatch(A.Config({"ATV_AUDIO_OUTPUT": "pulse:tcp:box:4713"}))
+        await w.detect()
+        await w.set_volume(10, False)
+        self.assertIn(("pactl", "-s", "tcp:box:4713", "set-sink-mute", "bluez_output.00_1B_66_00_00_01.1", "0"), runs)
+        self.assertFalse(A.OutputWatch(A.Config({"ATV_AUDIO_OUTPUT": "alsa:hw:1"})).has_pactl)
+        w = A.OutputWatch(A.Config({}))
+        self.assertFalse(await w.set_volume(10, False))           # nothing detected yet: no sink to set
 
 
 class ArgsTest(unittest.TestCase):

@@ -31,12 +31,7 @@ struct SoundSettingsView: View {
                 set: { loudness = SoundSettings.loudnessValue(on: $0) })
     }
 
-    private var equalizerOptions: [(label: String, value: String)] {
-        [("Off", "off")]
-            + SoundSettings.appPresets.map { ($0.name, "a:\($0.id)") }
-            + SoundSettings.presets.map { ($0.name, "p:\($0.index)") }
-            + [("Custom", "custom")]
-    }
+    private var equalizerOptions: [(label: String, value: String)] { SoundSettings.presetChoices }
 
     var body: some View {
         SettingsPage {
@@ -84,7 +79,7 @@ struct SoundSettingsView: View {
                 Text("Sound output")
             } footer: {
                 Text(soundOutput == AtvAudio.sinkOutput
-                     ? "atv-audio plays the sound from the next song on, while it is connected; the Apple TV shows the picture. Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early."
+                     ? "atv-audio plays the sound, the Apple TV shows the picture and stays silent (also while atv-audio is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early."
                      : "atv-audio: a separate box plays the sound (e.g. aptX headphones), the Apple TV shows the picture. It can be chosen while it is connected.")
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }

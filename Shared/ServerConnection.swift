@@ -25,6 +25,8 @@ final class ServerConnection: ObservableObject {
     /// Server time for the atv-audio clock messages (ping / pong, Apple TV only).
     let serverClock = ServerClock()
     private var pingTask: Task<Void, Never>?
+    /// The engine has seen state.sink from the current socket (atv-audio).
+    private var sinkSynced = false
     /// The socket whose first message has arrived (pings and the atv-audio config start then).
     private var openedSocket: URLSessionWebSocketTask?
 
@@ -164,6 +166,7 @@ final class ServerConnection: ObservableObject {
         #if os(tvOS)
         pingTask?.cancel()
         serverClock.reset()
+        sinkSynced = false
         pingTask = Task { [weak self] in
             var count = 0
             while !Task.isCancelled {
@@ -186,7 +189,11 @@ final class ServerConnection: ObservableObject {
                 state = newState
                 if let item = newState.current { engine?.refreshLinks(item) }
                 #if os(tvOS)
-                if oldSink != newState.sink { engine?.sinkChanged(from: oldSink, to: newState.sink) }
+                // Also the first state on a new socket (the old one may be stale): the engine re-checks atv-audio.
+                if oldSink != newState.sink || !sinkSynced {
+                    sinkSynced = true
+                    engine?.sinkChanged(from: oldSink, to: newState.sink)
+                }
                 #endif
             }
         case "load":

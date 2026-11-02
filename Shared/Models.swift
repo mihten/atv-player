@@ -209,6 +209,8 @@ struct SinkState: Codable, Equatable {
     var connected: Bool? = nil
     var name: String? = nil
     var output: SinkOutput? = nil
+    /// The TV's Sound output is atv-audio (server 0.16.6+).
+    var route: Bool? = nil
 
     var isConnected: Bool { connected == true }
     /// Connected and its output device present and usable.
@@ -221,6 +223,9 @@ struct SinkOutput: Codable, Equatable {
     var name: String? = nil
     var codec: String? = nil
     var ready: Bool? = nil
+    /// The output's own volume 0…100 % and mute (sink 0.16.6+; a Bluetooth headset's absolute volume).
+    var volume: Int? = nil
+    var muted: Bool? = nil
 }
 
 /// Every server push uses this one shape; unused fields are nil.

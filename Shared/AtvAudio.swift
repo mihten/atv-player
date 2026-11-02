@@ -1,7 +1,8 @@
 import Foundation
 
 /// Optional "atv-audio": a separate program (server/sink) plays the Apple TV's sound, the TV shows the video with VLC
-/// muted. Settings → Sound → Sound output; PlayerEngine decides at each item start whether it is used.
+/// muted. Settings → Sound → Sound output is the only switch: while it is atv-audio VLC stays muted, also when the sink
+/// or its output is missing (PlayerEngine pauses with a notice then).
 enum AtvAudio {
     static let outputKey = "soundOutput"   // "tv" | "atv-audio"
     static let lipSyncKey = "lipSyncMs"    // Int ms, how much earlier the sink plays
@@ -10,7 +11,7 @@ enum AtvAudio {
 
     static let lipSyncRange = -200...400
     static let lipSyncStep = 20
-    static let defaultLipSync = 200
+    static let defaultLipSync = -100
 
     private static var defaults: UserDefaults { .standard }
 

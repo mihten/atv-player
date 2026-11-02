@@ -104,9 +104,13 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// A server load waits for the sink's `ready` (max 3 s) before VLC starts.
     private var sinkWaiting = false
     #if os(tvOS)
-    /// Short message over the player and the menus (atv-audio fallbacks), cleared after 4 s.
+    /// Message over the player and the menus (atv-audio lost / Sound output changed: playback paused). Stays until
+    /// ⏯ / Play or Back out of the player (acknowledgeNotice).
     @Published private(set) var notice: String?
-    private var noticeTask: Task<Void, Never>?
+    /// The server socket is open (the sink gets the clock); false after a failure until the next socket opens.
+    fileprivate var serverLinkUp = false
+    /// A loss of the atv-audio target pauses with the notice once; armed again when the target is usable again.
+    fileprivate var sinkLossArmed = true
     private var sinkWaitTask: Task<Void, Never>?
     private var sinkWaitStart: Double = 0
     /// The TV's mode switch finished while waiting for the sink: VLC starts on `ready` or at the timeout.
@@ -365,9 +369,6 @@ final class PlayerEngine: NSObject, ObservableObject {
         if !autoplay, !force, current?.id == item.id, vlc.media != nil {
             return  // resume sync after a reconnect: keep whatever is playing now
         }
-        #if os(tvOS)
-        let previousID = current?.id
-        #endif
         current = item
         applySound(for: item, why: "track")
         videoHidden = false  // new media starts with its picture track on
@@ -411,7 +412,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         vlc.media = media
         log("load '\(item.title)' id \(item.id) at \(Int(startAt)) s autoplay=\(autoplay) present=\(present)\(retry ? " RETRY" : "") player \(playerTag)")
         #if os(tvOS)
-        beginSinkItem(item, previousID: previousID, autoplay: autoplay, fromServer: fromServer)
+        beginSinkItem(item, autoplay: autoplay, fromServer: fromServer)
         // The TV switches its mode first (Match frame rate); the start timeout counts from the real start.
         awaitingDisplay = true
         let generation = loadGeneration
@@ -573,6 +574,11 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func play(source: String) {
+        #if os(tvOS)
+        // ⏯ / Play acknowledges the atv-audio notice and then plays normally (without sound if the sink is still
+        // missing); a first Play while it is missing shows the notice instead.
+        if !acknowledgeNotice("play"), sinkHoldsPlay() { return }
+        #endif
         logRequest("play", source)
         wantPlaying = true
         pendingToggle = (Date(), source, true)
@@ -1496,12 +1502,18 @@ extension PlayerEngine {
 
 #if os(tvOS)
 extension PlayerEngine {
-    private var sinkUsable: Bool { !Config.localMode && connection?.state?.sink?.isUsable == true }
+    /// Settings → Sound output = atv-audio (never in no-server mode: there is no sink there).
+    private var sinkChosen: Bool { AtvAudio.selected && !Config.localMode }
 
-    /// Item start: atv-audio is used when chosen and the sink and its output are ready. The app's own reopen of the same
-    /// item (stall, settings rebuild, resume after a long pause) keeps the current choice: the sound never moves to the
-    /// sink mid-song. A server load with autoplay waits for the sink's `ready` (max 3 s) before VLC starts.
-    fileprivate func beginSinkItem(_ item: MediaItem, previousID: Int?, autoplay: Bool, fromServer: Bool) {
+    /// The sink can play: server connected, sink connected, its output present.
+    private var sinkTargetUsable: Bool {
+        serverLinkUp && !Config.localMode && connection?.state?.sink?.isUsable == true
+    }
+
+    /// Item start. With atv-audio chosen VLC is muted for every item, whatever the sink's state (the TV never plays
+    /// its own sound in this mode). A server load with autoplay waits for the sink's `ready` (max 3 s) when the sink
+    /// and its output are there; otherwise it starts muted, or holds with the notice once per loss (checkSinkTarget).
+    fileprivate func beginSinkItem(_ item: MediaItem, autoplay: Bool, fromServer: Bool) {
         sinkWaitTask?.cancel()
         sinkWaiting = false
         sinkStartPending = false
@@ -1510,18 +1522,24 @@ extension PlayerEngine {
         lastSampleAt = 0
         sinkSeekPending = false
         sentClockState = ""
-        let reopen = !fromServer && previousID == item.id
-        let use = AtvAudio.selected && sinkUsable && (!reopen || sinkActive)
-        if use != sinkActive {
-            let why = use ? "start of '\(item.title)'" : AtvAudio.selected ? "not ready at '\(item.title)'" : "Settings: Apple TV"
-            setSinkActive(use, log: "atv-audio: \(use ? "on" : "off") (\(why)), VLC \(use ? "muted" : "sound on"); \(AtvAudio.statusText(connection?.state?.sink))")
+        if sinkChosen != sinkActive {
+            setSinkActive(sinkChosen, log: "atv-audio: \(sinkChosen ? "on" : "off") at '\(item.title)', VLC \(sinkChosen ? "muted" : "sound on"); \(AtvAudio.statusText(connection?.state?.sink))")
         }
-        if use { setMuted(true) }  // new media: once more
+        guard sinkActive else { return }
+        setMuted(true)  // new media: once more
         if fromServer {
             sinkHadItem = sinkReadyItem == item.id
             sinkReadyItem = nil
         }
-        guard use, fromServer, autoplay else { return }
+        guard autoplay else { return }
+        acknowledgeNotice("play")  // an item that starts playing ends a "playback paused" notice
+        guard sinkTargetUsable else {
+            if !checkSinkTarget("not available at the start of '\(item.title)'") {
+                log("atv-audio: '\(item.title)' starts muted without atv-audio; \(sinkTargetText)")
+            }
+            return
+        }
+        guard fromServer else { return }  // the app's own reopen: the sink follows the clock
         sinkWaiting = true
         sinkWaitStart = ServerClock.now()
         let generation = loadGeneration
@@ -1530,10 +1548,10 @@ extension PlayerEngine {
             guard let self, !Task.isCancelled, generation == self.loadGeneration, self.sinkWaiting else { return }
             if self.sinkHadItem {  // e.g. the TV reconnected: the sink got no new load, it has the item open
                 self.log("atv-audio: no ready within 3 s, the sink already has '\(item.title)' open -> starting")
-                self.endSinkWait()
             } else {
-                self.sinkFallback("atv-audio: timeout, TV sound", notice: "atv-audio did not answer: sound on the Apple TV")
+                self.log("atv-audio: timeout, starting muted")
             }
+            self.endSinkWait()
         }
     }
 
@@ -1542,10 +1560,13 @@ extension PlayerEngine {
         guard on != sinkActive else { return }
         sinkActive = on
         setMuted(on)
-        connection?.send(["type": "route", "sink": on])
         sinkTimer?.invalidate()
         sinkTimer = nil
         sentClockState = ""
+        if on {
+            sinkClock(force: true)  // before the route: a sink that opens the item then opens it at the TV's position
+        }
+        connection?.send(["type": "route", "sink": on])
         if on {
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.sinkClock() }
@@ -1576,22 +1597,53 @@ extension PlayerEngine {
         armStartTimeout(for: item)
     }
 
-    /// Back to the TV's own sound at once, at the same position.
-    private func sinkFallback(_ line: String, notice text: String = "Sound back on the Apple TV") {
-        guard sinkActive else { return }
-        setSinkActive(false, log: line)
-        showNotice(text)
-        endSinkWait()
+    /// What is missing, for the notice and the log.
+    private var sinkTargetText: String {
+        if !serverLinkUp { return "atv-audio: no connection to the server" }
+        guard let sink = connection?.state?.sink, sink.isConnected else { return "atv-audio is not connected" }
+        guard let output = sink.output else { return "atv-audio: no output found" }
+        return "atv-audio: \(AtvAudio.outputName(output)) not connected"
     }
 
+    /// The atv-audio target is missing while playback is wanted: pause (the sink pauses with the TV) and a notice that
+    /// stays until ⏯ / Play or Back. Once per loss: re-armed only when the target is usable again, so a Play while
+    /// the headphones are still off plays (no sound) without a second notice. True when it paused.
+    @discardableResult
+    fileprivate func checkSinkTarget(_ why: String) -> Bool {
+        guard sinkActive else { return false }
+        if sinkTargetUsable {
+            sinkLossArmed = true
+            return false
+        }
+        guard sinkLossArmed, wantPlaying else { return false }
+        sinkLossArmed = false
+        pause(source: "atv-audio")
+        showNotice("\(sinkTargetText) — playback paused")
+        log("atv-audio: \(why) -> paused (notice); \(AtvAudio.statusText(connection?.state?.sink))")
+        return true
+    }
+
+    /// Notice that stays until acknowledged (acknowledgeNotice), over the player and the menus.
     private func showNotice(_ text: String) {
         notice = text
-        noticeTask?.cancel()
-        noticeTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard let self, !Task.isCancelled else { return }
-            self.notice = nil
-        }
+    }
+
+    /// ⏯ / Play ("play") or Back out of the player ("back") clears the notice. True when one was shown.
+    @discardableResult
+    func acknowledgeNotice(_ how: String) -> Bool {
+        guard notice != nil else { return false }
+        notice = nil
+        log("atv-audio: notice acknowledged (\(how))")
+        return true
+    }
+
+    /// Play pressed while atv-audio is missing and its loss was not shown yet: the notice instead of starting.
+    fileprivate func sinkHoldsPlay() -> Bool {
+        guard sinkActive, !sinkTargetUsable, sinkLossArmed else { return false }
+        sinkLossArmed = false
+        showNotice("\(sinkTargetText) — playback paused")
+        log("atv-audio: not available at play -> paused (notice); \(AtvAudio.statusText(connection?.state?.sink))")
+        return true
     }
 
     /// Server: {"type": "sink_ready", "id": …}, the sink has the item open and buffered.
@@ -1602,41 +1654,66 @@ extension PlayerEngine {
         endSinkWait()
     }
 
-    /// state.sink changed: config again when the sink (re)connects; its loss or its output's ends atv-audio at once.
+    /// state.sink changed (or the first state on a new socket): config again when the sink (re)connects; its loss or
+    /// its output's pauses playback with the notice (VLC stays muted).
     func sinkChanged(from old: SinkState?, to new: SinkState?) {
         if new?.isConnected == true, old?.isConnected != true { sendSinkConfig() }
-        guard sinkActive, new?.isUsable != true else { return }
-        sinkFallback(new?.isConnected == true ? "atv-audio: output gone, TV sound" : "atv-audio: disconnected, TV sound")
+        guard sinkActive else { return }
+        if old?.isUsable == true, new?.isUsable != true {
+            log("atv-audio: \(new?.isConnected == true ? "output gone" : "disconnected"); VLC stays muted; \(AtvAudio.statusText(new))")
+        } else if old?.isUsable != true, new?.isUsable == true {
+            log("atv-audio: available again; \(AtvAudio.statusText(new))")
+        }
+        checkSinkTarget(new?.isConnected == true ? "output lost" : "sink disconnected")
+        if sinkWaiting, !sinkTargetUsable {
+            log("atv-audio: lost while waiting for ready, starting muted")
+            endSinkWait()
+        }
     }
 
     /// On connect and when the sink connects: route, sound, lip sync (and the clock while it plays).
     func sendSinkConfig() {
+        serverLinkUp = !Config.localMode
+        if sinkChosen != sinkActive {
+            setSinkActive(sinkChosen, log: "atv-audio: \(sinkChosen ? "on" : "off") (connected), VLC \(sinkChosen ? "muted" : "sound on")")
+        }
         connection?.send(["type": "route", "sink": sinkActive])
         sinkSound(force: true)
         connection?.send(["type": "lip_sync", "ms": AtvAudio.lipSyncMs])
         sinkClock(force: true)
     }
 
-    /// Settings → Sound output. Apple TV: VLC's sound comes back at once. atv-audio: only stored; the next item start
-    /// turns it on (the sink opens an item only while routed, so a switch mid-song would be silent until it buffered).
+    /// Settings → Sound output: applies at once. During playback it pauses with a notice that stays until Play
+    /// (going to atv-audio mid-song: VLC muted, the sink opens the current item at the TV's position).
     func soundOutputChanged() {
-        if !AtvAudio.selected {
-            setSinkActive(false, log: sinkActive ? "atv-audio: off (Settings: Apple TV), VLC sound on" : nil)
-            endSinkWait()
-            return
-        }
-        guard !sinkActive, let item = current else { return }
-        log("atv-audio: chosen in Settings, used from the next item ('\(item.title)' keeps the TV sound); \(AtvAudio.statusText(connection?.state?.sink))")
+        guard sinkChosen != sinkActive else { return }
+        let playing = wantPlaying && current != nil
+        if playing { pause(source: "settings: sound output") }
+        setSinkActive(sinkChosen, log: "atv-audio: Sound output -> \(sinkChosen ? "atv-audio, VLC muted" : "Apple TV, VLC sound on")\(current.map { " at '\($0.title)'" } ?? ""); \(AtvAudio.statusText(connection?.state?.sink))")
+        endSinkWait()
+        // missing right now while playing: the change notice is the one for it; paused: the first Play shows the loss
+        sinkLossArmed = playing ? sinkTargetUsable : true
+        guard playing else { return }
+        showNotice("Sound output changed to \(sinkChosen ? "atv-audio" : "Apple TV") — playback paused")
+        log("atv-audio: sound output changed -> paused (notice)")
     }
 
-    /// The server socket failed: the sink gets no clock (and no stream) any more.
+    /// The server socket failed: the sink gets no clock (and no stream) any more. VLC stays muted.
     func serverConnectionLost() {
-        sinkFallback("atv-audio: server connection lost, TV sound")
+        guard serverLinkUp else { return }
+        serverLinkUp = false
+        checkSinkTarget("server connection lost")
+        endSinkWait()
     }
 
     /// Settings → Lip sync: sent live.
     func lipSyncChanged() {
         connection?.send(["type": "lip_sync", "ms": AtvAudio.lipSyncMs])
+    }
+
+    /// Quick panel Volume row: the sink's output volume (the headphones' own), 0…100 %.
+    func setSinkVolume(_ percent: Int, muted: Bool) {
+        connection?.send(["type": "volume", "percent": min(100, max(0, percent)), "muted": muted])
     }
 }
 #endif

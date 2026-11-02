@@ -143,7 +143,7 @@ html[data-look="classic"] .eyebrow { letter-spacing: .06em; }
 
 /* ── Now playing ──────────────────────────────────────────────────────────── */
 #player { border-radius: var(--r); padding: 16px; display: grid; gap: 0 16px; position: relative; overflow: hidden;
-  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "next next"; }
+  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "vol vol" "next next"; }
 html[data-look="aurora"] #player { background: linear-gradient(90deg, color-mix(in srgb, var(--t0) 38%, transparent), transparent 75%), var(--card); }
 .stage { grid-area: art; position: relative; width: var(--art); height: var(--art); align-self: center; }
 html[data-look="vinyl"] .stage { width: calc(var(--art) * 1.36); }
@@ -209,6 +209,13 @@ html[data-look="aurora"] .tb.play { box-shadow: 0 0 26px color-mix(in srgb, var(
 html[data-look="classic"] .tb.play { background: var(--acc); color: #fff; }
 .tb.play .ic { width: 30px; height: 30px; }
 .tb.busy .ic { animation: spin 1s linear infinite; }
+/* atv-audio volume (the headphones' own volume through the sink), only while the TV plays its sound there */
+.vol { grid-area: vol; display: flex; align-items: center; gap: 10px; padding: 6px 0 2px; color: var(--ink2); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.vol[hidden] { display: none; }
+.vol input { flex: 1; min-width: 0; accent-color: var(--acc); height: 22px; cursor: pointer; }
+.vol.muted input { opacity: .45; }
+.vol .vn { width: 4.2em; text-align: right; }
+.vol .tb { padding: 4px; }
 .upnext { grid-area: next; display: flex; align-items: center; gap: 10px; min-width: 0; padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--ink2); }
 .upnext:empty { display: none; }
 .upnext .eyebrow { flex: none; }
@@ -403,7 +410,7 @@ html[data-look="vinyl"] .sheet > div { background: linear-gradient(#2e1f14, #1a1
     grid-template-areas: "player top" "player status" "player quick" "player tabs" "player main"; grid-template-rows: auto auto auto auto 1fr; }
   .top { grid-area: top; padding-top: 26px; } .status { grid-area: status; } .quick { grid-area: quick; } nav#tabs { grid-area: tabs; margin: 10px 0 0; padding: 10px 0; } main { grid-area: main; }
   #player { grid-area: player; align-self: start; position: sticky; top: 20px; margin-top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; scrollbar-width: none;
-    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "next"; padding: 24px 28px; gap: 0; }
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "vol" "next"; padding: 24px 28px; gap: 0; }
   #player::-webkit-scrollbar { display: none; }
   #player .stage { justify-self: center; margin: 16px 0 22px; }
   .np-title { font-size: 28px; }
@@ -490,6 +497,11 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <button class="tb sm" id="rep" title="Repeat"></button>
       <button class="tb sm" id="shot" title="Screenshot of the Apple TV screen"></button>
     </div>
+    <div class="vol" id="vol" hidden title="atv-audio volume (the headphones' own volume)">
+      <button class="tb sm" id="volMute" title="Mute / unmute"></button>
+      <input type="range" id="volRange" min="0" max="100" step="1" aria-label="atv-audio volume">
+      <span class="vn" id="volNum"></span>
+    </div>
     <div class="upnext" id="upnext"></div>
   </section>
 
@@ -545,6 +557,8 @@ const ICONS = {
   next2: S("M5 12h12M12 6l6 6-6 6", 2.2), save: S("M12 4v11M7 10l5 5 5-5M5 20h14", 2.2), pencil: S("M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4", 2),
   trash: S("M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13", 2), check: S("M5 12.5l4.5 4.5L19 7.5", 2.6),
   heart: F(HEART), heartO: S(HEART, 2),
+  speaker: F("M4 9.2h3.4L12 5.1v13.8l-4.6-4.1H4z") + S("M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.7 7.7 0 0 1 0 11", 1.9),
+  speakerX: F("M4 9.2h3.4L12 5.1v13.8l-4.6-4.1H4z") + S("M15.5 9.5l5 5M20.5 9.5l-5 5", 1.9),
 };
 /** Swap a button's icon only when it changes. */
 const setIcon = (el, name) => { if (el.dataset.icon !== name) { el.dataset.icon = name; el.innerHTML = ic(name); } };
@@ -758,6 +772,37 @@ function versionsSheet() {
   });
 }
 
+/** atv-audio volume: shown while the TV's Sound output is atv-audio and the sink has its output. While the slider is
+ *  dragged (and a moment after) the state does not move it back. */
+const vol = { dragUntil: 0, last: 0, timer: null, pending: null };
+function drawVolume(s) {
+  const out = s.sink && s.sink.route && s.sink.output && s.sink.output.ready ? s.sink.output : null;
+  const show = !!(out && out.volume != null);
+  $("vol").hidden = !show;
+  if (!show) return;
+  $("vol").classList.toggle("muted", !!out.muted);
+  setIcon($("volMute"), out.muted ? "speakerX" : "speaker");
+  $("volMute").classList.toggle("on", !out.muted);
+  if (Date.now() < vol.dragUntil) return;
+  $("volRange").value = out.volume;
+  $("volNum").textContent = `${out.volume} %`;
+}
+function sendVolume(percent, muted) { send({ type: "volume", percent, muted }); vol.last = Date.now(); }
+$("volRange").oninput = () => {
+  const p = +$("volRange").value;
+  vol.dragUntil = Date.now() + 1500;
+  $("volNum").textContent = `${p} %`;
+  const muted = !!(st && st.sink && st.sink.output && st.sink.output.muted);
+  vol.pending = [p, muted];
+  const wait = 100 - (Date.now() - vol.last);  // at most 10 per second while dragging
+  if (wait <= 0) { sendVolume(p, muted); vol.pending = null; return; }
+  clearTimeout(vol.timer);
+  vol.timer = setTimeout(() => { if (vol.pending) { sendVolume(...vol.pending); vol.pending = null; } }, wait);
+};
+$("volRange").onchange = () => { vol.dragUntil = Date.now() + 1500; clearTimeout(vol.timer); vol.pending = null;
+  const muted = !!(st && st.sink && st.sink.output && st.sink.output.muted); sendVolume(+$("volRange").value, muted); };
+$("volMute").onclick = () => { const o = st && st.sink && st.sink.output; if (o && o.volume != null) sendVolume(o.volume, !o.muted); };
+
 function drawUpNext(s) {
   const up = (s.upcoming || []).slice(0, 5);
   const key = `${s.index}|${s.queue.length}|${up.map((i) => i.id).join(",")}`;
@@ -788,6 +833,7 @@ function onState(s) {
   drawNowPlaying(s.current);
   drawLove(s.current);
   drawUpNext(s);
+  drawVolume(s);
   setIcon($("pp"), s.playing ? "pause" : "play"); setIcon($("miniPP"), s.playing ? "pause" : "play");
   $("shuf").classList.toggle("on", s.shuffle);
   $("preferSw").classList.toggle("on", !!s.prefer_videos);
