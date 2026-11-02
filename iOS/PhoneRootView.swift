@@ -619,7 +619,6 @@ struct PhonePlaylistsView: View {
             let (data, _) = try await Net.data(from: .api("api/playlists"))
             let list = try JSONDecoder.server().decode(PlaylistList.self, from: data).playlists
             playlists = list
-            SiriCatalog.remember(playlists: list)
             errorText = nil
             guard !theme.isClassic else { return }
             for playlist in list.prefix(40) {

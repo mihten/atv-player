@@ -267,7 +267,6 @@ struct PhoneHome: View {
         guard let (data, _) = try? await Net.data(from: .api("api/playlists")),
               let list = try? JSONDecoder.server().decode(PlaylistList.self, from: data) else { return }
         playlists = list.playlists
-        SiriCatalog.remember(playlists: list.playlists)
         for playlist in list.playlists.prefix(30) {
             guard let (d, _) = try? await Net.data(from: .api("api/playlists/\(playlist.id)")),
                   let detail = try? JSONDecoder.server().decode(PlaylistDetail.self, from: d) else { continue }

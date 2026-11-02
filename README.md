@@ -51,20 +51,9 @@ Apple ID cannot get. CarPlay's built-in **Now Playing** screen shows the app ins
 and Control Center:
 
 - **Previous / Play-Pause / Next** and the position (no ±15 s buttons, on purpose).
-- **Shuffle** and **Repeat** (off / all / one): they show the queue's current state, also after a change in
-  the app or the web remote, and change it.
+- **Shuffle** and **Repeat** (off / all / one) where iOS shows them (CarPlay; the lock screen does not):
+  they show the queue's current state, also after a change in the app or the web remote, and change it.
 - **Love**: hearts the current item (the same ♥ as in the player and the web remote).
-
-**Siri** (also with the app closed; no setup, the phrases come with the app):
-
-- "Play Loved in ATV Player", "Play my loved songs in ATV Player", "Play Most played in ATV Player"
-- "Play *playlist name* in ATV Player" (also "Shuffle …" / "Play my …"), for every saved playlist
-- "Love this song in ATV Player"
-
-A list always plays shuffled with repeat all, on the iPhone. New or renamed playlists are picked up
-automatically when the app is connected (no new build). Siri says so when the server can't be reached, a
-playlist name is unknown or a list is empty. The Shortcuts app lists the same actions (**Play list** with a
-list picker). In no-server mode Loved and Most played work (playlists need the server).
 
 ## Sound through atv-audio (optional)
 
