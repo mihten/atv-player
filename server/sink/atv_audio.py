@@ -366,6 +366,26 @@ def sound_chain(sound):
     return ",".join(parts)
 
 
+def gain_text(sound):
+    """Short log form of a sound message's gain: "+11.5 dB", or "off" when unprocessed."""
+    if not sound or not sound.get("processed"):
+        return "off"
+    g = float(sound.get("gain") or 0)
+    return f"{g:+.1f} dB"
+
+
+def af_gain_text(af):
+    """The @vol gain in mpv's 'af' property (list of filter dicts), as the next file builds its chain from it."""
+    for f in af or []:
+        if isinstance(f, dict) and f.get("label") == "vol":
+            v = str((f.get("params") or {}).get("volume") or "0dB").removesuffix("dB")
+            try:
+                return f"{float(v):+.1f} dB"
+            except ValueError:
+                return v
+    return "off" if not af else "no volume filter"
+
+
 def sound_commands(old, new):
     """af-command argument lists turning chain `old` into `new` live, or None when the chain must be set anew
     (processed switched, band count changed, nothing applied yet). The last argument names the libavfilter
@@ -748,6 +768,13 @@ class Sink:
                 await mpv.set_property("aid", aid)
         if gen != self.load_gen or self.loaded_id != lid or self.mpv is not mpv:
             return  # another load, an end-file error or an mpv restart during the awaits
+        # Diagnostic: the gain this file's filters were built with (mpv's 'af' at load) vs the last sound message.
+        with contextlib.suppress(MpvError):
+            built = af_gain_text(await mpv.get_property("af", []))
+            want = gain_text(self.sound)
+            self.log(f"sound: {lid} opened with {built}" + ("" if built == want else f", MISMATCH: wanted {want}"))
+        if gen != self.load_gen or self.loaded_id != lid or self.mpv is not mpv:
+            return
         self.file_loaded = True
         await self.tick()
 
@@ -951,15 +978,21 @@ class Sink:
         mpv = self.mpv
         if not mpv or self.sound is None:
             return
-        cmds = sound_commands(self.applied_sound, self.sound) if self._chain_live() else None
+        live = self._chain_live()
+        cmds = sound_commands(self.applied_sound, self.sound) if live else None
         try:
             if cmds is None:
                 chain = sound_chain(self.sound)
-                if chain != self.af_text or self._chain_live():
+                if chain != self.af_text or live:
                     await self._set_af(mpv, chain)
+                    how = "chain rebuilt on the playing file" if live else f"set for the next file (loading {self.loaded_id})"
+                else:
+                    how = "unchanged"
             else:
                 for c in cmds:
                     await mpv.command("af-command", *c)
+                how = f"live on {self.loaded_id} ({len(cmds)} change{'s' if len(cmds) != 1 else ''})"
+            self.log(f"sound: {gain_text(self.sound)} -> {how}")
             self.applied_sound = self.sound
         except MpvError as e:
             playing = mpv.props.get("pause") is False
