@@ -55,6 +55,29 @@ and Control Center:
   they show the queue's current state, also after a change in the app or the web remote, and change it.
 - **Love**: hearts the current item (the same ♥ as in the player and the web remote).
 
+## Offline (iPhone downloads)
+
+For trips without the home server, the iPhone app downloads lists for offline listening:
+
+- **What:** turn on **Download for offline** in a playlist, in **Loved** or in **Most played** (Media server mode).
+  The size is shown before anything starts; a download that would leave less than 1 GB free is refused.
+- **Audio only, best version:** for each item the server picks the version of the song with the best audio
+  (lossless before lossy, then bit depth, sample rate; the song or one of its music videos) and sends it unchanged:
+  a song's original file (FLAC stays FLAC), a music video's default audio track as a stream copy. Never a video
+  file, never a transcode (`/media/<id>?audio=best`, list sizes from `/api/offline/<list>`).
+- **Where to switch:** Settings → Server → Library → **Offline (downloads)**. This is the only way in and out:
+  the app never switches by itself (no fallback when the server is unreachable). In Offline the app makes no
+  server connection at all; it plays the downloaded lists (shuffled, repeat all) with the normal sound chain,
+  loudness levelling (the server's measurement is stored), lyrics and covers. A ♥ set offline is sent to the
+  server the next time the app connects in Media server mode.
+- **Downloads** run in the background (also with the phone locked), one or two at a time, resumed after a failure;
+  **Only on Wi-Fi** (Settings → Downloads, default on).
+- **Staying current:** while the app is connected in Media server mode, a downloaded list that changed on the
+  server is updated: new items are fetched, removed ones deleted (unless another downloaded list still has them),
+  re-scanned files fetched again.
+- **Space:** Settings → Downloads shows the space used and free, each list with its size and state, Remove per
+  list and Remove all. The files live in the app's own storage (not in the Files app, not in the iCloud backup).
+
 ## Sound through atv-audio (optional)
 
 The Apple TV keeps showing the video; a small Linux machine plays the sound in sync. Why: the Apple TV

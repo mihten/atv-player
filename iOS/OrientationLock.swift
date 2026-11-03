@@ -110,6 +110,19 @@ final class OrientationLock {
 @MainActor
 final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        _ = OfflineStore.shared  // reconnects the background download session (downloads finished while not running)
+        return true
+    }
+
+    /// Background downloads (OfflineStore) finished while the app was suspended or not running.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == OfflineStore.sessionID else { return completionHandler() }
+        OfflineStore.shared.backgroundCompletion = completionHandler
+    }
+
+    func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         OrientationLock.shared.mask
     }

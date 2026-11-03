@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS lyrics (item_id INTEGER PRIMARY KEY, data TEXT NOT NULL);
+-- Default audio track details for the offline "best version" pick (server.py audio_info); valid while mtime matches.
+CREATE TABLE IF NOT EXISTS audio_probe (item_id INTEGER PRIMARY KEY, mtime REAL NOT NULL, audio_ord INTEGER,
+  codec TEXT, bits INTEGER, rate INTEGER, bitrate INTEGER);
 """
 
 COLUMNS = (
@@ -463,6 +466,8 @@ def scan(db_path, roots, force=False):
                     con.execute("UPDATE items SET lufs = NULL, tpeak = NULL, loud_fail = 0, lyr = NULL "
                                 "WHERE root = ? AND relpath = ?", key)
                     con.execute("DELETE FROM lyrics WHERE item_id = (SELECT id FROM items WHERE root = ? AND relpath = ?)", key)
+                    con.execute("DELETE FROM audio_probe WHERE item_id = "
+                                "(SELECT id FROM items WHERE root = ? AND relpath = ?)", key)
                     updated += 1
     # A root with no media files at all is a missing/unmounted share, not an empty library: keep its
     # rows (and their ids, which queues and playlists point at) until the files are visible again.
@@ -495,6 +500,7 @@ def scan(db_path, roots, force=False):
     top = con.execute("SELECT MAX(id) AS m FROM items").fetchone()["m"] or 0
     con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('max_id', ?)", (str(max(high_water, top)),))
     con.execute("DELETE FROM lyrics WHERE item_id NOT IN (SELECT id FROM items)")
+    con.execute("DELETE FROM audio_probe WHERE item_id NOT IN (SELECT id FROM items)")
     hidden = dedupe(con)
     stats = {"added": added, "updated": updated, "removed": removed, "renamed": len(renamed),
              "renamed_ids": sorted(renamed), "failed": failed, "offline_roots": offline,

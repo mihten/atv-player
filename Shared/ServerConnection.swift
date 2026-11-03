@@ -64,7 +64,8 @@ final class ServerConnection: ObservableObject {
         }
     }
 
-    /// No-server mode: no socket; LocalQueue plays the saved queue and the library is scanned on the device.
+    /// No-server / Offline mode: no socket; LocalQueue plays the saved queue (no-server: the library is scanned on the
+    /// device; Offline: the downloads).
     func startLocal() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -74,7 +75,10 @@ final class ServerConnection: ObservableObject {
         failures = 0
         connected = true
         state = nil
-        let queue = LocalQueue(engine: engine, publish: { [weak self] newState in
+        // Offline (iPhone downloads) or the no-server library; each keeps its own queue file.
+        let source: LocalItemSource = Config.offlineMode ? (OfflineHooks.source ?? LocalLibrary.shared as LocalItemSource)
+            : LocalLibrary.shared
+        let queue = LocalQueue(engine: engine, source: source, publish: { [weak self] newState in
             self?.state = newState
             if let item = newState.current { self?.engine?.refreshLinks(item) }
             #if os(iOS)
@@ -84,7 +88,7 @@ final class ServerConnection: ObservableObject {
             self?.autoVersion += 1
         })
         local = queue
-        LocalLibrary.shared.start()
+        if !Config.offlineMode { LocalLibrary.shared.start() }
         queue.start()
         if !launchReported {
             launchReported = true

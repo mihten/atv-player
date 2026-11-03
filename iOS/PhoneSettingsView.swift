@@ -12,12 +12,14 @@ struct PhoneSettingsView: View {
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
+    @ObservedObject private var offline = OfflineStore.shared
 
     var body: some View {
         Form {
             Section {
                 row("Theme", "paintpalette", (AppTheme(rawValue: themeRaw) ?? .aurora).name) { PhoneThemeSettingsView() }
                 row("Server", "server.rack", serverSummary) { PhoneServerSettingsView() }
+                row("Downloads", "arrow.down.circle", downloadsSummary) { PhoneDownloadsSettingsView() }
                 row("Sound", "speaker.wave.2", soundSummary) { PhoneSoundSettingsView() }
                 row("Playback", "play.circle", keepMusic ? "Background on" : "Background off") { PhonePlaybackSettingsView() }
                 row("Lyrics", "captions.bubble", lyricsSummary) { PhoneLyricsSettingsView() }
@@ -47,7 +49,13 @@ struct PhoneSettingsView: View {
         }
     }
 
+    private var downloadsSummary: String {
+        let count = offline.lists.count
+        return count == 0 ? "None" : count == 1 ? "1 list" : "\(count) lists"
+    }
+
     private var serverSummary: String {
+        if locator.offlineMode { return "Offline" }
         if locator.localMode { return "No server" }
         if locator.isRemote { return "Internet" }
         return locator.isManual ? Config.remoteAddress : "Automatic"
@@ -129,8 +137,17 @@ struct PhoneServerSettingsView: View {
         if locator.isRemote { connection.restart() }
     }
 
-    private var libraryMode: Binding<Bool> {
-        Binding(get: { locator.localMode }, set: { locator.setLocalMode($0) })
+    private var libraryMode: Binding<LibraryMode> {
+        Binding(get: { locator.libraryMode }, set: { locator.setLibraryMode($0) })
+    }
+
+    private var libraryFooter: String {
+        switch locator.libraryMode {
+        case .server: return "Songs, videos, queues and playlists come from the ATV Player server."
+        case .local:
+            return "Plays files from this iPhone and an SMB share. No playlists, lyrics search, loudness levelling or web remote."
+        case .offline: return "Plays only what you downloaded. Switch back to Media server when you are home."
+        }
     }
 
     private var smbChanged: Bool {
@@ -167,17 +184,23 @@ struct PhoneServerSettingsView: View {
         Form {
             Section {
                 Picker("Library", selection: libraryMode) {
-                    Text("Media server").tag(false)
-                    Text("No server").tag(true)
+                    Text("Media server").tag(LibraryMode.server)
+                    Text("No server").tag(LibraryMode.local)
+                    Text("Offline (downloads)").tag(LibraryMode.offline)
                 }
             } footer: {
-                Text(locator.localMode
-                     ? "Plays files from this iPhone and an SMB share. No playlists, lyrics search, loudness levelling or web remote."
-                     : "Songs, videos, queues and playlists come from the ATV Player server.")
+                Text(libraryFooter)
             }
             .themedRow()
 
-            if locator.localMode {
+            if locator.offlineMode {
+                Section {
+                    NavigationLink { PhoneDownloadsSettingsView() } label: {
+                        Label("Downloads", systemImage: "arrow.down.circle")
+                    }
+                }
+                .themedRow()
+            } else if locator.localMode {
                 localSections
             } else {
                 serverSections
@@ -188,7 +211,7 @@ struct PhoneServerSettingsView: View {
         .withMiniPlayer()
         .onDisappear {
             applyRemote()
-            if locator.localMode { saveSMB() }
+            if locator.libraryMode == .local { saveSMB() }
         }
         .onChange(of: remoteMode) { engine.streamChanged() }
     }
@@ -557,12 +580,17 @@ struct PhoneAboutView: View {
         Form {
             Section("ATV Player") {
                 LabeledContent("Version", value: "\(AppVersion.short) (build \(AppVersion.build))")
-                LabeledContent("Plays", value: locator.localMode
-                               ? "Songs and music videos from this iPhone and an SMB share"
+                LabeledContent("Plays", value: locator.offlineMode ? "Your downloads (audio only)"
+                               : locator.localMode ? "Songs and music videos from this iPhone and an SMB share"
                                : "Songs and music videos from your own server")
             }
             .themedRow()
-            if locator.localMode {
+            if locator.offlineMode {
+                Section("Server") {
+                    LabeledContent("Status", value: "Offline · \(PlayLabels.count(OfflineStore.shared.items.count)) downloaded")
+                }
+                .themedRow()
+            } else if locator.localMode {
                 Section("Server") {
                     LabeledContent("Status", value: "No server · " + localLibrary.status)
                     LabeledContent("SMB share", value: LocalSettings.smbName ?? "Not set up")
@@ -581,7 +609,9 @@ struct PhoneAboutView: View {
             }
             Section("Good to know") {
                 Text("This iPhone has its own queue; the Apple TV's is separate.")
-                if locator.localMode {
+                if locator.offlineMode {
+                    Text("Loudness: downloads keep the server's measurement.")
+                } else if locator.localMode {
                     Text("Loudness: files play unchanged without the server (no levelling).")
                 } else {
                     Text("Loudness: the server measures each file once; new files play unchanged until then.")

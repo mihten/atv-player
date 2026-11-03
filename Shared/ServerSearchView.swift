@@ -44,6 +44,12 @@ struct ServerSearchView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                #if os(iOS)
+                Text("Downloaded music: Settings → Server → Library → Offline")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                #endif
             }
             .frame(maxWidth: 700)
         }

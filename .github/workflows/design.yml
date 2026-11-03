@@ -64,6 +64,11 @@ jobs:
           xcodebuild -version
           xcrun simctl list runtimes | grep -E 'tvOS|iOS' || true
 
+      - name: Offline download bookkeeping checks (iOS/OfflinePlan.swift)
+        run: |
+          swiftc -o "$RUNNER_TEMP/offline_plan_check" iOS/OfflinePlan.swift tools/offline_plan_check/main.swift
+          "$RUNNER_TEMP/offline_plan_check"
+
       - name: Cache CocoaPods
         uses: actions/cache@v4
         with:

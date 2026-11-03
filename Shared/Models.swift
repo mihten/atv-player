@@ -10,6 +10,8 @@ enum Config {
     nonisolated(unsafe) static var credentials: (user: String, password: String)? = nil
     /// No-server mode (Settings → Server → Library): queue, library and files on the device. Set by ServerLocator.
     nonisolated(unsafe) static var localMode = false
+    /// iPhone "Offline (downloads)" library: also localMode (device queue, no server at all), items from the downloads.
+    nonisolated(unsafe) static var offlineMode = false
     /// Away from home with "audio only": music videos are streamed as audio and shown like songs.
     static var streamAudioOnly: Bool { isRemote && RemoteSettings.audioOnly }
 
@@ -63,10 +65,11 @@ struct MediaItem: Codable, Identifiable, Hashable {
     /// ♥ (server 0.16.4+ / no-server LocalListening; nil from older servers). Per version group: true when the item or
     /// one of its versions is loved.
     var loved: Bool? = nil
-    /// No-server mode only (never sent by the server): where the file is. `smb://...` URL string, or a path relative
-    /// to LocalSettings.deviceFolder (the iPhone app's Documents folder, whose absolute path changes with app updates).
+    /// No-server mode only (never sent by the server): where the file is. `smb://...` URL string, `offline://<name>` (a
+    /// download, LocalMedia.offlineFolder), or a path relative to LocalSettings.deviceFolder (the iPhone app's Documents
+    /// folder, whose absolute path changes with app updates).
     var localPath: String? = nil
-    /// No-server mode only: file name of the cover image in LocalMedia.artFolder (nil = no cover).
+    /// No-server mode only: file name of the cover image in LocalMedia.artFolder, or `offline://<name>` (nil = no cover).
     var localArt: String? = nil
 
     /// A video that is shown and played as a video (not when only its audio is streamed).
@@ -77,7 +80,7 @@ struct MediaItem: Codable, Identifiable, Hashable {
     }
 
     var artURL: URL {
-        if let localArt { return LocalMedia.artFolder.appendingPathComponent(localArt) }
+        if let localArt { return LocalMedia.artURL(localArt) }
         return Config.serverURL.appendingPathComponent("art/\(id)")
     }
     /// The stream. Remote: the login goes in the URL (VLC sends it), and music videos can be audio only.

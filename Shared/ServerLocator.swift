@@ -20,14 +20,17 @@ final class ServerLocator: ObservableObject {
     @Published private(set) var searching = false
     /// The internet address is in use (HTTPS + login) instead of the home server.
     @Published private(set) var isRemote = false
-    /// No-server mode (Settings → Server → Library): no server is searched; `url` is LocalAPI.baseURL.
-    @Published private(set) var localMode = LocalSettings.enabled
+    /// No-server or Offline library (Settings → Server → Library): no server is searched; `url` is LocalAPI.baseURL.
+    @Published private(set) var localMode = LocalSettings.mode != .server
+    /// Offline (iPhone downloads): localMode too, items from the downloads instead of on-device files.
+    @Published private(set) var offlineMode = LocalSettings.mode == .offline
+    @Published private(set) var libraryMode = LocalSettings.mode
     private var browser: NWBrowser?
     private var fallbackTask: Task<Void, Never>?
 
     init() {
-        if LocalSettings.enabled {
-            useLocal()
+        if LocalSettings.mode != .server {
+            useLocal(offline: LocalSettings.mode == .offline)
             return
         }
         startSearching()
@@ -35,31 +38,42 @@ final class ServerLocator: ObservableObject {
 
     /// Settings: switch no-server mode on or off.
     func setLocalMode(_ on: Bool) {
-        LocalSettings.setEnabled(on)
-        if on {
+        setLibraryMode(on ? .local : .server)
+    }
+
+    /// Settings → Server → Library. The only way in or out of Offline (never switched automatically).
+    func setLibraryMode(_ mode: LibraryMode) {
+        LocalSettings.setMode(mode)
+        if mode != .server {
             stopBrowsing()
             fallbackTask?.cancel()
-            useLocal()
+            useLocal(offline: mode == .offline)
         } else {
             guard localMode else { return }
             Config.localMode = false
+            Config.offlineMode = false
             localMode = false
+            offlineMode = false
+            libraryMode = .server
             url = nil
             status = "Looking for the ATV Player server…"
             startSearching()
         }
     }
 
-    private func useLocal() {
+    private func useLocal(offline: Bool) {
         Config.localMode = true
+        Config.offlineMode = offline
         Config.isRemote = false
         Config.credentials = nil
         Config.serverURL = LocalAPI.baseURL
         isRemote = false
         localMode = true
+        offlineMode = offline
+        libraryMode = offline ? .offline : .local
         url = LocalAPI.baseURL
         #if os(iOS)
-        status = "No server: playing from this iPhone and the SMB share"
+        status = offline ? "Offline: playing your downloads" : "No server: playing from this iPhone and the SMB share"
         #else
         status = "No server: playing from the SMB share"
         #endif

@@ -34,6 +34,7 @@ struct PhoneApp: App {
                 connection.engine = engine
                 OrientationLock.shared.log = { [weak engine] in engine?.diag($0) }
                 connection.onUnreachable = { [weak locator] in locator?.serverUnreachable() }
+                OfflineStore.shared.attach(connection)
                 if locator.url != nil { connection.start() }
             }
             .onChange(of: connection.autoVersion) {
@@ -45,12 +46,23 @@ struct PhoneApp: App {
                 library.reset()
                 engine.streamChanged()
             }
-            // Switching no-server mode on is handled above (new url); switching it off stops the local queue.
-            .onChange(of: locator.localMode) { _, on in
-                if !on {
+            // Server -> No server / Offline is handled above (new url). Back to the server stops the local queue;
+            // No server <-> Offline keeps the url: other items and another queue file, so the local queue starts again.
+            .onChange(of: locator.libraryMode) { old, new in
+                if new == .server {
                     connection.stopLocal()
                     engine.unload()
+                } else {
+                    if old != .server {
+                        engine.unload()
+                        connection.restart()
+                    }
+                    Task {  // after the url change above: the new mode's items
+                        library.reset()
+                        await library.load(force: true)
+                    }
                 }
+                OfflineStore.shared.modeChanged()
                 // Server and no-server item ids overlap: drop covers, lyrics and keyframes cached by id.
                 artwork.reset()
                 LyricsStore.shared.reset()
@@ -85,11 +97,17 @@ final class LibraryStore: ObservableObject {
     /// A forced reload was asked for while loading: load once more afterwards.
     private var reloadPending = false
     private var localWatch: AnyCancellable?
+    private var offlineWatch: AnyCancellable?
 
     init() {
         // No-server mode: the on-device library changed (scan, tags read, reset).
         localWatch = LocalLibrary.shared.$version.dropFirst().sink { [weak self] _ in
-            guard Config.localMode else { return }
+            guard Config.localMode, !Config.offlineMode else { return }
+            Task { @MainActor in await self?.load(force: true) }
+        }
+        // Offline: a download finished or a list changed.
+        offlineWatch = OfflineStore.shared.$version.dropFirst().sink { [weak self] _ in
+            guard Config.offlineMode else { return }
             Task { @MainActor in await self?.load(force: true) }
         }
     }
@@ -106,7 +124,9 @@ final class LibraryStore: ObservableObject {
             reloadPending = false
             do {
                 let list: [MediaItem]
-                if Config.localMode {
+                if Config.offlineMode {
+                    list = OfflineStore.shared.items  // downloads: audio only, one version each
+                } else if Config.localMode {
                     list = LocalLibrary.shared.items  // already linked (VersionLinks) and marked (♥)
                 } else {
                     let (data, _) = try await Net.data(from: .api("api/library"))

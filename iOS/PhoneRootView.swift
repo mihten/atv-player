@@ -4,6 +4,7 @@ import SwiftUI
 /// A mini player sits above the tab bar whenever something is in the queue.
 struct PhoneRootView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
     @EnvironmentObject var engine: PlayerEngine
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -29,7 +30,13 @@ struct PhoneRootView: View {
             LibraryTab()
                 .tabItem { Label("Library", systemImage: "music.note.house") }
                 .tag(0)
-            NavigationStack { PhonePlaylistsView().demoPush("playlist") }
+            NavigationStack {
+                if locator.offlineMode {
+                    OfflineListsScreen()  // the downloaded lists
+                } else {
+                    PhonePlaylistsView().demoPush("playlist")
+                }
+            }
                 .tabItem { Label("Playlists", systemImage: "music.note.list") }
                 .tag(1)
             QueueTab()
@@ -188,13 +195,15 @@ struct LibraryTab: View {
     var body: some View {
         NavigationStack {
             Group {
-                if !theme.isClassic && query.trimmingCharacters(in: .whitespaces).isEmpty {
+                if locator.offlineMode {
+                    OfflineLibraryList(query: query)
+                } else if !theme.isClassic && query.trimmingCharacters(in: .whitespaces).isEmpty {
                     PhoneHome()
                 } else {
                     classicList
                 }
             }
-            .searchable(text: $query, prompt: "Title, artist, album, folder")
+            .searchable(text: $query, prompt: locator.offlineMode ? "Search downloads" : "Title, artist, album, folder")
             .navigationTitle("ATV Player")
             .demoPush("videos")
             .demoPush("folder")
@@ -635,6 +644,7 @@ struct PhonePlaylistsView: View {
 
 struct PhonePlaylistView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
     @Environment(\.appTheme) private var theme
     let playlistID: Int
     let title: String
@@ -656,6 +666,9 @@ struct PhonePlaylistView: View {
                     }
                 }
                 .themedRow()
+                if !locator.localMode {
+                    OfflineDownloadSection(collection: "playlist", playlist: playlistID)
+                }
                 Section("Songs and videos") {
                     // By position: the same song can be in a playlist twice.
                     ForEach(Array(detail.items.enumerated()), id: \.offset) { index, entry in

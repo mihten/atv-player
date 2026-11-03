@@ -8,9 +8,14 @@ import MobileVLCKit
 // No-server mode: the library is built on the device from an SMB share (both apps) and, on the iPhone, from the app's
 // Documents folder (Files app › On My iPhone › ATV Player). VLC lists the share and reads the tags (preparse).
 
+/// Settings → Server → Library: media server, no server (on-device files), or offline (iPhone downloads).
+enum LibraryMode: String {
+    case server, local, offline
+}
+
 /// Settings → Server → Library. The SMB password is kept in the Keychain.
 enum LocalSettings {
-    static let modeKey = "libraryMode"        // "server" (default) or "local"
+    static let modeKey = "libraryMode"        // "server" (default), "local" or "offline" (iPhone)
     static let smbKey = "smbAddress"          // as typed: nas/music, smb://nas/music, \\nas\music
     static let smbUserKey = "smbUser"
     static let smbDomainKey = "smbDomain"     // optional, usually empty
@@ -18,10 +23,17 @@ enum LocalSettings {
 
     private static var defaults: UserDefaults { .standard }
 
-    static var enabled: Bool { defaults.string(forKey: modeKey) == "local" }
+    static var mode: LibraryMode {
+        let mode = LibraryMode(rawValue: defaults.string(forKey: modeKey) ?? "") ?? .server
+        #if os(tvOS)
+        return mode == .offline ? .server : mode  // downloads are iPhone only
+        #else
+        return mode
+        #endif
+    }
 
-    static func setEnabled(_ on: Bool) {
-        defaults.set(on ? "local" : "server", forKey: modeKey)
+    static func setMode(_ mode: LibraryMode) {
+        defaults.set(mode.rawValue, forKey: modeKey)
     }
 
     static var smbAddress: String { defaults.string(forKey: smbKey) ?? "" }
@@ -102,6 +114,7 @@ enum LocalMedia {
     /// A MediaItem.localPath: an smb:// URL string, or a path relative to LocalSettings.deviceFolder.
     static func url(for localPath: String) -> URL? {
         if localPath.hasPrefix("smb://") { return URL(string: localPath) }
+        if localPath.hasPrefix(offlinePrefix) { return offlineFolder.appendingPathComponent(String(localPath.dropFirst(offlinePrefix.count))) }
         return LocalSettings.deviceFolder?.appendingPathComponent(localPath)
     }
 
@@ -119,6 +132,23 @@ enum LocalMedia {
 
     /// Covers copied out of the files' tags.
     static let artFolder: URL = LocalMedia.folder(.cachesDirectory, "ATVPlayer-art")
+
+    /// iPhone downloads (Offline library): Application Support, not Documents (scanned by no-server mode, shown in the
+    /// Files app), and not backed up to iCloud.
+    static let offlinePrefix = "offline://"  // never the start of a Documents-relative path
+    static let offlineFolder: URL = {
+        var url = LocalMedia.folder(.applicationSupportDirectory, "ATVPlayer-offline")
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+        return url
+    }()
+
+    /// MediaItem.localArt: a cover read from the tags (artFolder) or a downloaded cover (`offline://<name>`).
+    static func artURL(_ localArt: String) -> URL {
+        if localArt.hasPrefix(offlinePrefix) { return url(for: localArt) ?? offlineFolder }
+        return artFolder.appendingPathComponent(localArt)
+    }
 
     private static func folder(_ directory: FileManager.SearchPathDirectory, _ name: String) -> URL {
         let base = FileManager.default.urls(for: directory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
@@ -554,7 +584,7 @@ final class LocalLibrary: ObservableObject {
     }
 
     func scan() {
-        guard Config.localMode, !scanning else { return }
+        guard Config.localMode, !Config.offlineMode, !scanning else { return }
         scanning = true
         let current = generation
         Task { await self.runScan(current) }

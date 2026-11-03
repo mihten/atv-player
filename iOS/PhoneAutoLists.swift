@@ -5,6 +5,7 @@ import SwiftUI
 /// (connection.autoVersion) and, without the server, when the on-device library changes.
 struct PhoneAutoListView: View {
     @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
     let list: AutoList
     @State private var items: [MediaItem]?
     @State private var errorText: String?
@@ -24,6 +25,9 @@ struct PhoneAutoListView: View {
                     }
                 }
                 .themedRow()
+                if !locator.localMode && ["loved", "most_played"].contains(list.key) {
+                    OfflineDownloadSection(collection: list.key, playlist: nil)
+                }
                 if !items.isEmpty {
                     Section {
                         ForEach(items) { item in

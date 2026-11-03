@@ -36,6 +36,15 @@ private struct ErrorReply: Encodable {
     let error: String
 }
 
+/// iPhone Offline library (iOS/OfflineStore.swift registers itself; tvOS leaves both nil).
+@MainActor
+enum OfflineHooks {
+    /// The downloads as a queue source.
+    static var source: LocalItemSource?
+    /// Answers the API requests in Offline mode (nil = 404).
+    static var api: (@MainActor (URL) -> (Data, URLResponse)?)?
+}
+
 /// No-server mode: answers the apps' HTTP API requests (Net.data) from LocalLibrary, in the server's JSON shapes
 /// (server.py api_library, api_collection, api_browse, api_auto). Playlists are an empty list; everything else is a 404.
 enum LocalAPI {
@@ -44,6 +53,9 @@ enum LocalAPI {
 
     @MainActor
     static func respond(to url: URL) -> (Data, URLResponse) {
+        if Config.offlineMode {  // never the on-device library or the server
+            return OfflineHooks.api?(url) ?? notAvailable(url)
+        }
         let library = LocalLibrary.shared
         let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         var query: [String: String] = [:]
@@ -81,11 +93,16 @@ enum LocalAPI {
         return notAvailable(url)
     }
 
-    private static func notAvailable(_ url: URL) -> (Data, URLResponse) {
+    static func notAvailable(_ url: URL) -> (Data, URLResponse) {
         reply(url, 404, ErrorReply(error: "not available without the server"))
     }
 
-    private static func reply<T: Encodable>(_ url: URL, _ status: Int, _ value: T) -> (Data, URLResponse) {
+    /// {"items": [...]} in the server's shape (Offline answers too).
+    static func items(_ url: URL, _ items: [MediaItem]) -> (Data, URLResponse) {
+        reply(url, 200, ItemsReply(items: items))
+    }
+
+    static func reply<T: Encodable>(_ url: URL, _ status: Int, _ value: T) -> (Data, URLResponse) {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let data = (try? encoder.encode(value)) ?? Data("{}".utf8)

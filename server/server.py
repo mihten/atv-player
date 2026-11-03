@@ -12,6 +12,7 @@
 """
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import mimetypes
@@ -44,7 +45,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.8"
+VERSION = "0.16.9"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -990,16 +991,18 @@ async def copy_worker():
         item_id = COPY_QUEUE.pop(0)
         it = LIB.get(item_id)
         if wants_copy(it) and not main_copy_fresh(it) and os.path.isfile(item_path(it)):
-            started = time.time()
-            try:
-                ok = await loop.run_in_executor(None, make_main_copy, it, main_copy_path(item_id))
-            except Exception as e:  # noqa: BLE001 - the worker must keep running (and the job must end)
-                log.warning("main audio copy of %s: %s", item_id, e)
-                ok = False
-            if ok:
-                log.info("main audio copy %s in %.1f s ('%s')", item_id, time.time() - started, it["title"])
-            else:
-                COPY_FAILED[item_id] = it["mtime"]
+            async with MAIN_LOCKS.setdefault(item_id, asyncio.Lock()):  # an offline download may be building it
+                if not main_copy_fresh(it):
+                    started = time.time()
+                    try:
+                        ok = await loop.run_in_executor(None, make_main_copy, it, main_copy_path(item_id))
+                    except Exception as e:  # noqa: BLE001 - the worker must keep running (and the job must end)
+                        log.warning("main audio copy of %s: %s", item_id, e)
+                        ok = False
+                    if ok:
+                        log.info("main audio copy %s in %.1f s ('%s')", item_id, time.time() - started, it["title"])
+                    else:
+                        COPY_FAILED[item_id] = it["mtime"]
         if it is not None and main_copy_fresh(it):
             AUDIO_COPIES.add(item_id)
         job_step(item_id)
@@ -1819,6 +1822,228 @@ def make_audio_only(it, out):
     return True
 
 
+# ---------------------------------------------------------------- offline downloads (iPhone app)
+# /media/<id>?audio=best: the version of the item (its group: the song and its music videos) with the best audio, as
+# audio only and never transcoded: a song's original file, a video's default audio track as a stream copy (the main
+# copy the atv-audio sink uses). /api/offline/<collection> lists what that serves for a whole list.
+
+AUDIO_INFO: dict[int, tuple] = {}  # item id -> (mtime, audio_ord, info) from the audio_probe table / ffprobe
+MAIN_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def probe_audio(it):
+    """codec, bit depth (lossless only), sample rate and bit rate of the default audio track."""
+    res = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", f"a:{it.get('audio_ord') or 0}", "-show_entries",
+         "stream=codec_name,bits_per_raw_sample,bits_per_sample,sample_rate,bit_rate:stream_tags=BPS:format=bit_rate",
+         "-of", "json", item_path(it)],
+        capture_output=True, text=True, timeout=60,
+    )
+    data = json.loads(res.stdout or "{}")
+    stream = (data.get("streams") or [{}])[0]
+
+    def num(*values):
+        for v in values:
+            try:
+                n = int(float(v))
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                return n
+        return None
+
+    tags = {k.upper(): v for k, v in (stream.get("tags") or {}).items()}
+    bitrate = num(stream.get("bit_rate"), tags.get("BPS"),
+                  (data.get("format") or {}).get("bit_rate") if it["kind"] == "audio" else None)
+    return {"codec": stream.get("codec_name") or it.get("acodec") or it.get("codec"),
+            "bits": num(stream.get("bits_per_raw_sample"), stream.get("bits_per_sample")),
+            "rate": num(stream.get("sample_rate")), "bitrate": bitrate or num(it.get("bitrate"))}
+
+
+def audio_info(it):
+    """Probe result for the item's default audio track: memory, then library.db, then ffprobe (stored)."""
+    key = (it["mtime"], it.get("audio_ord"))
+    hit = AUDIO_INFO.get(it["id"])
+    if hit and hit[:2] == key:
+        return hit[2]
+    info = None
+    try:
+        con = sqlite3.connect(DB)
+        row = con.execute("SELECT mtime, audio_ord, codec, bits, rate, bitrate FROM audio_probe WHERE item_id = ?",
+                          (it["id"],)).fetchone()
+        if row and abs(row[0] - it["mtime"]) < 1 and row[1] == it.get("audio_ord"):
+            info = {"codec": row[2], "bits": row[3], "rate": row[4], "bitrate": row[5]}
+        else:
+            try:
+                info = probe_audio(it)
+            except (OSError, ValueError, subprocess.SubprocessError) as e:
+                log.warning("audio probe of %s: %s", it["id"], e)
+                info = {"codec": it.get("acodec") or it.get("codec"), "bits": None, "rate": None,
+                        "bitrate": it.get("bitrate")}
+            else:
+                con.execute("INSERT OR REPLACE INTO audio_probe (item_id, mtime, audio_ord, codec, bits, rate, bitrate)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?)", (it["id"], it["mtime"], it.get("audio_ord"), info["codec"],
+                                                              info["bits"], info["rate"], info["bitrate"]))
+                con.commit()
+        con.close()
+    except sqlite3.Error as e:
+        log.warning("audio probe cache: %s", e)
+        info = info or probe_audio(it)
+    AUDIO_INFO[it["id"]] = key + (info,)
+    return info
+
+
+def cached_audio_info(it):
+    hit = AUDIO_INFO.get(it["id"])
+    return hit[2] if hit and hit[:2] == (it["mtime"], it.get("audio_ord")) else None
+
+
+def has_audio(it):
+    return it["kind"] == "audio" or it.get("acodec") != ""  # "" = a video without an audio track
+
+
+def audio_rank(it, info):
+    """Bigger = better: lossless before lossy, then bit depth, sample rate, bit rate. Bit depth counts for lossless
+    only and bit rate for lossy only (a FLAC's bit rate says how well it compressed, not how good it sounds)."""
+    lossless = bool(it.get("lossless"))
+    info = info or {}
+    return (lossless, (info.get("bits") or 0) if lossless else 0, info.get("rate") or 0,
+            0 if lossless else (info.get("bitrate") or 0))
+
+
+def tied_members(item_id):
+    """Event loop only (LIB / VERSIONS are rebuilt there after a scan): the members of the item's group that can be the
+    best audio, i.e. those with audio tied on lossless / lossy. None = unknown item, [] = no member has audio."""
+    if item_id not in LIB:
+        return None
+    members = [LIB[i] for i in VERSIONS.get(item_id, [item_id]) if i in LIB and has_audio(LIB[i])]
+    if not members:
+        return []
+    top = max(bool(m.get("lossless")) for m in members)
+    return [m for m in members if bool(m.get("lossless")) == top]
+
+
+def pick_best(item_id, tied, infos):
+    """The best of the tied members (infos: id -> probe result); a tie keeps the requested item."""
+    if len(tied) == 1:
+        return tied[0]
+    ranks = {m["id"]: audio_rank(m, infos.get(m["id"])) for m in tied}
+    best = max(ranks.values())
+    if ranks.get(item_id) == best:
+        return next(m for m in tied if m["id"] == item_id)
+    return next(m for m in tied if ranks[m["id"]] == best)
+
+
+def probe_all(items):
+    """Executor: probe results for these item dicts (snapshots; never reads LIB)."""
+    return {it["id"]: audio_info(it) for it in items}
+
+
+async def probe(items):
+    unique = list({it["id"]: it for it in items}.values())
+    if not unique:
+        return {}
+    return await asyncio.get_running_loop().run_in_executor(None, probe_all, unique)
+
+
+def audio_format(it, info):
+    codec = (info or {}).get("codec") or it.get("acodec") or it.get("codec") or "?"
+    bits, rate = (info or {}).get("bits"), (info or {}).get("rate")
+    if bits and rate and it.get("lossless"):
+        return f"{codec} {bits}/{rate}"
+    return f"{codec} {rate}" if rate else codec
+
+
+def offline_rev(it):
+    """Changes when the served file changes (rescan: new mtime, new default track)."""
+    return f"{it['id']}:{int(it['mtime'])}:{it.get('audio_ord') or 0}"
+
+
+def offline_entry(entry_id, src, info):
+    if src["kind"] == "audio":
+        size, exact = src["size"], True
+    elif main_copy_fresh(src):
+        size, exact = main_copy_path(src["id"]).stat().st_size, True
+    else:  # estimated until the copy exists
+        rate = (info or {}).get("bitrate") or 0
+        size, exact = (int(rate * (src.get("duration") or 0) / 8) or None), False
+    return {"id": entry_id, "source": src["id"], "rev": offline_rev(src), "size": size, "size_exact": exact,
+            "format": audio_format(src, info) if info else None, "item": full(src)}
+
+
+async def offline_list(name, playlist=None):
+    """LIB / VERSIONS are read on the event loop only; the executor probes snapshots of the items."""
+    if name == "playlist":
+        pl = PLAYLISTS.get(playlist)
+        if pl is None:
+            return None
+        title = pl["name"]
+    elif name in AUTO_NAMES:
+        title = dict(AUTO_LISTS)[name]
+    else:
+        return None
+    rows = [(it["id"], tied_members(it["id"])) for it in collection(name, playlist=playlist)]
+    rows = [(i, tied) for i, tied in rows if tied]
+    infos = await probe([m for _, tied in rows if len(tied) > 1 for m in tied])
+    picked = [(i, pick_best(i, tied, infos)) for i, tied in rows]
+    # videos without their copy yet: the bit rate gives the size estimate
+    infos.update(await probe([src for _, src in picked if src["kind"] == "video" and src["id"] not in infos
+                              and not main_copy_fresh(src)]))
+    entries = [offline_entry(i, src, infos.get(src["id"]) or cached_audio_info(src)) for i, src in picked]
+    stamp = hashlib.sha1(json.dumps([title] + [(e["id"], e["rev"]) for e in entries]).encode()).hexdigest()[:16]
+    return {"collection": name, "playlist": playlist, "name": title, "stamp": stamp, "items": entries,
+            "size": sum(e["size"] or 0 for e in entries)}
+
+
+async def api_offline(request):
+    """A list for the iPhone's offline downloads: each entry with the id ?audio=best serves (source), its rev, size
+    (exact, or estimated from the bit rate until a video's copy exists) and item; stamp changes with the list."""
+    try:
+        playlist = int(request.query["playlist"]) if "playlist" in request.query else None
+    except ValueError:
+        raise web.HTTPBadRequest(text="bad playlist id")
+    out = await offline_list(request.match_info["name"], playlist)
+    if out is None:
+        raise web.HTTPNotFound(text="no such list")
+    resp = web.json_response(out)
+    resp.enable_compression()
+    return resp
+
+
+async def media_best(it):
+    tied = tied_members(it["id"])
+    if not tied:
+        raise web.HTTPNotFound(text="no audio track")
+    infos = await probe(tied if len(tied) > 1 else [])
+    src = pick_best(it["id"], tied, infos)  # a snapshot: a rescan meanwhile does not change it under us
+    src_id = src["id"]
+    info = infos.get(src_id) or (await probe([src]))[src_id]
+    headers = {"X-Audio-Source": str(src_id), "X-Audio-Format": audio_format(src, info)}
+    if src["kind"] == "audio":
+        path = item_path(src)
+        if not os.path.isfile(path):
+            raise web.HTTPNotFound()
+        headers["Content-Type"] = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return web.FileResponse(path, chunk_size=512 * 1024, headers=headers)
+    out = main_copy_path(src_id)
+    if not main_copy_fresh(src):  # build it and wait; never the video file
+        if not os.path.isfile(item_path(src)):
+            raise web.HTTPNotFound()
+        async with MAIN_LOCKS.setdefault(src_id, asyncio.Lock()):  # shared with copy_worker: built once
+            if not main_copy_fresh(src):
+                started = time.time()
+                ok = await asyncio.get_running_loop().run_in_executor(None, make_main_copy, src, out)
+                if not ok:
+                    COPY_FAILED[src_id] = src["mtime"]
+                    raise web.HTTPServiceUnavailable(text="audio copy failed")
+                log.info("main audio copy %s in %.1f s for a download ('%s')", src_id, time.time() - started,
+                         src["title"])
+        AUDIO_COPIES.add(src_id)
+        await push_copies()
+    headers["Content-Type"] = "audio/x-matroska"
+    return web.FileResponse(out, chunk_size=512 * 1024, headers=headers)
+
+
 async def media(request):
     it = LIB.get(int(request.match_info["id"]))
     if not it:
@@ -1828,6 +2053,8 @@ async def media(request):
         log.warning("media %s: file missing (%s), rescanning", it["id"], it["relpath"])
         asyncio.create_task(run_scan())
         raise web.HTTPNotFound()
+    if request.query.get("audio") == "best":  # offline download (iPhone): audio only, best version of the group
+        return await media_best(it)
     if request.query.get("audio") == "main":  # the sink: only the track the TV plays
         variant = request.query.get("v")
         if it["kind"] == "video" and variant not in ("copy", "orig"):
@@ -2132,6 +2359,7 @@ def make_app():
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/api/library", api_library)
     app.router.add_get("/api/collection/{name}", api_collection)
+    app.router.add_get("/api/offline/{name}", api_offline)
     app.router.add_get("/api/folders", api_folders)
     app.router.add_get("/api/browse", api_browse)
     app.router.add_get("/api/item/{id:\\d+}", api_item)

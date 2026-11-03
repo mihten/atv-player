@@ -19,12 +19,30 @@ private struct LocalQueueFile: Codable {
     var noted: Int?
 }
 
+/// Where a device queue's items come from: the no-server library (LocalLibrary) or the iPhone's downloads (Offline).
+@MainActor
+protocol LocalItemSource: AnyObject {
+    var byID: [Int: MediaItem] { get }
+    /// LocalQueue: re-prune the queue and publish the state after the items changed (rescan, ♥).
+    var itemsChanged: (@MainActor () -> Void)? { get set }
+    /// Item ids for a play_collection message, in list order; nil = not available here.
+    func collectionIDs(_ msg: [String: Any]) -> [Int]?
+    /// ♥ on / off (nil = toggle) for the item's version group; false when nothing changed.
+    func love(_ id: Int, on: Bool?) -> Bool
+    func rescan()
+    /// The queue's own file in LocalMedia.dataFolder (each library keeps its own queue).
+    var queueFile: String { get }
+    /// Plays count in LocalListening (the no-server For you lists).
+    var notesPlays: Bool { get }
+}
+
 /// No-server mode: this device's queue on the device itself. A port of the server's Session for one player
 /// (server.py set_queue, advance, handle_cmd, on_message, smart_shuffle). ServerConnection hands it the "cmd"
 /// messages and the player's reports instead of sending them over the WebSocket. Plays and hearts go to LocalListening.
 @MainActor
 final class LocalQueue {
     private weak var engine: PlayerEngine?
+    private let source: LocalItemSource
     private let publish: @MainActor (SessionState) -> Void
     /// A ♥ changed (ServerConnection.autoVersion: auto-playlist screens reload).
     private let autoChanged: @MainActor () -> Void
@@ -51,16 +69,17 @@ final class LocalQueue {
     private var dropped: [Int: [Int]] = [:]
 
     private static let historyDays: Double = 30
-    private static var fileURL: URL { LocalMedia.dataFolder.appendingPathComponent("local-queue.json") }
+    private var fileURL: URL { LocalMedia.dataFolder.appendingPathComponent(source.queueFile) }
 
-    init(engine: PlayerEngine?, publish: @escaping @MainActor (SessionState) -> Void,
+    init(engine: PlayerEngine?, source: LocalItemSource, publish: @escaping @MainActor (SessionState) -> Void,
          autoChanged: @escaping @MainActor () -> Void) {
         self.engine = engine
+        self.source = source
         self.publish = publish
         self.autoChanged = autoChanged
     }
 
-    private var library: LocalLibrary { LocalLibrary.shared }
+    private var library: LocalItemSource { source }
 
     private var currentID: Int? { index >= 0 && index < queue.count ? queue[index] : nil }
     private var current: MediaItem? { currentID.flatMap { library.byID[$0] } }
@@ -68,7 +87,7 @@ final class LocalQueue {
     /// Restores the saved queue; the current item is loaded paused at its saved position.
     func start() {
         load()
-        LocalListening.shared.importHistory(played)
+        if source.notesPlays { LocalListening.shared.importHistory(played) }
         prune()
         if noted != currentID { noted = nil }
         broadcast()
@@ -90,10 +109,7 @@ final class LocalQueue {
             setQueue(Self.ints(msg["ids"]), startIndex: Self.int(msg["start_index"]), shuffle: Self.bool(msg["shuffle"]))
         case "play_collection":
             let name = msg["collection"] as? String ?? "all"
-            guard name != "playlist" else { return }  // playlists need the server
-            let recursive = (msg["recursive"] as? Bool) != false
-            let ids = library.collection(name, root: msg["root"] as? String, folder: msg["folder"] as? String,
-                                         recursive: recursive).map(\.id)
+            guard let ids = library.collectionIDs(msg) else { return }
             var start: Int?
             if let startIndex = Self.int(msg["start_index"]) {
                 start = startIndex
@@ -185,25 +201,11 @@ final class LocalQueue {
             dropped = [:]
             changed()
         case "love":  // {id (default: the current item), on (missing = toggle)}
-            guard let id = Self.int(msg["id"]) ?? currentID, let item = library.byID[id] else { return }
-            // Per version group (server.py set_loved): on marks the item, off clears every member.
-            let listening = LocalListening.shared
-            let group = item.versionGroup
-            let lovedNow = group.contains { listening.isLoved($0) }
-            let on = msg["on"].map { Self.bool($0) } ?? !lovedNow
-            guard on != lovedNow else { return }
-            if on {
-                // An audio twin is not listed in its versions: mark a listed member, so every member shows the heart.
-                let listed = item.versions?.contains { $0.id == id } ?? true
-                _ = listening.setLoved(listed ? id : item.versions?.first?.id ?? id, true)
-            } else {
-                for member in group { _ = listening.setLoved(member, false) }
-            }
-            LocalLog.write("heart \(on ? "on" : "off"): \(id)")
-            library.lovedChanged()  // items carry "loved"; the queue state follows (itemsChanged)
-            autoChanged()
+            guard let id = Self.int(msg["id"]) ?? currentID,
+                  library.love(id, on: msg["on"].map { Self.bool($0) }) else { return }
+            autoChanged()  // items carry "loved"; the queue state follows (itemsChanged)
         case "rescan":
-            library.scan()
+            library.rescan()
         default:
             break
         }
@@ -501,7 +503,7 @@ final class LocalQueue {
 
     private func notePlayed(_ id: Int) {
         let now = Date().timeIntervalSince1970
-        LocalListening.shared.notePlay(id)
+        if source.notesPlays { LocalListening.shared.notePlay(id) }
         played[id] = now
         let cutoff = now - Self.historyDays * 86400
         played = played.filter { $0.value > cutoff }
@@ -518,7 +520,7 @@ final class LocalQueue {
     // MARK: - Persistence
 
     private func load() {
-        guard let data = try? Data(contentsOf: Self.fileURL),
+        guard let data = try? Data(contentsOf: fileURL),
               let saved = try? JSONDecoder().decode(LocalQueueFile.self, from: data) else { return }
         queue = saved.queue
         original = saved.original
@@ -557,7 +559,7 @@ final class LocalQueue {
                                   preferVideos: preferVideos, swapped: swappedKeys, pinned: Array(pinned),
                                   dropped: droppedKeys, noted: noted)
         guard let data = try? JSONEncoder().encode(file) else { return }
-        try? data.write(to: Self.fileURL, options: .atomic)
+        try? data.write(to: fileURL, options: .atomic)
     }
 
     // MARK: - JSON values (numbers may arrive as Int, Double or NSNumber)
@@ -594,6 +596,42 @@ final class LocalQueue {
         if let list = value as? [Any] { return list.compactMap { int($0) } }
         return []
     }
+}
+
+/// The no-server library as a queue source (on-device files and the SMB share; no playlists).
+extension LocalLibrary: LocalItemSource {
+    var queueFile: String { "local-queue.json" }
+    var notesPlays: Bool { true }
+
+    func collectionIDs(_ msg: [String: Any]) -> [Int]? {
+        let name = msg["collection"] as? String ?? "all"
+        guard name != "playlist" else { return nil }  // playlists need the server
+        let recursive = (msg["recursive"] as? Bool) != false
+        return collection(name, root: msg["root"] as? String, folder: msg["folder"] as? String,
+                          recursive: recursive).map(\.id)
+    }
+
+    func love(_ id: Int, on wanted: Bool?) -> Bool {
+        guard let item = byID[id] else { return false }
+        // Per version group (server.py set_loved): on marks the item, off clears every member.
+        let listening = LocalListening.shared
+        let group = item.versionGroup
+        let lovedNow = group.contains { listening.isLoved($0) }
+        let on = wanted ?? !lovedNow
+        guard on != lovedNow else { return false }
+        if on {
+            // An audio twin is not listed in its versions: mark a listed member, so every member shows the heart.
+            let listed = item.versions?.contains { $0.id == id } ?? true
+            _ = listening.setLoved(listed ? id : item.versions?.first?.id ?? id, true)
+        } else {
+            for member in group { _ = listening.setLoved(member, false) }
+        }
+        LocalLog.write("heart \(on ? "on" : "off"): \(id)")
+        lovedChanged()
+        return true
+    }
+
+    func rescan() { scan() }
 }
 
 /// No-server mode: the player's log lines (normally sent to the server log) go to the system log and to a small
