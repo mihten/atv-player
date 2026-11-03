@@ -46,7 +46,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.17.0"
+VERSION = "0.17.1"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -808,6 +808,7 @@ def sink_state(kind):
 # `button` messages) act on the session that owns the output: the TV while its sound goes to atv-audio, else the box.
 
 IN_USE_NOTICE = "atv-audio is in use by the Apple TV: paused"
+BOX_CURVES = {v: box_sound.curve(v) for v, _ in box_sound.choices() if v not in ("off", "custom")}  # editor: start from
 
 
 def tv_routed():
@@ -828,8 +829,8 @@ def box_sink_state():
 
 def box_extra(s):
     cur = s.current
-    return {"sound": s.sound, "sound_presets": box_sound.choices(), "sound_label": box_sound.label(s.sound, cur),
-            "notice": s.notice}
+    return {"sound": s.sound, "sound_presets": box_sound.choices(), "sound_curves": BOX_CURVES,
+            "sound_label": box_sound.label(s.sound, cur), "notice": s.notice}
 
 
 async def box_send_sound(s):
@@ -869,15 +870,28 @@ def live_position(s):
 
 
 async def on_button(data):
-    """Headphone button from the sink: {cmd play|pause|next|prev, session}."""
+    """Headphone button from the sink: {cmd play|pause|next|prev|seek, session}; seek has delta (s, +- 60)."""
     c = data.get("cmd")
-    if c not in ("play", "pause", "next", "prev"):
+    if c not in ("play", "pause", "next", "prev", "seek"):
         return
     s = owner_session(data.get("session"))
-    log.info("button: %s -> %s (%s)", c, KIND_NAMES[s.kind], s.kind)
     msg: dict = {"cmd": c}
+    extra = ""
     if c == "prev":
         msg["position"] = live_position(s)
+    elif c == "seek":
+        if s.current is None:
+            return
+        try:
+            delta = max(-60.0, min(60.0, float(data.get("delta"))))
+        except (TypeError, ValueError, OverflowError):
+            return
+        dur = s.duration or (s.current or {}).get("duration") or 0
+        pos = live_position(s) + delta
+        msg["position"] = max(0.0, min(pos, dur - 1.0) if dur > 1 else pos)
+        s.position, s.position_at = msg["position"], time.time()  # a second step before the next status adds up
+        extra = f" {delta:+.0f} s -> {msg['position']:.1f}"
+    log.info("button: %s%s -> %s (%s)", c, extra, KIND_NAMES[s.kind], s.kind)
     await handle_cmd(s, msg)
 
 
@@ -1413,7 +1427,7 @@ async def handle_cmd(s, msg):
         if s.kind == "box":
             await broadcast_state(s)
     elif cmd == "sound" and s.kind == "box":  # web remote: {preset, boost, loudness}
-        new = box_sound.clean({**s.sound, **{k: msg[k] for k in ("preset", "boost", "loudness") if k in msg}})
+        new = box_sound.clean({**s.sound, **{k: msg[k] for k in ("preset", "boost", "loudness", "custom") if k in msg}})
         if new != s.sound:
             s.sound = new
             s.save()
@@ -1487,6 +1501,19 @@ async def handle_cmd(s, msg):
         on = not is_loved(item_id) if msg.get("on") is None else bool(msg.get("on"))
         if set_loved(item_id, on):
             log.info("[%s] heart %s: %s '%s'", s.kind, "on" if on else "off", item_id, LIB[item_id]["title"])
+            await loved_changed()
+    elif cmd == "love_ids":  # web remote select mode: {ids, on (default true)}, one push at the end
+        on = msg.get("on", True) is not False
+        changed = 0
+        for i in msg.get("ids") or []:
+            try:
+                item_id = int(i)
+            except (TypeError, ValueError):
+                continue
+            if item_id in LIB and set_loved(item_id, on):
+                changed += 1
+        if changed:
+            log.info("[%s] heart %s: %d items", s.kind, "on" if on else "off", changed)
             await loved_changed()
     elif cmd == "rescan":
         asyncio.create_task(run_scan())

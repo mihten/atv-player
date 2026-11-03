@@ -49,10 +49,17 @@ def unit():
     check(box_sound.message({"preset": "p:1", "boost": 0, "loudness": "off"}, None)["bands"][0] == 0.0,
           "VLC's -1.11e-15 bands read as 0")
     names = [n for _, n in box_sound.choices()]
-    check(len(names) == 21 and names[:3] == ["Off", "Momentum 4", "Amplify"] and names[-1] == "Techno",
-          f"presets: Off + 2 app + 18 VLC in the apps' order ({len(names)})")
+    check(len(names) == 22 and names[:3] == ["Off", "Momentum 4", "Amplify"] and names[-2:] == ["Techno", "Custom"],
+          f"presets: Off + 2 app + 18 VLC + Custom in the apps' order ({len(names)})")
     check(box_sound.clean({"preset": "x", "boost": 99, "loudness": "level"}) == box_sound.DEFAULT | {"boost": 8},
           "clean(): unknown preset -> off, boost clamped 0..8, unknown loudness -> default")
+    cu = box_sound.clean({"preset": "custom", "custom": {"preamp": 30, "bands": [1.4, -40, "x", 3]}})
+    check(cu["custom"] == {"preamp": 12, "bands": [1, -12, 0, 3, 0, 0, 0, 0, 0, 0]},
+          f"custom curve: whole dB, clamped ±12, padded to 10 bands ({cu['custom']})")
+    m = box_sound.message({"preset": "custom", "boost": 1, "loudness": "off",
+                           "custom": {"preamp": -2, "bands": [3] + [0] * 9}}, None)
+    check(m["processed"] and m["gain"] == -1.0 and m["bands"][0] == 3.0, "custom: preamp -2 + boost 1 = -1 dB, band 1 +3")
+    check(box_sound.label({"preset": "custom", "custom": {"preamp": 2}}, None).startswith("Custom +2"), "custom label")
     check(box_sound.message(m4, q)["freqs"] == [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
           "ISO band frequencies (the TV's)")
 
@@ -95,7 +102,9 @@ async def main(tmp):
             st = await H.state(http, "box")
             check(st["session"] == "box" and st["session_name"] == "atv-audio", "session box named atv-audio")
             check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box"], "sessions list has the box")
-            check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 21, "box state: sound + presets")
+            check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 22, "box state: sound + presets")
+            check(st["sound_curves"]["a:momentum4"][0] == 4.0 and len(st["sound_curves"]) == 20,
+                  "box state: preset curves for the custom editor (20 = no off / custom)")
             check(st["sink"]["connected"] is False and st["sink"]["route"] is False, "box sink: not connected")
             check((await H.state(http, "phone"))["sink"] is None and "sound" not in await H.state(http, "tv"),
                   "tv / phone states have no box fields")
@@ -126,9 +135,22 @@ async def main(tmp):
             snd, _ = await until(box, "sound")
             check(snd is not None and snd["processed"] and snd["gain"] >= 6.0, f"sound change -> box gets it ({snd})")
             st = await H.state(http, "box")
-            check(st["sound"] == {"preset": "a:momentum4", "boost": 2, "loudness": "raise"}, "state.sound saved")
+            check({k: st["sound"][k] for k in ("preset", "boost", "loudness")} == {"preset": "a:momentum4", "boost": 2,
+                  "loudness": "raise"} and st["sound"]["custom"] == box_sound.FLAT, "state.sound saved (custom flat)")
             saved = json.loads((tmp / "data" / "state-box.json").read_text())
             check(saved.get("sound", {}).get("preset") == "a:momentum4", "... and in state-box.json")
+
+            # ---- custom curve from the web remote: saved, sent live
+            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "custom",
+                                    "custom": {"preamp": 1, "bands": [5, 0, 0, 0, 0, 0, 0, 0, 0, -3]}})
+            snd, _ = await until(box, "sound")
+            check(snd is not None and snd["bands"][0] == 5.0 and snd["bands"][9] == -3.0, "custom curve -> box sound")
+            saved = json.loads((tmp / "data" / "state-box.json").read_text())
+            check(saved["sound"]["custom"]["bands"][0] == 5 and saved["sound"]["preset"] == "custom",
+                  "custom curve saved on the server (state-box.json)")
+            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "a:momentum4"})
+            await H.drain(box)
+            check((await H.state(http, "box"))["sound"]["custom"]["bands"][0] == 5, "custom curve kept when another preset is picked")
 
             # ---- volume from a box remote reaches the sink
             await remote.send_json({"type": "volume", "percent": 33, "muted": False})
@@ -139,6 +161,28 @@ async def main(tmp):
             await sink.send_json({"type": "button", "cmd": "next", "session": "box"})
             load, _ = await until(box, "load")
             check(load is not None and load["item"]["id"] == ids[1], "button next (box) -> box loads item 2")
+
+            # ---- headphone seek on the box: relative to the live position, kept inside the track
+            await box.send_json({"type": "status", "item": ids[1], "playing": False, "position": 1.0, "duration": 4})
+            await H.drain(box)
+            await sink.send_json({"type": "button", "cmd": "seek", "delta": 10, "session": "box"})
+            ctl, _ = await until(box, "control")
+            check(ctl and ctl["action"] == "seek" and abs(ctl["position"] - 3.0) < 0.01, f"seek +10 clamped to duration-1 ({ctl})")
+            await sink.send_json({"type": "button", "cmd": "seek", "delta": -10, "session": "box"})
+            ctl, _ = await until(box, "control")
+            check(ctl and ctl["position"] == 0.0, f"seek -10 clamped to 0 ({ctl})")
+            await sink.send_json({"type": "button", "cmd": "seek", "delta": "x", "session": "box"})
+            ctl, _ = await until(box, "control", 0.6)
+            check(ctl is None, "bad seek delta ignored")
+
+            # ---- love many at once
+            async with http.get(f"{H.BASE}/api/auto") as r:
+                before = next(a for a in await r.json() if a["key"] == "loved")["count"]
+            await remote.send_json({"type": "cmd", "cmd": "love_ids", "ids": ids[:3] + [999999, "x"]})
+            auto, _ = await until(remote, "auto")
+            async with http.get(f"{H.BASE}/api/auto") as r:
+                after = next(a for a in await r.json() if a["key"] == "loved")["count"]
+            check(auto is not None and after == before + 3, f"love_ids: 3 loved, unknown ids ignored ({before} -> {after})")
 
             # ---- the TV takes the output: the box is paused with a notice
             tv = await H.connect(http, "role=player&kind=tv")

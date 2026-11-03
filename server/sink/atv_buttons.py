@@ -5,16 +5,25 @@ Registers a media player with BlueZ (org.bluez.Media1.RegisterPlayer = an AVRCP 
 send their buttons to it: Play / Pause (tap), Next / Previous (swipe), and the wear sensor's Pause (taken off) /
 Play (put on). Without a registered player BlueZ only turns Play / Pause into input-device keys, the rest is lost.
 
+Fast forward / rewind (held) never reach a registered player: BlueZ 5.82's AVRCP target handles only play, stop,
+pause, forward and backward (profiles/audio/avrcp.c passthrough_handlers) and hands the rest to its input device
+"<headphones> (AVRCP)" as KEY_FASTFORWARD / KEY_REWIND (avctp.c key_map; press, kernel autorepeat while held,
+release). Those keys are read from /dev/input/event* here (the user needs group `input`): the first press seeks
+SEEK_STEP s, every SEEK_EVERY s of holding one more step.
+
   stdin:  JSON lines from atv_audio.py  {"status": "Playing"|"Paused"|"Stopped", "title", "artist", "length" (s)}
-  stdout: JSON lines to atv_audio.py    {"cmd": "play"|"pause"|"next"|"prev"}  and  {"log": "..."}
+  stdout: JSON lines to atv_audio.py    {"cmd": "play"|"pause"|"next"|"prev"}, {"cmd": "seek", "delta": s}
+          and {"log": "..."}
 
 A Play within PLAY_GUARD s after a headphone (re)connects is dropped here (headphones that are switched on while
 worn send Play by themselves: no automatic start). Needs python3-dbus and GLib (libglib-2.0); no PyGObject.
 Exit code 3 = python3-dbus missing (atv_audio.py then stops trying).
 """
 import ctypes
+import glob
 import json
 import os
+import struct
 import sys
 import time
 
@@ -29,6 +38,10 @@ PATH = "/eu/atvplayer/atvaudio/player"
 MPRIS = "org.mpris.MediaPlayer2.Player"
 PLAY_GUARD = 10.0
 G_IO_IN, G_IO_ERR, G_IO_HUP = 1, 8, 16
+EV_KEY, KEY_REWIND, KEY_FASTFORWARD = 1, 168, 208
+SEEK_STEP = 10.0   # s per step
+SEEK_EVERY = 0.6   # s of holding per further step
+EVENT = struct.Struct("llHHi")  # struct input_event on 64-bit Linux
 
 
 def out(msg):
@@ -129,6 +142,76 @@ class Player(dbus.service.Object):
         pass
 
 
+class SeekKeys:
+    """KEY_FASTFORWARD / KEY_REWIND from BlueZ's "(AVRCP)" input devices -> seek commands."""
+
+    def __init__(self):
+        self.open = {}         # path -> (fd, watch id)
+        self.denied = set()    # paths already reported as not readable
+        self.last = {}         # key -> monotonic time of its last step
+
+    @staticmethod
+    def devices():
+        found = []
+        for sysdir in glob.glob("/sys/class/input/event*"):
+            try:
+                with open(os.path.join(sysdir, "device", "name")) as f:
+                    name = f.read().strip()
+            except OSError:
+                continue
+            if name.endswith("(AVRCP)"):
+                found.append(("/dev/input/" + os.path.basename(sysdir), name))
+        return found
+
+    def scan(self, watch):
+        """Open new AVRCP input devices (called at start, on connects and every few seconds)."""
+        for path, name in self.devices():
+            if path in self.open:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError as e:
+                if path not in self.denied:
+                    self.denied.add(path)
+                    note(f"seek keys: cannot read {path} ({name}): {e.strerror}; the user needs group 'input'")
+                continue
+            self.denied.discard(path)
+            self.open[path] = (fd, watch(fd, path))
+            note(f"seek keys: reading {path} ({name})")
+
+    def closed(self, path):
+        fd, _ = self.open.pop(path, (None, None))
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def read(self, fd):
+        """False when the device went away."""
+        while True:
+            try:
+                data = os.read(fd, EVENT.size * 64)
+            except BlockingIOError:
+                return True
+            except OSError:
+                return False
+            if not data:
+                return False
+            for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, typ, code, value = EVENT.unpack_from(data, off)
+                if typ == EV_KEY and code in (KEY_FASTFORWARD, KEY_REWIND):
+                    self.key(code, value)
+
+    def key(self, code, value):
+        if code not in (KEY_FASTFORWARD, KEY_REWIND):
+            return
+        now = time.monotonic()
+        if value == 1 or (value == 2 and now - self.last.get(code, 0) >= SEEK_EVERY):
+            self.last[code] = now
+            out({"cmd": "seek", "delta": SEEK_STEP if code == KEY_FASTFORWARD else -SEEK_STEP})
+
+
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
@@ -211,6 +294,38 @@ def main():
 
     callback = io_func(on_stdin)  # keep a reference: GLib calls it for the life of the loop
     glib.g_io_add_watch(glib.g_io_channel_unix_new(0), G_IO_IN | G_IO_ERR | G_IO_HUP, callback, None)
+
+    seeks = SeekKeys()
+    keepalive = []  # ctypes callbacks GLib still holds
+
+    def watch_device(fd, path):
+        def on_event(_channel, condition, _data):
+            try:
+                if condition & (G_IO_ERR | G_IO_HUP) or not seeks.read(fd):
+                    seeks.closed(path)
+                    return 0
+                return 1
+            except Exception as e:
+                note(f"seek keys: {e!r}")
+                return 1
+        cb = io_func(on_event)
+        keepalive.append(cb)
+        return glib.g_io_add_watch(glib.g_io_channel_unix_new(fd), G_IO_IN | G_IO_ERR | G_IO_HUP, cb, None)
+
+    timeout_func = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+    glib.g_timeout_add_seconds.restype = ctypes.c_uint
+    glib.g_timeout_add_seconds.argtypes = [ctypes.c_uint, timeout_func, ctypes.c_void_p]
+
+    def rescan(_data):
+        try:
+            seeks.scan(watch_device)
+        except Exception as e:
+            note(f"seek keys: {e!r}")
+        return 1
+
+    rescan_cb = timeout_func(rescan)  # the AVRCP input device appears a moment after each connect
+    glib.g_timeout_add_seconds(3, rescan_cb, None)
+    rescan(None)
     glib.g_main_loop_run(loop)
 
 

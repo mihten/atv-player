@@ -43,13 +43,31 @@ VLC_PRESETS = (
     ("Techno", 5.0, (8.0, 5.6, _Z, -5.6, -4.8, _Z, 8.0, 9.6, 9.6, 8.8)),
 )
 
-DEFAULT = {"preset": "off", "boost": 0, "loudness": "raise"}  # the apps' defaults
+CUSTOM_RANGE = 12  # dB, preamp and every band (the TV's custom editor), 1 dB steps
+FLAT = {"preamp": 0, "bands": [0] * len(FREQS)}
+DEFAULT = {"preset": "off", "boost": 0, "loudness": "raise", "custom": FLAT}  # the apps' defaults
 
 
 def choices():
-    """[[value, label], ...] in the apps' display order (Custom is TV-only: its curve lives on the TV)."""
+    """[[value, label], ...] in the apps' display order. Custom = this queue's own curve, kept on the server."""
     return ([["off", "Off"]] + [[f"a:{i}", name] for i, name, _, _ in APP_PRESETS]
-            + [[f"p:{n}", p[0]] for n, p in enumerate(VLC_PRESETS)])
+            + [[f"p:{n}", p[0]] for n, p in enumerate(VLC_PRESETS)] + [["custom", "Custom"]])
+
+
+def _db(value):
+    try:
+        return max(-CUSTOM_RANGE, min(CUSTOM_RANGE, int(round(float(value)))))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def clean_custom(custom):
+    """{preamp, bands[10]} in whole dB within ±12; anything missing is flat."""
+    if not isinstance(custom, dict):
+        return dict(FLAT, bands=list(FLAT["bands"]))
+    bands = custom.get("bands") if isinstance(custom.get("bands"), list) else []
+    bands = [_db(b) for b in bands[:len(FREQS)]] + [0] * max(0, len(FREQS) - len(bands))
+    return {"preamp": _db(custom.get("preamp", 0)), "bands": bands}
 
 
 def valid_preset(value):
@@ -59,6 +77,7 @@ def valid_preset(value):
 def clean(settings):
     """Stored / requested settings -> {preset, boost, loudness} with every value in range."""
     s = dict(DEFAULT)
+    s["custom"] = clean_custom(settings.get("custom") if isinstance(settings, dict) else None)
     if isinstance(settings, dict):
         if valid_preset(settings.get("preset")):
             s["preset"] = settings["preset"]
@@ -71,8 +90,11 @@ def clean(settings):
     return s
 
 
-def curve(preset):
-    """(preset gain in dB relative to 'equalizer off', 10 band gains)."""
+def curve(preset, settings=None):
+    """(preset gain in dB relative to 'equalizer off', 10 band gains). Custom reads settings["custom"]."""
+    if preset == "custom":
+        c = clean_custom((settings or {}).get("custom"))
+        return float(c["preamp"]), [float(b) for b in c["bands"]]
     if preset.startswith("a:"):
         for i, _, pre, bands in APP_PRESETS:
             if preset == f"a:{i}":
@@ -108,7 +130,7 @@ def message(settings, item):
     """The `sound` message for the sink (same fields as the TV sends): {processed, gain, freqs, bands}."""
     settings = clean(settings)
     on = processed(settings)
-    pre, bands = curve(settings["preset"])
+    pre, bands = curve(settings["preset"], settings)
     lift = level_gain(settings, (item or {}).get("lufs"))
     total = min(MAX_TOTAL, pre + settings["boost"] + lift) if on else 0.0
     return {"type": "sound", "processed": on, "gain": _r(total), "freqs": [_r(f) for f in FREQS],
@@ -121,7 +143,7 @@ def label(settings, item):
     if not processed(settings):
         return "unprocessed"
     name = dict((v, n) for v, n in choices()).get(settings["preset"], "Off")
-    pre, _ = curve(settings["preset"])
+    pre, _ = curve(settings["preset"], settings)
     lift = level_gain(settings, (item or {}).get("lufs"))
     total = min(MAX_TOTAL, pre + settings["boost"] + lift)
     return f"{name} {pre:+.0f}, boost +{settings['boost']}, loudness {lift:+.1f} = {total:+.1f} dB"

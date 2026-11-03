@@ -1473,6 +1473,11 @@ class Buttons:
         sink.log(f"button {cmd} -> {session}")
         self.send({"type": "button", "cmd": cmd, "session": session})
 
+    def on_seek(self, delta):
+        session = self.router.button_session()
+        self.router.sink.log(f"button seek {delta:+.0f} s -> {session}")
+        self.send({"type": "button", "cmd": "seek", "delta": delta, "session": session})
+
     async def run(self):
         backoff = 5.0
         while True:
@@ -1492,6 +1497,8 @@ class Buttons:
                     continue
                 if msg.get("cmd") in ("play", "pause", "next", "prev"):
                     self.on_cmd(msg["cmd"])
+                elif msg.get("cmd") == "seek" and isinstance(msg.get("delta"), (int, float)):
+                    self.on_seek(float(msg["delta"]))
                 elif msg.get("log"):
                     self.router.sink.log(f"buttons: {str(msg['log'])[:300]}")
             code = await self.proc.wait()

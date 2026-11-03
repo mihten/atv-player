@@ -1,0 +1,6 @@
+# atv-audio: headphone fast forward / rewind. BlueZ creates an input device "<headphones> (AVRCP)" for every connected
+# headset and sends those two keys there (never to a registered media player). This lets group `audio` (the account
+# that runs atv-audio is in it) read only those devices; other input devices stay root:input.
+#   sudo install -m 644 70-atv-audio-avrcp.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+# It applies from the next headphone connect (or: sudo udevadm trigger --subsystem-match=input).
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*(AVRCP)", GROUP="audio", MODE="0660"

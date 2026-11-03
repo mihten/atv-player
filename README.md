@@ -205,4 +205,10 @@ by itself. If the headphones go away while it plays, it pauses with a notice; it
 `python3-dbus`), so Bluetooth headphones send Play / Pause / Next / Previous, and their wear sensor's pause (taken
 off) and play (put on), to whichever queue holds the output: the Apple TV's while its sound goes to atv-audio,
 otherwise atv-audio's own. A Play in the first 10 s after the headphones (re)connect is ignored, so switching them
-on never starts playback. `ATV_AUDIO_BOX=0` turns the own queue off, `ATV_AUDIO_BUTTONS=0` the buttons.
+on never starts playback. Holding fast forward / rewind seeks 10 s, and 10 s more for every 0.6 s held: BlueZ
+sends those two keys only to its `<headphones> (AVRCP)` input device, so install `server/sink/70-atv-audio-avrcp.rules`
+(lets group `audio` read just those devices; see the comments in the file). `ATV_AUDIO_BOX=0` turns the own queue off,
+`ATV_AUDIO_BUTTONS=0` the buttons.
+
+The EQ list includes **Custom**: **Edit** opens a preamp + 10-band editor (±12 dB, 1 dB steps, changes are heard at once,
+"Start from a preset" copies a preset's curve). The curve is kept on the server with the queue's other sound settings.

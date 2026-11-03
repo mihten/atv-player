@@ -143,7 +143,7 @@ html[data-look="classic"] .eyebrow { letter-spacing: .06em; }
 
 /* ── Now playing ──────────────────────────────────────────────────────────── */
 #player { border-radius: var(--r); padding: 16px; display: grid; gap: 0 16px; position: relative; overflow: hidden;
-  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "note note" "vol vol" "snd snd" "next next"; }
+  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "bnote bnote" "vol vol" "snd snd" "next next"; }
 html[data-look="aurora"] #player { background: linear-gradient(90deg, color-mix(in srgb, var(--t0) 38%, transparent), transparent 75%), var(--card); }
 .stage { grid-area: art; position: relative; width: var(--art); height: var(--art); align-self: center; }
 html[data-look="vinyl"] .stage { width: calc(var(--art) * 1.36); }
@@ -215,16 +215,30 @@ html[data-look="classic"] .tb.play { background: var(--acc); color: #fff; }
 .vol input { flex: 1; min-width: 0; accent-color: var(--acc); height: 22px; cursor: pointer; }
 .vol.muted input { opacity: .45; }
 .vol .vn { width: 4.2em; text-align: right; }
-/* atv-audio's own queue: notice (headphones gone / in use by the Apple TV) and its sound settings */
-.note { grid-area: note; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 8px 12px; border-radius: var(--r-s); color: var(--ink);
+/* atv-audio's own queue: notice (headphones gone / in use by the Apple TV) and its sound settings (label | control grid) */
+.bnote { grid-area: bnote; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 8px 12px; border-radius: var(--r-s); color: var(--ink);
   background: color-mix(in srgb, var(--acc) 18%, transparent); border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent); font-size: 13px; }
-.note[hidden], .snd[hidden] { display: none; }
-.note span { flex: 1; min-width: 0; }
-.snd { grid-area: snd; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 0 2px; color: var(--ink2); font-size: 12.5px; }
-.snd select.pill { max-width: 170px; }
-.snd .boost { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
-.snd .boost .pill { padding: 5px 10px; }
-.snd .lab { flex-basis: 100%; color: var(--ink3); font-size: 11.5px; }
+.bnote[hidden], .snd[hidden], .snd [hidden] { display: none; }
+.bnote span { flex: 1; min-width: 0; }
+.snd { grid-area: snd; display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px 14px; padding: 10px 0 2px; color: var(--ink2); font-size: 13px; }
+.snd .sctl { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.snd select.pill { flex: 1 1 auto; min-width: 0; max-width: 260px; }
+.snd .num { min-width: 3.6em; text-align: center; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.snd .lab { grid-column: 1 / -1; color: var(--ink3); font-size: 11.5px; }
+.tog { width: 46px; height: 28px; border-radius: 14px; border: 0; padding: 0; background: rgba(255,255,255,.2); position: relative; flex: none; cursor: pointer; transition: background .2s; }
+.tog::after { content: ""; position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.tog.on { background: var(--acc); }
+.tog.on::after { transform: translateX(18px); }
+/* custom equalizer editor (sheet) */
+.eqed { display: grid; gap: 4px; }
+.eqr { display: grid; grid-template-columns: 4.6em minmax(0, 1fr) 4.2em; align-items: center; gap: 10px; font-size: 13px; color: var(--ink2); }
+.eqr input { width: 100%; accent-color: var(--acc); height: 26px; cursor: pointer; }
+.eqr b { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.eqr.pre { padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.eqbtns { display: flex; gap: 8px; align-items: center; }
+.eqbtns select.pill { flex: 1; min-width: 0; max-width: none; }
+/* Select / Done stays in view below the tabs (Folders, Videos) */
+.toolbar.stick { position: sticky; top: var(--tabs-h, 58px); z-index: 5; padding: 0 0 10px; }
 .vol .tb { padding: 4px; }
 .upnext { grid-area: next; display: flex; align-items: center; gap: 10px; min-width: 0; padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--ink2); }
 .upnext:empty { display: none; }
@@ -329,7 +343,8 @@ html[data-look="aurora"] .vt:hover .va { box-shadow: 0 14px 34px color-mix(in sr
 #selbar { position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 9; max-width: 740px; margin: 0 auto; border-radius: 18px; padding: 9px 10px 9px 16px;
   display: none; align-items: center; gap: 8px; background: rgba(20,20,20,.92); border: 1px solid color-mix(in srgb, var(--acc) 55%, transparent); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
 #selbar .grow { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 480px) { #selbar [data-act=selClear] { display: none; } }
+#selbar .narrow { display: none; }
+@media (max-width: 480px) { #selbar [data-act=selClear], #selbar .wide { display: none; } #selbar .narrow { display: inline; } #selbar { padding-left: 12px; gap: 6px; } }
 body.selecting #selbar { display: flex; }
 body.selecting #mini { display: none; }
 body.selecting #toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
@@ -420,7 +435,7 @@ html[data-look="vinyl"] .sheet > div { background: linear-gradient(#2e1f14, #1a1
     grid-template-areas: "player top" "player status" "player quick" "player tabs" "player main"; grid-template-rows: auto auto auto auto 1fr; }
   .top { grid-area: top; padding-top: 26px; } .status { grid-area: status; } .quick { grid-area: quick; } nav#tabs { grid-area: tabs; margin: 10px 0 0; padding: 10px 0; } main { grid-area: main; }
   #player { grid-area: player; align-self: start; position: sticky; top: 20px; margin-top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; scrollbar-width: none;
-    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "note" "vol" "snd" "next"; padding: 24px 28px; gap: 0; }
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "bnote" "vol" "snd" "next"; padding: 24px 28px; gap: 0; }
   #player::-webkit-scrollbar { display: none; }
   #player .stage { justify-self: center; margin: 16px 0 22px; }
   .np-title { font-size: 28px; }
@@ -507,16 +522,16 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <button class="tb sm" id="rep" title="Repeat"></button>
       <button class="tb sm" id="shot" title="Screenshot of the Apple TV screen"></button>
     </div>
-    <div class="note" id="note" hidden><span id="noteText"></span><button class="pill" id="noteOk">OK</button></div>
+    <div class="bnote" id="note" hidden><span id="noteText"></span><button class="pill" id="noteOk">OK</button></div>
     <div class="vol" id="vol" hidden title="atv-audio volume (the headphones' own volume)">
       <button class="tb sm" id="volMute" title="Mute / unmute"></button>
       <input type="range" id="volRange" min="0" max="100" step="1" aria-label="atv-audio volume">
       <span class="vn" id="volNum"></span>
     </div>
     <div class="snd" id="snd" hidden title="Sound of atv-audio's own queue (the Apple TV keeps its own settings)">
-      <span>EQ</span><select class="pill" id="sndPreset" aria-label="Equalizer"></select>
-      <span class="boost">Boost <button class="pill" id="sndDown" aria-label="Boost down">−</button><b id="sndBoost">0</b><button class="pill" id="sndUp" aria-label="Boost up">+</button></span>
-      <button class="pill" id="sndLoud" title="Raises quiet recordings. Never turns anything down.">Loudness</button>
+      <span>EQ</span><div class="sctl"><select class="pill" id="sndPreset" aria-label="Equalizer"></select><button class="pill" id="sndEdit" hidden>Edit</button></div>
+      <span>Boost</span><div class="sctl"><button class="ib" id="sndDown" aria-label="Boost down">−</button><span class="num" id="sndBoost">+0 dB</span><button class="ib" id="sndUp" aria-label="Boost up">+</button></div>
+      <span>Loudness</span><div class="sctl"><button class="tog" id="sndLoud" role="switch" aria-label="Loudness" title="Raises quiet recordings. Never turns anything down."></button></div>
       <span class="lab" id="sndLabel"></span>
     </div>
     <div class="upnext" id="upnext"></div>
@@ -540,7 +555,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
 
 <div id="mini"><span class="th" id="miniArt"></span><div class="meta"><div class="t" id="miniTitle"></div><div class="s" id="miniSub"></div></div>
   <button class="tb" id="miniPP" data-cmd="toggle" title="Play / pause"></button><button class="tb" data-cmd="next" id="miniNext" title="Next"></button><div class="mbar"><div id="miniFill"></div></div></div>
-<div id="selbar"><span class="grow" id="selCount"></span><button class="pill" data-act="selClear">Clear</button><button class="pill primary" data-act="selAdd" id="selAddBtn">Add to playlist</button><button class="pill" data-act="selDone">Done</button></div>
+<div id="selbar"><span class="grow" id="selCount"></span><button class="pill" data-act="selClear">Clear</button><button class="pill" data-act="selLove" id="selLoveBtn" title="Add to Loved">♥ Love</button><button class="pill primary" data-act="selAdd" id="selAddBtn"><span class="wide">Add to playlist</span><span class="narrow">Playlist</span></button><button class="pill" data-act="selDone">Done</button></div>
 <div class="sheet" id="sheet"><div id="sheetBody"></div></div>
 <div id="toast"></div>
 
@@ -834,14 +849,53 @@ function drawBox(s) {
     $("sndPreset").innerHTML = (s.sound_presets || []).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
   }
   if (document.activeElement !== $("sndPreset")) $("sndPreset").value = s.sound.preset;
-  $("sndBoost").textContent = `+${s.sound.boost}`;
+  $("sndEdit").hidden = s.sound.preset !== "custom";
+  $("sndBoost").textContent = `+${s.sound.boost} dB`;
   $("sndDown").disabled = s.sound.boost <= 0; $("sndUp").disabled = s.sound.boost >= 8;
-  $("sndLoud").classList.toggle("primary", s.sound.loudness !== "off");
-  $("sndLoud").textContent = `Loudness ${s.sound.loudness !== "off" ? "on" : "off"}`;
+  const loud = s.sound.loudness !== "off";
+  $("sndLoud").classList.toggle("on", loud); $("sndLoud").setAttribute("aria-checked", loud);
   $("sndLabel").textContent = s.sound_label ? `Now: ${s.sound_label}` : "";
 }
 const boxSound = (patch) => cmd("sound", patch);
-$("sndPreset").onchange = (e) => { boxSound({ preset: e.target.value }); e.target.blur(); };
+$("sndPreset").onchange = (e) => { const v = e.target.value; boxSound({ preset: v }); e.target.blur(); if (v === "custom") eqEditor(); };
+$("sndEdit").onclick = () => eqEditor();
+
+/** Custom equalizer of atv-audio's queue (kept on the server): preamp + 10 bands, ±12 dB in 1 dB steps, like the
+ *  Apple TV's custom editor. Every move is applied live (at most ~7 changes a second). */
+const EQ_LABELS = ["31 Hz", "63 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"];
+const dbText = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v)} dB`;
+function eqEditor() {
+  if (!st || !st.sound) return;
+  const c = st.sound.custom || { preamp: 0, bands: Array(10).fill(0) };
+  let cur = { preamp: c.preamp, bands: c.bands.slice() }, timer = null, last = 0;
+  const row = (label, idx, v, cls = "") => `<label class="eqr${cls}"><span>${label}</span><input type="range" min="-12" max="12" step="1" value="${v}" data-b="${idx}" aria-label="${label}"><b>${dbText(v)}</b></label>`;
+  const draw = () => `<div class="st">Custom equalizer</div><div class="eqed">` + row("Preamp", -1, cur.preamp, " pre") +
+    cur.bands.map((v, i) => row(EQ_LABELS[i], i, v)).join("") + `</div>` +
+    `<div class="eqbtns"><select class="pill" id="eqFrom" aria-label="Start from a preset"><option value="">Start from a preset…</option>` +
+    (st.sound_presets || []).filter(([v]) => v !== "custom" && v !== "off").map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("") +
+    `</select><button class="pill" data-eq="flat">Flat</button></div><button class="opt cancel" data-eq="done">Done</button>`;
+  const push = () => { clearTimeout(timer); const wait = 150 - (Date.now() - last);
+    const go = () => { last = Date.now(); boxSound({ preset: "custom", custom: { preamp: cur.preamp, bands: cur.bands.slice() } }); };
+    if (wait <= 0) go(); else timer = setTimeout(go, wait); };
+  const redraw = () => { $("sheetBody").innerHTML = draw(); bind(); };
+  const bind = () => { const f = $("eqFrom"); if (f) f.onchange = () => {
+    const curve = (st.sound_curves || {})[f.value]; if (!curve) return;
+    cur = { preamp: Math.round(curve[0]), bands: curve[1].map((b) => Math.max(-12, Math.min(12, Math.round(b)))) };
+    cur.preamp = Math.max(-12, Math.min(12, cur.preamp)); redraw(); push(); }; };
+  openSheet(draw(), (e) => {
+    const b = e.target.closest("[data-eq]"); if (!b) return;
+    if (b.dataset.eq === "done") return closeSheet();
+    if (b.dataset.eq === "flat") { cur = { preamp: 0, bands: Array(10).fill(0) }; redraw(); push(); }
+  });
+  $("sheetBody").oninput = (e) => {
+    const r = e.target.closest("input[data-b]"); if (!r) return;
+    const v = +r.value, i = +r.dataset.b;
+    if (i < 0) cur.preamp = v; else cur.bands[i] = v;
+    r.nextElementSibling.textContent = dbText(v); push();
+  };
+  bind();
+  if (st.sound.preset !== "custom") push();
+}
 $("sndDown").onclick = () => st && st.sound && boxSound({ boost: st.sound.boost - 1 });
 $("sndUp").onclick = () => st && st.sound && boxSound({ boost: st.sound.boost + 1 });
 $("sndLoud").onclick = () => st && st.sound && boxSound({ loudness: st.sound.loudness === "off" ? "raise" : "off" });
@@ -1060,15 +1114,15 @@ function render() {
 /** A music-video tile (16:9 frame grab, ＋ on the left corner); click plays the videos starting here.
     `selectable` (Videos tab): in select mode the ＋ is a checkbox and a click ticks the tile instead. */
 const videoTile = (i, selectable) => {
-  const s = selectable && selMode, on = s && sel.has(`i:${i.id}`);
+  const s = selectable && selMode, on = s && pickedItem(i);
   return `<div class="vt${isCur(i.id) ? " cur" : ""}${on ? " picked" : ""}" data-act="${s ? "selItem" : "video"}" data-id="${i.id}"><div class="va" style="--th:${thumbBg(i.id)}">${ic("film")}${i.art ? `<img loading="lazy" src="/art/${i.id}" alt="" onerror="this.remove()">` : ""}` +
-    (s ? ck(on, `data-act="selItem" data-id="${i.id}"`, false) : `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`) + `</div>` +
+    (s ? ck(on, `data-act="selItem" data-id="${i.id}"`) : `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`) + `</div>` +
     `<div class="t">${esc(i.title)}</div><div class="s">${esc(i.artist || "")}</div></div>`;
 };
 /** A file row in Folders: ＋ / checkbox on the left; in select mode a click on the row ticks it. */
 const fileRow = (depth) => (i) => {
-  const on = selMode && sel.has(`i:${i.id}`), covered = selMode && !!coverOfItem(i);
-  return withLead(rowHtml(i, `data-act="${selMode ? (covered ? "noop" : "selItem") : "item"}" style="--d:${depth}"`, `sub${isCur(i.id) ? " cur" : ""}${on || covered ? " picked" : ""}`), itemLead(i));
+  const on = selMode && pickedItem(i);
+  return withLead(rowHtml(i, `data-act="${selMode ? "selItem" : "item"}" style="--d:${depth}"`, `sub${isCur(i.id) ? " cur" : ""}${on ? " picked" : ""}`), itemLead(i));
 };
 
 /** Same order all day, new order tomorrow (so the home view changes without jumping on every redraw). */
@@ -1113,9 +1167,9 @@ function homeHtml() {
 
 function folderRow(root, folder, n, depth, open) {
   const label = folder ? folder.split("/").pop() : `(${root})`;
-  const on = selMode && sel.has(`f:${root}/${folder}`), covered = selMode && !!coverOfFolder(root, folder);
-  return `<div class="row${depth ? " sub" : ""}${open ? " open" : ""}${on || covered ? " picked" : ""}" data-act="toggleFolder" data-key="${esc(root + "/" + folder)}" style="--d:${depth}">` +
-    (selMode ? ck(on, `data-act="selFolder" data-root="${esc(root)}" data-folder="${esc(folder)}"`, covered)
+  const on = selMode && pickedFolder(root, folder);
+  return `<div class="row${depth ? " sub" : ""}${open ? " open" : ""}${on ? " picked" : ""}" data-act="toggleFolder" data-key="${esc(root + "/" + folder)}" style="--d:${depth}">` +
+    (selMode ? ck(on, `data-act="selFolder" data-root="${esc(root)}" data-folder="${esc(folder)}"`)
       : `<button class="ib lead" data-act="addFolder" data-root="${esc(root)}" data-folder="${esc(folder)}" title="Add folder to playlist">${ic("plus")}</button>`) +
     `<span class="th fold">${ic("folder")}</span>` +
     `<div class="meta"><div class="t">${esc(label)}</div><div class="s">${esc(root)} · ${n} items</div></div>` +
@@ -1127,54 +1181,81 @@ function folderRow(root, folder, n, depth, open) {
 /** "＋ add to playlist" as the first thing in a row (left side, away from ▶︎ / 🔀). */
 const withLead = (html, button) => html.replace(/^(<div[^>]*>)/, `$1${button}`);
 
-/* ── Select mode (Folders, Videos): checkboxes instead of ＋, one "Add to playlist" for all of them ──
+/* ── Select mode (Folders, Videos): checkboxes instead of ＋, one "Add to playlist" / "Love" for all of them ──
    sel keeps the picks in click order: "f:<root>/<folder>" → {root, folder} (a folder incl. subfolders; the "(root)" row = that
-   root's own files only, as listed) and "i:<id>" → {id}. A picked folder covers what is inside it: those rows show ticked and
-   greyed, and picking a folder drops picks it now covers, so nothing is added twice. */
+   root's own files only, as listed), "i:<id>" → {id}, and exclusions inside a picked folder: "xf:<root>/<folder>" → {root,
+   folder} and "x:<id>" → {id}. What counts for an item: its own i: / x: key, else the DEEPEST f: / xf: folder that holds it
+   (so a folder can be unticked inside a ticked one, and ticked again inside that). */
 let selMode = false;
 const sel = new Map();
 const inFolder = (root, folder, i) => i.root === root && (folder ? i.folder === folder || (i.folder || "").startsWith(folder + "/") : !i.folder);
-/** The picked folder that covers this item / folder (strictly above it), if any. */
-const coverOfItem = (i) => { for (const [k, v] of sel) if (k[0] === "f" && inFolder(v.root, v.folder, i)) return k; return null; };
-const coverOfFolder = (root, folder) => { for (const [k, v] of sel) if (k[0] === "f" && v.root === root && v.folder && folder !== v.folder && folder.startsWith(v.folder + "/")) return k; return null; };
+const holdsFolder = (v, root, folder) => v.root === root && (v.folder === folder || (!!v.folder && folder.startsWith(v.folder + "/")));
+const depthOf = (folder) => folder ? folder.split("/").length : 0;
+/** The deepest folder decision for an item (true = picked, false = left out, null = no folder key holds it). */
+function folderDecision(test) {
+  let best = null, depth = -1;
+  for (const [k, v] of sel) {
+    if (k[0] !== "f" && !k.startsWith("xf:")) continue;
+    if (test(v) && depthOf(v.folder) > depth) { depth = depthOf(v.folder); best = k[0] === "f"; }
+  }
+  return best;
+}
+const pickedItem = (i) => sel.has(`i:${i.id}`) || (!sel.has(`x:${i.id}`) && folderDecision((v) => inFolder(v.root, v.folder, i)) === true);
+const pickedFolder = (root, folder) => folderDecision((v) => holdsFolder(v, root, folder)) === true;
 /** Library ids of all picks, in pick order, each folder in library order (= what the server's folder add gives), no repeats. */
 function selIds() {
   const out = [], seen = new Set(), push = (id) => { if (!seen.has(id)) { seen.add(id); out.push(id); } };
   for (const [k, v] of sel) {
-    if (k[0] === "i") { if (byId.has(v.id)) push(v.id); }
-    else for (const i of lib) if (inFolder(v.root, v.folder, i)) push(i.id);
+    if (k[0] === "i") { const it = byId.get(v.id); if (it && pickedItem(it)) push(v.id); }
+    else if (k[0] === "f") { for (const i of lib) if (inFolder(v.root, v.folder, i) && pickedItem(i)) push(i.id); }
   }
   return out;
 }
-const ck = (on, attrs, covered) => `<button class="ib lead ck${on || covered ? " on" : ""}" ${attrs} ${covered ? "disabled" : ""} title="${covered ? "In a selected folder" : on ? "Unselect" : "Select"}">${ic("check")}</button>`;
+const ck = (on, attrs) => `<button class="ib lead ck${on ? " on" : ""}" ${attrs} title="${on ? "Unselect" : "Select"}">${ic("check")}</button>`;
 /** ＋ (normal) or a checkbox (select mode) for a file row / video tile. */
-const itemLead = (i) => selMode ? ck(sel.has(`i:${i.id}`), `data-act="selItem" data-id="${i.id}"`, !!coverOfItem(i))
+const itemLead = (i) => selMode ? ck(pickedItem(i), `data-act="selItem" data-id="${i.id}"`)
   : `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`;
-const selToggleHtml = () => `<div class="toolbar"><span class="grow"></span>` +
+const selToggleHtml = () => `<div class="toolbar stick"><span class="grow"></span>` +
   `<button class="pill${selMode ? " primary" : ""}" data-act="${selMode ? "selDone" : "selStart"}">${ic("check")} ${selMode ? "Done" : "Select"}</button></div>`;
 function drawSelbar() {
   const on = selMode && (tab === "folders" || tab === "videos");
   document.body.classList.toggle("selecting", on);
   if (!on) return;
   const n = selIds().length;
-  $("selCount").textContent = n ? `${n} selected` : "None selected";
-  $("selAddBtn").disabled = !n;
+  $("selCount").innerHTML = n ? `${n}<span class="wide"> selected</span>` : `0<span class="wide"> selected</span>`;
+  $("selAddBtn").disabled = !n; $("selLoveBtn").disabled = !n;
 }
-function toggleSel(key, val) {
-  if (sel.has(key)) sel.delete(key);
-  else {
-    sel.set(key, val);
-    if (key[0] === "f") for (const [k, v] of [...sel]) {  // drop picks the new folder now covers
-      if (k === key) continue;
-      if (k[0] === "i" ? inFolder(val.root, val.folder, byId.get(v.id) || {}) : (val.folder && v.root === val.root && v.folder.startsWith(val.folder + "/"))) sel.delete(k);
-    }
+/** Tick / untick one item: its own key wins over the folders around it. */
+function toggleItem(id) {
+  const it = byId.get(id); if (!it) return;
+  const want = !pickedItem(it);
+  sel.delete(`i:${id}`); sel.delete(`x:${id}`);
+  if (pickedItem(it) !== want) sel.set(want ? `i:${id}` : `x:${id}`, { id });
+  render();
+}
+/** Tick / untick a folder: everything inside follows (keys inside it are dropped), then a key for the folder itself
+ *  only if the folders around it do not already give the wanted state. */
+function toggleFolder(root, folder) {
+  const want = !pickedFolder(root, folder), inside = { root, folder };
+  for (const [k, v] of [...sel]) {
+    if (k[0] === "i" || k[0] === "x" && !k.startsWith("xf:")) { const it = byId.get(v.id); if (it && inFolder(root, folder, it)) sel.delete(k); }
+    else if (holdsFolder(inside, v.root, v.folder)) sel.delete(k);
   }
+  if (pickedFolder(root, folder) !== want) sel.set(`${want ? "f" : "xf"}:${root}/${folder}`, { root, folder });
   render();
 }
 const endSelect = () => { selMode = false; sel.clear(); render(); };
 function addSelected() {
   const ids = selIds(); if (!ids.length) return;
   addToPlaylist({ ids }, `${ids.length} selected item${ids.length === 1 ? "" : "s"}`, endSelect);
+}
+/** ♥ every selected item (Loved list); already loved ones stay as they are. */
+function loveSelected() {
+  const ids = selIds(); if (!ids.length) return;
+  const fresh = ids.filter((id) => !lovedIds.has(id)).length;
+  cmd("love_ids", { ids, on: true });
+  toast(fresh ? `Loved ${fresh}${fresh < ids.length ? ` (${ids.length - fresh} already loved)` : ""}` : "All of them are already loved");
+  endSelect();
 }
 const withActs = (html, acts) => html.replace(/<\/div>$/, `<div class="acts">${acts}</div></div>`);
 const plMeta = (p) => [`${p.count} item${p.count === 1 ? "" : "s"}`, p.videos ? `${p.videos} video${p.videos === 1 ? "" : "s"}` : "", fmt(p.duration), p.missing ? `${p.missing} missing` : ""].filter(Boolean).join(" · ");
@@ -1262,7 +1343,7 @@ async function rewritePl(items, what) {
 function sortSheet() {
   openSheet(`<div class="st">Sort "${esc(openPl.name)}" by…</div><div class="list">` +
     Object.entries(SORTS).map(([k, [label]]) => `<button class="opt" data-sort="${k}">${ic("list")}<span class="t" style="flex:1">${label}</span></button>`).join("") +
-    `</div><div class="note">Saves the new order. Undo brings the old order back.</div><button class="opt cancel" data-sort="cancel">Cancel</button>`,
+    `</div><button class="opt cancel" data-sort="cancel">Cancel</button>`,
   (e) => {
     const b = e.target.closest("[data-sort]"); if (!b) return;
     closeSheet();
@@ -1282,7 +1363,7 @@ async function newPlaylist(source, label) {
 }
 
 function openSheet(html, onclick) {
-  $("sheetBody").innerHTML = html; $("sheet").classList.add("show"); $("sheetBody").onclick = onclick;
+  $("sheetBody").innerHTML = html; $("sheet").classList.add("show"); $("sheetBody").onclick = onclick; $("sheetBody").oninput = null;
 }
 const closeSheet = () => $("sheet").classList.remove("show");
 
@@ -1322,7 +1403,7 @@ function lookSheet() {
   const draw = () => `<div class="st">Look</div><div class="looks">` +
     Object.entries(LOOKS).map(([k, name]) => `<button class="lk${k === look ? " sel" : ""}" data-look="${k}"><span class="pv ${k}"></span>${name}</button>`).join("") + `</div>` +
     `<div class="switch${motion ? " on" : ""}" data-motion="1"><span>Moving background and spinning record</span><i></i></div>` +
-    `<div class="note">Saved in this browser only. The Apple TV and the iPhone each keep their own look.</div><button class="opt cancel" data-close="1">Done</button>`;
+    `<button class="opt cancel" data-close="1">Done</button>`;
   openSheet(draw(), (e) => {
     const b = e.target.closest("[data-look],[data-motion],[data-close]"); if (!b) return;
     if (b.dataset.close) return closeSheet();
@@ -1332,6 +1413,8 @@ function lookSheet() {
   });
 }
 $("sheet").onclick = (e) => { if (e.target === $("sheet")) closeSheet(); };
+// the sticky Select / Done bar sits right under the sticky tabs, whatever their height (font, wrap)
+new ResizeObserver(() => root.style.setProperty("--tabs-h", `${$("tabs").offsetHeight}px`)).observe($("tabs"));
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && selMode && !$("sheet").classList.contains("show")) endSelect(); });
 
 document.addEventListener("click", (e) => {
@@ -1357,8 +1440,9 @@ document.addEventListener("click", (e) => {
   else if (act === "selDone") endSelect();
   else if (act === "selClear") { sel.clear(); render(); }
   else if (act === "selAdd") addSelected();
-  else if (act === "selItem") toggleSel(`i:${+b.dataset.id}`, { id: +b.dataset.id });
-  else if (act === "selFolder") toggleSel(`f:${b.dataset.root}/${b.dataset.folder}`, { root: b.dataset.root, folder: b.dataset.folder });
+  else if (act === "selItem") toggleItem(+b.dataset.id);
+  else if (act === "selLove") loveSelected();
+  else if (act === "selFolder") toggleFolder(b.dataset.root, b.dataset.folder);
   else if (act === "addResults") {
     const q = query.trim().toLowerCase();
     const ids = lib.filter((i) => `${i.title} ${i.artist || ""} ${i.album || ""} ${i.folder}`.toLowerCase().includes(q)).slice(0, 300).map((i) => i.id);
