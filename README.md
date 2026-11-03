@@ -188,3 +188,21 @@ made by the button or for the queue, never after a library scan.
 While the Apple TV plays its sound through atv-audio and the sink has its output, the player card shows a
 **volume slider** and a mute button (the same volume as the TV's quick panel row; it follows changes made on
 the headphones).
+
+### atv-audio as a player of its own (web remote only)
+
+The sink is also a player: the web remote's queue selector lists **atv-audio** (while the sink runs), and that
+queue plays on the sink's output with no Apple TV or iPhone involved. Browse, play, queue, playlists and the volume
+slider work as for the apps. The player card adds **EQ** (the apps' presets: Off, Momentum 4, Amplify and VLC's 18),
+**Boost** (0 … +8 dB) and **Loudness** (raises quiet recordings, never turns anything down), saved on the server
+for this queue only; the Apple TV keeps its own settings.
+
+One output, the Apple TV wins: while the TV plays with Sound output = atv-audio, the atv-audio queue is paused and
+shows "atv-audio is in use by the Apple TV"; a Play there is refused until the TV pauses or stops. It never resumes
+by itself. If the headphones go away while it plays, it pauses with a notice; it stays paused when they come back.
+
+**Headphone buttons**: the sink registers a media player with BlueZ (`server/sink/atv_buttons.py`, needs
+`python3-dbus`), so Bluetooth headphones send Play / Pause / Next / Previous, and their wear sensor's pause (taken
+off) and play (put on), to whichever queue holds the output: the Apple TV's while its sound goes to atv-audio,
+otherwise atv-audio's own. A Play in the first 10 s after the headphones (re)connect is ignored, so switching them
+on never starts playback. `ATV_AUDIO_BOX=0` turns the own queue off, `ATV_AUDIO_BUTTONS=0` the buttons.

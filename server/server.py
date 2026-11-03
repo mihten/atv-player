@@ -29,6 +29,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+import box_sound
 import loudness
 import lyrics
 import scanner
@@ -45,7 +46,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.10"
+VERSION = "0.17.0"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -58,7 +59,7 @@ mimetypes.add_type("audio/x-matroska", ".mka")
 LIB: dict[int, dict] = {}
 LAST_SCAN: dict = {}
 SCANNING = False
-PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone")
+PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone" / "box")
 REMOTES: dict = {}  # ws -> session kind the web remote controls
 SINKS: dict = {}  # session kind -> the atv-audio sink's ws (only "tv"; a new sink replaces the old one)
 SINK_INFO: dict = {}  # session kind -> {"name", "output"} as last reported by its sink
@@ -235,10 +236,11 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
 # one session at a time: ?session=<kind> on /ws or a {"type": "select", "session": <kind>} message.
 
 STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
-KINDS = ("tv", "phone")
-KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone"}
+KINDS = ("tv", "phone", "box")
+# "box": the atv-audio program plays this queue by itself (player role kind=box), the web remote is its only UI.
+KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "atv-audio"}
 SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items",
-              "prefer_videos", "swapped", "pinned", "dropped", "noted")
+              "prefer_videos", "swapped", "pinned", "dropped", "noted", "sound")
 
 
 class Session:
@@ -271,6 +273,9 @@ class Session:
         self.swapped: dict[int, int] = {}
         self.pinned: list[int] = []
         self.dropped: dict[int, list[int]] = {}
+        # box only: its sound settings (box_sound.clean) and the notice shown in the web remote until the next Play
+        self.sound = dict(box_sound.DEFAULT)
+        self.notice = None
 
     @property
     def players(self):
@@ -302,7 +307,8 @@ class Session:
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
-            "sink": sink_state(self.kind) if self.kind == "tv" else None,
+            "sink": sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box" else None,
+            **(box_extra(self) if self.kind == "box" else {}),
         }
 
     def save(self):
@@ -327,6 +333,7 @@ class Session:
         self.swapped = {int(k): int(v) for k, v in (self.swapped or {}).items()}  # JSON keys are strings
         self.pinned = [int(i) for i in self.pinned or []]
         self.dropped = {int(k): [int(i) for i in v] for k, v in (self.dropped or {}).items()}
+        self.sound = box_sound.clean(self.sound)
         self.prune()
 
     def prune(self):
@@ -751,6 +758,8 @@ async def broadcast_state(s):
     for ws in s.listeners + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
         await send(ws, msg)
     prefetch_copies(s)
+    if s.kind == "tv" and tv_owns_output():
+        await box_yield_to_tv()
     # Remotes watching ANOTHER queue only get who is connected/playing, so a web page in "Auto" mode
     # can follow whichever app starts playing.
     other = {"type": "sessions", "sessions": sessions_summary()}
@@ -790,6 +799,86 @@ def sink_state(kind):
         return {"connected": False, "name": None, "output": None, "route": route}
     info = SINK_INFO.get(kind) or {}
     return {"connected": True, "name": info.get("name"), "output": info.get("output"), "route": route}
+
+
+# ---------------------------------------------------------------- the "atv-audio" session (box)
+# The same atv-audio program also joins as a PLAYER of session "box" and plays that queue by itself. One output:
+# the TV wins (owner decision). While the TV plays with its Sound output = atv-audio, the box is paused and a Play
+# for the box is refused with a notice; the box plays again only on a new Play. Headphone buttons (the sink's
+# `button` messages) act on the session that owns the output: the TV while its sound goes to atv-audio, else the box.
+
+IN_USE_NOTICE = "atv-audio is in use by the Apple TV: paused"
+
+
+def tv_routed():
+    return bool((SINK_RELAY.get("tv", {}).get("route") or {}).get("sink")) and bool(SESSIONS["tv"].players)
+
+
+def tv_owns_output():
+    """The TV plays (or is starting) with its sound on atv-audio."""
+    tv = SESSIONS["tv"]
+    return tv_routed() and (tv.playing or tv.want_play)
+
+
+def box_sink_state():
+    """The box always plays through the sink: its status in the box state (route = it is the box's output)."""
+    st = sink_state("tv")
+    return dict(st, route=st["connected"], in_use_by_tv=tv_owns_output())
+
+
+def box_extra(s):
+    cur = s.current
+    return {"sound": s.sound, "sound_presets": box_sound.choices(), "sound_label": box_sound.label(s.sound, cur),
+            "notice": s.notice}
+
+
+async def box_send_sound(s):
+    """The box player's `sound` (from its settings and the current track's loudness); sent before every load."""
+    if s.kind == "box":
+        msg = box_sound.message(s.sound, s.current)
+        for ws in s.players:
+            await send(ws, msg)
+
+
+async def box_notice(s, text):
+    s.notice = {"text": text, "at": time.time()}
+    log.info("[box] notice: %s", text)
+    await broadcast_state(s)
+
+
+async def box_yield_to_tv():
+    """The TV took the output: pause the box (it does not resume by itself)."""
+    box = SESSIONS["box"]
+    if box.want_play or box.playing:
+        box.want_play = box.playing = False
+        await to_players(box, {"type": "control", "action": "pause"})
+        await box_notice(box, IN_USE_NOTICE)
+
+
+def owner_session(asked=None):
+    """Session the headphone buttons act on: the sink names the one that holds its output; checked here."""
+    if asked == "tv" and tv_routed():
+        return SESSIONS["tv"]
+    if asked == "box" and SESSIONS["box"].players:
+        return SESSIONS["box"]
+    return SESSIONS["tv"] if tv_routed() else SESSIONS["box"]
+
+
+def live_position(s):
+    return s.position + (time.time() - s.position_at if s.playing else 0.0)
+
+
+async def on_button(data):
+    """Headphone button from the sink: {cmd play|pause|next|prev, session}."""
+    c = data.get("cmd")
+    if c not in ("play", "pause", "next", "prev"):
+        return
+    s = owner_session(data.get("session"))
+    log.info("button: %s -> %s (%s)", c, KIND_NAMES[s.kind], s.kind)
+    msg: dict = {"cmd": c}
+    if c == "prev":
+        msg["position"] = live_position(s)
+    await handle_cmd(s, msg)
 
 
 def clean_volume(data):
@@ -858,6 +947,8 @@ async def sink_message(s, ws, data):
         await asyncio.gather(*(send(p, {"type": "sink_ready", "id": data.get("item")}) for p in s.players))
     elif kind == "log":
         log.info("sink[%s]: %s", s.kind, str(data.get("message"))[:1500])
+    elif kind == "button":
+        await on_button(data)
 
 
 async def relay_to_sink(s, data):
@@ -1010,8 +1101,9 @@ async def copy_worker():
 
 
 def prefetch_copies(s):
-    """While a sink is connected to the session: copies for the current item and the next 3 (queue order)."""
-    if SINKS.get(s.kind) is None or s.index < 0:
+    """While a sink is connected to the session (or the box player to its own): copies for the current item and
+    the next 3 (queue order)."""
+    if (SINKS.get(s.kind) is None and not (s.kind == "box" and s.players)) or s.index < 0:
         return
     ahead = tuple(s.queue[s.index:s.index + PREFETCH])
     if PREFETCHED.get(s.kind) == ahead:
@@ -1058,12 +1150,19 @@ async def ensure_current_file(s):
 async def start_current(s, position=0.0, autoplay=True, present=False, noted=None):
     if not await ensure_current_file(s):
         return
+    if s.kind == "box" and autoplay:
+        if tv_owns_output():
+            autoplay = False
+            s.notice = {"text": IN_USE_NOTICE, "at": time.time()}
+        else:
+            s.notice = None
     s.position, s.position_at = position, time.time()
     s.duration = (s.current or {}).get("duration") or 0.0
     s.want_play = autoplay
     s.playing = False
     s.noted = noted  # None: the next "playing" status of this start goes into the play history
     s.save()
+    await box_send_sound(s)
     await to_players(s, load_message(s, autoplay, position, present))
     await broadcast_state(s)
 
@@ -1299,10 +1398,31 @@ async def handle_cmd(s, msg):
             await start_current(s, present=True)
     elif cmd in ("toggle", "play", "pause"):
         if cmd == "play" or (cmd == "toggle" and not s.playing):
+            if s.kind == "box":
+                if tv_owns_output():
+                    await box_notice(s, IN_USE_NOTICE)
+                    return
+                s.notice = None
+                cmd = "play"
             s.want_play = True
         else:
             s.want_play = False
+            if s.kind == "box":
+                cmd = "pause"
         await to_players(s, {"type": "control", "action": cmd})
+        if s.kind == "box":
+            await broadcast_state(s)
+    elif cmd == "sound" and s.kind == "box":  # web remote: {preset, boost, loudness}
+        new = box_sound.clean({**s.sound, **{k: msg[k] for k in ("preset", "boost", "loudness") if k in msg}})
+        if new != s.sound:
+            s.sound = new
+            s.save()
+            log.info("[box] sound: %s", box_sound.label(s.sound, s.current))
+            await box_send_sound(s)
+        await broadcast_state(s)
+    elif cmd == "dismiss" and s.kind == "box":
+        s.notice = None
+        await broadcast_state(s)
     elif cmd == "seek":
         await to_players(s, {"type": "control", "action": "seek", "position": float(msg.get("position", 0))})
     elif cmd == "shuffle":
@@ -1378,10 +1498,13 @@ async def on_message(s, data, role, ws=None):
         await handle_cmd(s, data)
     elif kind == "ping" and ws is not None:
         await send(ws, pong(data))
-    elif kind == "volume" and role in ("player", "remote") and s.kind == "tv":  # TV quick panel, web remote
+    elif kind == "volume" and role in ("player", "remote") and s.kind in ("tv", "box"):  # TV quick panel, web remote
         vol = clean_volume(data)
         if vol is not None:
-            await relay_to_sink(s, {"type": "volume", **vol})
+            await relay_to_sink(SESSIONS["tv"], {"type": "volume", **vol})  # one output: the sink of both
+    elif role == "player" and kind == "notice" and s.kind == "box":  # e.g. the headphones went away: paused
+        s.want_play = False
+        await box_notice(s, str(data.get("text") or "")[:200])
     elif role == "player" and kind in RELAY_TYPES and s.kind == "tv":
         await relay_to_sink(s, data)
         if kind == "route":
@@ -1448,6 +1571,10 @@ async def ws_handler(request):
         await send(ws, {"type": "state", "state": s.to_dict()})
     if role == "player":
         if s.current and await ensure_current_file(s):
+            if s.kind == "box":
+                await send(ws, box_sound.message(s.sound, s.current))
+                if s.want_play and tv_owns_output():
+                    s.want_play = False
             await send(ws, load_message(s, s.want_play, s.position))
         await broadcast_all()
     try:

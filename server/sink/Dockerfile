@@ -10,7 +10,7 @@ RUN apt-get update \
 RUN useradd --system --uid 10002 --user-group --groups audio --home-dir /tmp --no-create-home atvaudio
 
 WORKDIR /opt/atv-audio
-COPY atv_audio.py ./
+COPY atv_audio.py atv_buttons.py ./
 
 # HOME=/tmp: mpv/pactl also run under the host user's uid (Pulse socket variant), which has no home in the image.
 ENV HOME=/tmp \

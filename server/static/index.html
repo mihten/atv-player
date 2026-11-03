@@ -143,7 +143,7 @@ html[data-look="classic"] .eyebrow { letter-spacing: .06em; }
 
 /* ── Now playing ──────────────────────────────────────────────────────────── */
 #player { border-radius: var(--r); padding: 16px; display: grid; gap: 0 16px; position: relative; overflow: hidden;
-  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "vol vol" "next next"; }
+  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "note note" "vol vol" "snd snd" "next next"; }
 html[data-look="aurora"] #player { background: linear-gradient(90deg, color-mix(in srgb, var(--t0) 38%, transparent), transparent 75%), var(--card); }
 .stage { grid-area: art; position: relative; width: var(--art); height: var(--art); align-self: center; }
 html[data-look="vinyl"] .stage { width: calc(var(--art) * 1.36); }
@@ -215,6 +215,16 @@ html[data-look="classic"] .tb.play { background: var(--acc); color: #fff; }
 .vol input { flex: 1; min-width: 0; accent-color: var(--acc); height: 22px; cursor: pointer; }
 .vol.muted input { opacity: .45; }
 .vol .vn { width: 4.2em; text-align: right; }
+/* atv-audio's own queue: notice (headphones gone / in use by the Apple TV) and its sound settings */
+.note { grid-area: note; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 8px 12px; border-radius: var(--r-s); color: var(--ink);
+  background: color-mix(in srgb, var(--acc) 18%, transparent); border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent); font-size: 13px; }
+.note[hidden], .snd[hidden] { display: none; }
+.note span { flex: 1; min-width: 0; }
+.snd { grid-area: snd; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 0 2px; color: var(--ink2); font-size: 12.5px; }
+.snd select.pill { max-width: 170px; }
+.snd .boost { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.snd .boost .pill { padding: 5px 10px; }
+.snd .lab { flex-basis: 100%; color: var(--ink3); font-size: 11.5px; }
 .vol .tb { padding: 4px; }
 .upnext { grid-area: next; display: flex; align-items: center; gap: 10px; min-width: 0; padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--ink2); }
 .upnext:empty { display: none; }
@@ -410,7 +420,7 @@ html[data-look="vinyl"] .sheet > div { background: linear-gradient(#2e1f14, #1a1
     grid-template-areas: "player top" "player status" "player quick" "player tabs" "player main"; grid-template-rows: auto auto auto auto 1fr; }
   .top { grid-area: top; padding-top: 26px; } .status { grid-area: status; } .quick { grid-area: quick; } nav#tabs { grid-area: tabs; margin: 10px 0 0; padding: 10px 0; } main { grid-area: main; }
   #player { grid-area: player; align-self: start; position: sticky; top: 20px; margin-top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; scrollbar-width: none;
-    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "vol" "next"; padding: 24px 28px; gap: 0; }
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "note" "vol" "snd" "next"; padding: 24px 28px; gap: 0; }
   #player::-webkit-scrollbar { display: none; }
   #player .stage { justify-self: center; margin: 16px 0 22px; }
   .np-title { font-size: 28px; }
@@ -469,7 +479,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
   <header class="top">
     <div class="brand"><svg class="disc-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor"/><circle cx="12" cy="12" r="3.6" fill="#000"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/></svg><h1>ATV Player</h1></div>
     <div class="topacts">
-      <select id="out" class="pill" title="Which queue this page controls: the Apple TV's or the iPhone's"></select>
+      <select id="out" class="pill" title="Which queue this page controls: the Apple TV's, the iPhone's or atv-audio's own"></select>
       <button id="lookBtn" class="ib" title="Look"></button>
     </div>
   </header>
@@ -497,10 +507,17 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <button class="tb sm" id="rep" title="Repeat"></button>
       <button class="tb sm" id="shot" title="Screenshot of the Apple TV screen"></button>
     </div>
+    <div class="note" id="note" hidden><span id="noteText"></span><button class="pill" id="noteOk">OK</button></div>
     <div class="vol" id="vol" hidden title="atv-audio volume (the headphones' own volume)">
       <button class="tb sm" id="volMute" title="Mute / unmute"></button>
       <input type="range" id="volRange" min="0" max="100" step="1" aria-label="atv-audio volume">
       <span class="vn" id="volNum"></span>
+    </div>
+    <div class="snd" id="snd" hidden title="Sound of atv-audio's own queue (the Apple TV keeps its own settings)">
+      <span>EQ</span><select class="pill" id="sndPreset" aria-label="Equalizer"></select>
+      <span class="boost">Boost <button class="pill" id="sndDown" aria-label="Boost down">−</button><b id="sndBoost">0</b><button class="pill" id="sndUp" aria-label="Boost up">+</button></span>
+      <button class="pill" id="sndLoud" title="Raises quiet recordings. Never turns anything down.">Loudness</button>
+      <span class="lab" id="sndLabel"></span>
     </div>
     <div class="upnext" id="upnext"></div>
   </section>
@@ -638,8 +655,8 @@ function applyLook() { root.dataset.look = look; root.dataset.motion = motion ? 
 
 /* ── State ── */
 // mode: "auto" = follow whichever app (Apple TV / iPhone) is playing; "tv" / "phone" = pinned. session = the queue shown.
-let mode = ["tv", "phone"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
-let session = mode === "phone" ? "phone" : "tv", sessionList = [], followTimer = null;
+let mode = ["tv", "phone", "box"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
+let session = mode === "auto" ? "tv" : mode, sessionList = [], followTimer = null;
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
 let scope = null, plQuery = "";  // scope = {root, folder}: Search limited to one folder (incl. subfolders); plQuery = filter inside the open playlist
 let playlists = [], openPl = null, plHeads = new Map();  // openPl = playlist detail shown; plHeads = first items per playlist (mosaics)
@@ -803,6 +820,33 @@ $("volRange").onchange = () => { vol.dragUntil = Date.now() + 1500; clearTimeout
   const muted = !!(st && st.sink && st.sink.output && st.sink.output.muted); sendVolume(+$("volRange").value, muted); };
 $("volMute").onclick = () => { const o = st && st.sink && st.sink.output; if (o && o.volume != null) sendVolume(o.volume, !o.muted); };
 
+/** atv-audio's own queue ("box"): its notice and sound settings (only on that queue). */
+function drawBox(s) {
+  const box = s.session === "box";
+  const n = box && s.notice ? s.notice.text : "";
+  $("note").hidden = !n;
+  if (n) $("noteText").textContent = n;
+  $("snd").hidden = !box || !s.sound;
+  if (!box || !s.sound) return;
+  const key = JSON.stringify(s.sound_presets || []);
+  if (key !== drawBox.presets) {
+    drawBox.presets = key;
+    $("sndPreset").innerHTML = (s.sound_presets || []).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  }
+  if (document.activeElement !== $("sndPreset")) $("sndPreset").value = s.sound.preset;
+  $("sndBoost").textContent = `+${s.sound.boost}`;
+  $("sndDown").disabled = s.sound.boost <= 0; $("sndUp").disabled = s.sound.boost >= 8;
+  $("sndLoud").classList.toggle("primary", s.sound.loudness !== "off");
+  $("sndLoud").textContent = `Loudness ${s.sound.loudness !== "off" ? "on" : "off"}`;
+  $("sndLabel").textContent = s.sound_label ? `Now: ${s.sound_label}` : "";
+}
+const boxSound = (patch) => cmd("sound", patch);
+$("sndPreset").onchange = (e) => { boxSound({ preset: e.target.value }); e.target.blur(); };
+$("sndDown").onclick = () => st && st.sound && boxSound({ boost: st.sound.boost - 1 });
+$("sndUp").onclick = () => st && st.sound && boxSound({ boost: st.sound.boost + 1 });
+$("sndLoud").onclick = () => st && st.sound && boxSound({ loudness: st.sound.loudness === "off" ? "raise" : "off" });
+$("noteOk").onclick = () => cmd("dismiss");
+
 function drawUpNext(s) {
   const up = (s.upcoming || []).slice(0, 5);
   const key = `${s.index}|${s.queue.length}|${up.map((i) => i.id).join(",")}`;
@@ -823,7 +867,7 @@ function onState(s) {
   st = s; clockOffset = s.server_time - Date.now() / 1000;
   $("dot").className = "dot" + (s.players ? " ok" : "");
   // Server 0.10.0: the Apple TV and the iPhone each have their own queue; this page controls one of them.
-  $("conn").textContent = s.players ? "app connected" : "app not open";
+  $("conn").textContent = s.session === "box" ? boxStatus(s) : (s.players ? "app connected" : "app not open");
   if (s.sessions) sessionList = s.sessions;
   showShot(s.session || session);
   drawSelector(); follow();
@@ -834,6 +878,7 @@ function onState(s) {
   drawLove(s.current);
   drawUpNext(s);
   drawVolume(s);
+  drawBox(s);
   setIcon($("pp"), s.playing ? "pause" : "play"); setIcon($("miniPP"), s.playing ? "pause" : "play");
   $("shuf").classList.toggle("on", s.shuffle);
   $("preferSw").classList.toggle("on", !!s.prefer_videos);
@@ -848,13 +893,25 @@ function onState(s) {
   onState.lastCur = curId; onState.lastQ = qKey;
 }
 
-/** Selector: Auto + one entry per app (▶ = playing). Auto shows which one it currently follows. */
+/** atv-audio's status line: running or not, and its output (headphones, codec). */
+function boxStatus(s) {
+  if (!s.players) return "atv-audio not running";
+  const k = s.sink || {}, o = k.output;
+  if (k.in_use_by_tv) return "atv-audio · in use by the Apple TV";
+  if (!o) return "atv-audio · no sound output";
+  if (!o.ready) return `atv-audio · ${o.name || "output"} not connected`;
+  return `atv-audio · ${o.name}${o.codec ? ` · ${o.codec.replace("aptx_hd", "aptX HD").replace("aptx", "aptX")}` : ""}`;
+}
+
+/** Selector: Auto + one entry per app (▶ = playing). Auto shows which one it currently follows. atv-audio's own
+ *  queue only while that program runs (or while it is the one chosen). */
 function drawSelector() {
   if (document.activeElement === $("out")) return;
   const label = (x) => `${x.name}${x.playing ? " ▶" : ""}`;
   const cur = sessionList.find((x) => x.session === session);
+  const shown = sessionList.filter((x) => x.session !== "box" || x.players || mode === "box" || session === "box");
   $("out").innerHTML = `<option value="auto"${mode === "auto" ? " selected" : ""}>Auto${mode === "auto" && cur ? `: ${esc(label(cur))}` : ""}</option>` +
-    sessionList.map((x) => `<option value="${esc(x.session)}"${mode === x.session ? " selected" : ""}>${esc(label(x))}</option>`).join("");
+    shown.map((x) => `<option value="${esc(x.session)}"${mode === x.session ? " selected" : ""}>${esc(label(x))}</option>`).join("");
 }
 
 /** Auto mode: stay on the shown app while it plays; if it is not playing and the other app is, switch to that one

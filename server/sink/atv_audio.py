@@ -14,6 +14,8 @@ Environment (see env.example):
   ATV_AUDIO_NAME    name shown on the TV (default atv-audio)
   ATV_AUDIO_MPV     mpv binary (default mpv)
   ATV_AUDIO_HOLD    seconds the output stays open after pause / stop / route off (default 300)
+  ATV_AUDIO_BOX     1 (default) / 0: also play the server's "atv-audio" queue (session box, web remote only)
+  ATV_AUDIO_BUTTONS 1 (default) / 0: headphone buttons through BlueZ (atv_buttons.py, needs python3-dbus)
 
 Run: python3 atv_audio.py
 """
@@ -64,11 +66,18 @@ class Config:
             self.hold = float(env.get("ATV_AUDIO_HOLD") or 300)
         except ValueError:
             self.hold = 300.0
+        self.box = (env.get("ATV_AUDIO_BOX") or "1") not in ("0", "no", "off", "false")
+        self.buttons = (env.get("ATV_AUDIO_BUTTONS") or "1") not in ("0", "no", "off", "false")
 
     @property
     def ws_url(self):
         base = re.sub(r"^http", "ws", self.server)
         return f"{base}/ws?role=sink&session=tv"
+
+    @property
+    def box_ws_url(self):
+        base = re.sub(r"^http", "ws", self.server)
+        return f"{base}/ws?role=player&kind=box"
 
     def media_url(self, item_id):
         return f"{self.server}/media/{item_id}?audio=main"
@@ -676,6 +685,8 @@ class Sink:
         self._pings = {}
         self.req_pos = None          # position of the last load / seek while paused (None once playing)
         self.paused_lead = 0.0
+        self.free_run = False        # box mode: the clock follows mpv (BoxDriver), no sync corrections
+        self.output_ready_at = None  # when the output last became usable (headphone buttons ignore Play then)
 
     # -- plumbing
     def log(self, message):
@@ -698,7 +709,9 @@ class Sink:
 
     def server_now(self):
         off = self.clock_offset.offset
-        return None if off is None else self.mono() + off
+        if off is None:
+            return self.mono() if self.free_run else None  # box mode: its own clock, any time base will do
+        return self.mono() + off
 
     def status_message(self):
         return {"type": "sink", "name": self.cfg.name, "output": self.output}
@@ -882,6 +895,8 @@ class Sink:
         old = self.output or {}
         self.output = out
         self.output_ok = bool(out and out.get("ready"))
+        if self.output_ok and not old_ok:
+            self.output_ready_at = self.mono()
         same = {k: v for k, v in old.items() if k not in ("volume", "muted")}
         if out and same == {k: v for k, v in out.items() if k not in ("volume", "muted")}:
             pass  # only the volume moved: no log line (a slider sends 10 per second)
@@ -1162,6 +1177,8 @@ class Sink:
         if p.get("pause") is True:
             await self._start(mpv, target)
             return
+        if self.free_run:
+            return  # box mode: mpv is the clock
         act = self.ctl.step(now, target, await self.position(mpv))
         if act and act[0] == "seek":
             await mpv.command("seek", act[1], "absolute+exact")
@@ -1198,19 +1215,333 @@ class Sink:
             self._seek_logged, self._seeks_unlogged = now, 0
 
 
+# ---------------------------------------------------------------- one output, two sources: TV and box
+
+TV_STATE = ("route", "lip_sync", "sound", "load", "clock")  # replayed in this order when the TV gets the output back
+PLAY_GUARD = 10.0  # s after the headphones (re)connected: a Play from their buttons is ignored (no auto start)
+
+
+class Router:
+    """The sink's mpv/output belongs to ONE source at a time: the TV (role=sink messages) or the box (this program's
+    own player of session "box"). The TV wins: it takes the output whenever it plays with its sound on atv-audio;
+    the box gets it back only when it is told to play while the TV is not playing there. A switch replays the new
+    owner's last state into the Sink, so the Sink's TV logic stays as it is."""
+
+    def __init__(self, sink):
+        self.sink = sink
+        self.owner = "tv"
+        self.tv_last = {}
+        self.box = None
+
+    def tv_routed(self):
+        return bool((self.tv_last.get("route") or {}).get("sink"))
+
+    def tv_playing(self):
+        """The TV plays with its sound here (its last clock says playing and is fresh)."""
+        c = self.tv_last.get("clock")
+        snow = self.sink.server_now() if self.owner == "tv" else self._tv_now()
+        return bool(self.tv_routed() and c and c.get("state") == "playing" and snow is not None
+                    and snow - float(c.get("at") or 0) < STALE_CLOCK)
+
+    def _tv_now(self):
+        off = self.sink.clock_offset.offset
+        return None if off is None else self.sink.mono() + off
+
+    def button_session(self):
+        return "tv" if self.owner == "tv" and self.tv_routed() else "box"
+
+    async def from_tv(self, msg):
+        t = msg.get("type")
+        if t in TV_STATE:
+            self.tv_last[t] = msg
+        if t in ("pong", "volume"):
+            await self.sink.handle(msg)
+            return
+        if self.owner == "box":
+            # the TV plays here again (clock), or starts an item with its sound here (load + autoplay: it waits
+            # for this sink's 'ready', so take the output now instead of letting it time out)
+            takes = (t in ("clock", "route") and self.tv_playing()) or \
+                    (t == "load" and msg.get("autoplay") and msg.get("item") and self.tv_routed())
+            if takes:
+                if self.box:
+                    self.box.yield_to_tv()
+                await self.switch("tv")
+            return  # stored for the switch back
+        await self.sink.handle(msg)
+
+    async def claim_for_box(self):
+        """The box wants to play. False while the TV plays here (the server refuses that Play too)."""
+        if self.owner == "box":
+            return True
+        if self.tv_playing():
+            return False
+        await self.switch("box")
+        return True
+
+    async def switch(self, owner):
+        if owner == self.owner:
+            return
+        sink = self.sink
+        self.owner = owner
+        sink.log(f"output: {'the Apple TV' if owner == 'tv' else 'atv-audio playlist (box)'} takes atv-audio")
+        sink.clock = None
+        await sink.handle({"type": "load", "item": None, "position": 0})
+        sink.free_run = owner == "box"
+        if owner == "tv":
+            sink.ctl.reset(sink.mono())
+            if "route" not in self.tv_last:
+                await sink.handle({"type": "route", "sink": False})
+            for t in TV_STATE:
+                if t in self.tv_last:
+                    await sink.handle(self.tv_last[t])
+        elif self.box:
+            await self.box.feed_all()
+
+
+class BoxDriver:
+    """Player of session "box": the server's player protocol (load / control / sound in; status / ended / error /
+    notice out), played through the Sink with a clock made here. The clock follows mpv's own position while it
+    plays, so the Sink never corrects anything (free_run); it only loads, starts, pauses and seeks."""
+
+    STATUS_EVERY = 1.0
+
+    def __init__(self, sink, router, send=None, mono=time.monotonic):
+        self.sink, self.router = sink, router
+        self._send = send
+        self.mono = mono
+        self.item = None
+        self.want_play = False
+        self.pos = 0.0
+        self.sound = None
+        self.loads = 0               # +1 per load from the server
+        self.ended_for = self.error_for = None
+        self.last_status, self.status_key = -1e9, None
+        self.prev_ok = sink.output_ok
+
+    def send(self, msg):
+        if self._send:
+            with contextlib.suppress(Exception):
+                self._send(msg)
+
+    @property
+    def owner(self):
+        return self.router.owner == "box"
+
+    def clock_msg(self):
+        return {"type": "clock", "item": (self.item or {}).get("id"), "position": self.pos,
+                "at": self.sink.server_now(), "state": "playing" if self.want_play else "paused"}
+
+    async def feed_all(self):
+        """Box state into the Sink (after a switch, or a reconnect while the box owns the output)."""
+        sink = self.sink
+        await sink.handle({"type": "route", "sink": True})
+        await sink.handle({"type": "lip_sync", "ms": 0})
+        if self.sound:
+            await sink.handle(self.sound)
+        if self.item:
+            await sink.handle({"type": "load", "item": self.item, "position": self.pos})
+            await sink.handle(self.clock_msg())
+
+    def yield_to_tv(self):
+        if self.want_play:
+            self.want_play = False
+            self.sink.log("box paused: the Apple TV took the output")
+        self.report(force=True)
+
+    async def handle(self, msg):
+        t = msg.get("type")
+        if t == "load":
+            self.item = msg.get("item")
+            self.pos = float(msg.get("position") or 0)
+            self.want_play = bool(msg.get("autoplay")) and bool(self.item)
+            self.loads += 1
+            if self.want_play and not await self.router.claim_for_box():
+                self.want_play = False
+            if self.owner:
+                await self.sink.handle({"type": "load", "item": self.item, "position": self.pos})
+                await self.sink.handle(self.clock_msg())
+            self.report(force=True)
+        elif t == "control":
+            await self.on_control(msg)
+        elif t == "sound":
+            self.sound = msg
+            if self.owner:
+                await self.sink.handle(msg)
+
+    async def on_control(self, msg):
+        action = msg.get("action")
+        if action == "toggle":
+            action = "pause" if self.want_play else "play"
+        if action == "play" and self.item:
+            if await self.router.claim_for_box():
+                if not self.want_play and self.owner and self.sink.loaded_id is None:
+                    await self.sink.handle({"type": "load", "item": self.item, "position": self.pos})
+                self.want_play = True
+        elif action in ("pause", "stop"):
+            self.want_play = False
+        elif action == "seek":
+            self.pos = max(0.0, float(msg.get("position") or 0))
+            self.ended_for = None
+            if self.owner:
+                await self.sink.handle({"type": "control", "action": "seek", "position": self.pos})
+        if self.owner:
+            await self.sink.handle(self.clock_msg())
+        self.report(force=True)
+
+    async def tick(self):
+        sink, it = self.sink, self.item
+        ok_now, ok_before = sink.output_ok, self.prev_ok
+        self.prev_ok = ok_now
+        if not self.owner or not it:
+            return
+        mpv = sink.mpv
+        mine = bool(mpv and sink.loaded_id == it.get("id") and sink.file_loaded)
+        if mine and self.want_play and mpv.props.get("pause") is False:
+            with contextlib.suppress(MpvError):
+                p = await sink.position(mpv)
+                if p is not None:
+                    self.pos = max(0.0, float(p))
+        if ok_before and not ok_now and self.want_play:  # headphones gone mid-play: pause, stays paused (owner)
+            self.want_play = False
+            sink.log(f"box: output lost while playing {it.get('id')} -> paused")
+            self.send({"type": "notice", "text": "Headphones disconnected: paused"})
+        if mine and mpv.props.get("eof-reached") and self.ended_for != self.loads:
+            self.ended_for = self.loads
+            self.send({"type": "ended", "item": it.get("id")})
+        if sink.failed_id == it.get("id") and self.error_for != self.loads:
+            self.error_for = self.loads
+            self.send({"type": "error", "item": it.get("id"), "message": "atv-audio could not play it"})
+        await sink.handle(self.clock_msg())
+        self.report()
+
+    def report(self, force=False):
+        it = self.item
+        if not it:
+            return
+        dur = (self.sink.mpv.props.get("duration") if self.sink.mpv and self.sink.loaded_id == it.get("id") else None) \
+            or it.get("duration") or 0
+        playing = self.want_play and self.owner
+        key = (it.get("id"), playing)
+        now = self.mono()
+        if not force and key == self.status_key and now - self.last_status < self.STATUS_EVERY:
+            return
+        self.status_key, self.last_status = key, now
+        self.send({"type": "status", "item": it.get("id"), "playing": playing, "position": round(self.pos, 3),
+                   "duration": dur})
+
+
+class Buttons:
+    """Headphone buttons: runs atv_buttons.py (a media player registered with BlueZ, so the headphones send
+    Play / Pause / Next / Previous and their wear sensor's pause / play) and passes its commands on."""
+
+    HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atv_buttons.py")
+
+    def __init__(self, router, send):
+        self.router, self.send = router, send
+        self.proc = None
+        self.last = None
+
+    def state(self):
+        r = self.router
+        box = r.box
+        if r.button_session() == "tv":
+            playing, item = r.tv_playing(), (r.tv_last.get("load") or {}).get("item")
+        else:
+            playing, item = bool(box and box.want_play and r.owner == "box"), box.item if box else None
+        item = item or {}
+        return {"status": "Playing" if playing else ("Paused" if item else "Stopped"),
+                "title": item.get("title") or "", "artist": item.get("artist") or "",
+                "length": float(item.get("duration") or 0)}
+
+    def update(self):
+        st = self.state()
+        if st != self.last and self.proc and self.proc.stdin and not self.proc.stdin.is_closing():
+            self.last = st
+            with contextlib.suppress(Exception):
+                self.proc.stdin.write((json.dumps(st) + "\n").encode())
+
+    def on_cmd(self, cmd):
+        sink = self.router.sink
+        if cmd == "play":
+            since = None if sink.output_ready_at is None else sink.mono() - sink.output_ready_at
+            if not sink.output_ok or (since is not None and since < PLAY_GUARD):
+                sink.log(f"button play ignored: headphones just (re)connected"
+                         f" ({'output not ready' if not sink.output_ok else f'{since:.1f} s ago'})")
+                self.last = None  # resend our state: the headphones think they play now
+                return
+        session = self.router.button_session()
+        sink.log(f"button {cmd} -> {session}")
+        self.send({"type": "button", "cmd": cmd, "session": session})
+
+    async def run(self):
+        backoff = 5.0
+        while True:
+            try:
+                self.proc = await asyncio.create_subprocess_exec(
+                    sys.executable, self.HELPER, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+            except OSError as e:
+                log(f"buttons: cannot start the helper: {e}")
+                return
+            self.last = None
+            self.update()
+            started = time.monotonic()
+            async for raw in self.proc.stdout:
+                try:
+                    msg = json.loads(raw)
+                except ValueError:
+                    continue
+                if msg.get("cmd") in ("play", "pause", "next", "prev"):
+                    self.on_cmd(msg["cmd"])
+                elif msg.get("log"):
+                    self.router.sink.log(f"buttons: {str(msg['log'])[:300]}")
+            code = await self.proc.wait()
+            self.proc = None
+            if code == 3:
+                log("buttons: python3-dbus not available, headphone buttons off")
+                return
+            if time.monotonic() - started > 60:
+                backoff = 5.0
+            log(f"buttons: helper exited ({code}), restarting in {int(backoff)} s")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300.0)
+
+    async def stop(self):
+        if self.proc and self.proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self.proc.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.proc.wait(), 3)
+
+
 # ---------------------------------------------------------------- main
 
 async def run(cfg):
     import aiohttp
 
-    ws_box = {"ws": None}
+    ws_box = {"ws": None, "box": None}
+
+    def ws_send(key):
+        def send(msg):
+            ws = ws_box[key]
+            if ws is not None and not ws.closed:
+                asyncio.ensure_future(ws.send_str(json.dumps(msg)))
+        return send
+
+    sink_send = ws_send("ws")
+    router_ref = {}
 
     def send(msg):
-        ws = ws_box["ws"]
-        if ws is not None and not ws.closed:
-            asyncio.ensure_future(ws.send_str(json.dumps(msg)))
+        r = router_ref.get("r")
+        if r is not None and r.owner == "box" and msg.get("type") == "ready":
+            return  # the box's own loads: the TV is not waiting for them
+        sink_send(msg)
 
     sink = Sink(cfg, send)
+    router = Router(sink)
+    router_ref["r"] = router
+    box = BoxDriver(sink, router, ws_send("box")) if cfg.box else None
+    router.box = box
+    buttons = Buttons(router, sink_send) if cfg.buttons else None
     outputs = OutputWatch(cfg)
     if outputs.has_pactl:
         sink.volume_backend = outputs.set_volume
@@ -1232,7 +1563,11 @@ async def run(cfg):
         while True:
             await asyncio.sleep(TICK)
             try:
+                if box:
+                    await box.tick()
                 await sink.tick()
+                if buttons:
+                    buttons.update()
             except Exception as e:
                 sink.warn(f"ticker: {e!r}")
 
@@ -1243,45 +1578,63 @@ async def run(cfg):
             await ws.send_str(json.dumps(sink.make_ping(n)))
             await asyncio.sleep(PING_FAST if n < PING_FAST_COUNT else PING_SLOW)
 
+    async def connection(http, key, url, on_open, on_message, label):
+        backoff = 1.0
+        while True:
+            ping_task = None
+            try:
+                async with http.ws_connect(url, heartbeat=20, max_msg_size=0) as ws:
+                    backoff = 1.0
+                    ws_box[key] = ws
+                    ping_task = await on_open(ws)
+                    async for m in ws:
+                        if m.type != aiohttp.WSMsgType.TEXT:
+                            break
+                        try:
+                            msg = json.loads(m.data)
+                        except ValueError:
+                            continue
+                        if isinstance(msg, dict):
+                            try:
+                                await on_message(msg)
+                            except Exception as e:  # one bad message must not stop the sink
+                                sink.warn(f"{label} message {msg.get('type')}: {e!r}")
+            except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+                log(f"{label} server: {type(e).__name__}: {e}")
+            finally:
+                ws_box[key] = None
+                if ping_task:
+                    ping_task.cancel()
+            log(f"{label}: no server connection, retrying in {int(backoff)} s")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    async def sink_open(ws):
+        sink.reset_clock()
+        task = asyncio.create_task(pinger(ws))
+        sink_send(sink.status_message())
+        sink.log(f"connected ({cfg.output})")
+        return task
+
+    async def box_open(ws):
+        box.report(force=True)
+        return None
+
     tasks = [asyncio.create_task(proc.supervise()), asyncio.create_task(poll_outputs()),
              asyncio.create_task(ticker())]
-    backoff = 1.0
+    if buttons:
+        tasks.append(asyncio.create_task(buttons.run()))
     try:
         async with aiohttp.ClientSession() as http:
-            while True:
-                ping_task = None
-                try:
-                    async with http.ws_connect(cfg.ws_url, heartbeat=20, max_msg_size=0) as ws:
-                        backoff = 1.0
-                        ws_box["ws"] = ws
-                        sink.reset_clock()
-                        ping_task = asyncio.create_task(pinger(ws))
-                        send(sink.status_message())
-                        sink.log(f"connected ({cfg.output})")
-                        async for m in ws:
-                            if m.type != aiohttp.WSMsgType.TEXT:
-                                break
-                            try:
-                                msg = json.loads(m.data)
-                            except ValueError:
-                                continue
-                            if isinstance(msg, dict):
-                                try:
-                                    await sink.handle(msg)
-                                except Exception as e:  # one bad message must not stop the sink
-                                    sink.warn(f"message {msg.get('type')}: {e!r}")
-                except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
-                    log(f"server: {type(e).__name__}: {e}")
-                finally:
-                    ws_box["ws"] = None
-                    if ping_task:
-                        ping_task.cancel()
-                log(f"no server connection, retrying in {int(backoff)} s")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+            loops = [connection(http, "ws", cfg.ws_url, sink_open, router.from_tv, "sink")]
+            if box:
+                loops.append(connection(http, "box", cfg.box_ws_url, box_open, box.handle, "box"))
+            await asyncio.gather(*loops)
     finally:
         for t in tasks:
             t.cancel()
+        if buttons:
+            await buttons.stop()
         await proc.kill()
         proc.cleanup()
 
