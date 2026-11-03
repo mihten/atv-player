@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Offline downloads (task 22), server side: /media/<id>?audio=best serves the version of a song / video group with the
-best audio (lossless > lossy, then bit depth, sample rate, bit rate; a tie keeps the requested item) as audio only:
+"""Offline downloads (task 22), server side: /media/<id>?audio=best serves the item's OWN audio, never another version
+of its group (a group mixes different recordings), as audio only:
 a song's original file, a video's default track as the main copy (built and waited for, never the video file), 404
 for a video without audio; X-Audio-Source / X-Audio-Format headers; the probe is cached in library.db;
 /api/offline/<collection> lists a playlist / auto list with sources, sizes and a stamp that follows edits;
@@ -116,7 +116,7 @@ async def main(tmp):
             delta, silent = ids["Delta"], ids["Silent"]
             check(by["Alpha"]["videos"] == 1, "Alpha song has its music video")
 
-            # ---- song: the original bytes (24-bit song beats the 16-bit video, from either side)
+            # ---- song: the original bytes
             st, h, body = await get(http, f"/media/{a_song}?audio=best")
             check(st == 200 and body == (m / "Alpha.flac").read_bytes(), "song -> its original file, unchanged")
             check(h.get("X-Audio-Source") == str(a_song) and h.get("X-Audio-Format") == "flac 24/48000",
@@ -124,17 +124,22 @@ async def main(tmp):
                   f"{h.get('X-Audio-Format')})")
             check(h.get("Content-Length") == str(len(body)), "... Content-Length")
             st, h, body = await get(http, f"/media/{a_video}?audio=best")
-            check(st == 200 and h.get("X-Audio-Source") == str(a_song) and body == (m / "Alpha.flac").read_bytes(),
-                  "24-bit song + 16-bit video, video asked -> the song")
+            check(st == 200 and h.get("X-Audio-Source") == str(a_video) and body != (m / "Alpha.flac").read_bytes()
+                  and h.get("X-Audio-Format") == "flac 16/44100",
+                  "video whose song has better audio -> still the video's own track, never the song (another recording)")
             async with http.get(f"{BASE}/media/{a_song}?audio=best", headers={"Range": "bytes=10-19"}) as r:
                 part = await r.read()
             check(r.status == 206 and part == (m / "Alpha.flac").read_bytes()[10:20], "... Range requests work")
 
-            # ---- lossless video beats a lossy song; no copy yet -> built, waited for, one audio track, no picture
+            # ---- lossy song with a lossless video: still the song itself
+            st, h, body = await get(http, f"/media/{b_song}?audio=best")
+            check(st == 200 and h.get("X-Audio-Source") == str(b_song) and body == (m / "Beta.mp3").read_bytes(),
+                  "MP3 song whose video is lossless -> still the song's own MP3, never the video")
+            # ---- video without a copy yet -> built, waited for, one audio track, no picture
             copy = audio / f"{b_video}.main.mka"
             check(not copy.exists(), "Beta video has no main copy yet")
-            st, h, body = await get(http, f"/media/{b_song}?audio=best")
-            check(st == 200 and h.get("X-Audio-Source") == str(b_video), "lossy song + lossless video -> the video")
+            st, h, body = await get(http, f"/media/{b_video}?audio=best")
+            check(st == 200 and h.get("X-Audio-Source") == str(b_video), "video -> itself")
             check(copy.is_file() and body == copy.read_bytes(), "... its main copy, built and waited for")
             out = tmp / "b.mka"
             out.write_bytes(body)
@@ -146,7 +151,7 @@ async def main(tmp):
             _, h1, _ = await get(http, f"/media/{g_song}?audio=best")
             _, h2, _ = await get(http, f"/media/{g_video}?audio=best")
             check(h1.get("X-Audio-Source") == str(g_song) and h2.get("X-Audio-Source") == str(g_video),
-                  "equal audio: the requested item is kept (song -> song, video -> video)")
+                  "song -> song, video -> video")
 
             # ---- a video's default track (the 2nd, Opus) only; with a copy present it is served as is
             st, h, body = await get(http, f"/media/{delta}?audio=best")
@@ -195,13 +200,17 @@ async def main(tmp):
             async with http.get(f"{BASE}/api/offline/playlist?playlist={pl}") as r:
                 off = await r.json()
             got = [(e["id"], e["source"]) for e in off["items"]]
-            check(off["name"] == "Car" and got == [(a_video, a_song), (b_song, b_video), (g_song, g_song),
+            check(off["name"] == "Car" and got == [(a_video, a_video), (b_song, b_song), (g_song, g_song),
                                                    (a_song, a_song)],
-                  f"/api/offline/playlist: entries -> sources in order, the silent video left out (got {got})")
+                  f"/api/offline/playlist: every entry is its own source, in order, the silent video left out (got {got})")
             first = off["items"][0]
-            check(first["size"] == (m / "Alpha.flac").stat().st_size and first["size_exact"]
-                  and first["item"]["id"] == a_song and first["item"]["kind"] == "audio" and first["rev"],
-                  "... size, item and rev of the served version")
+            check(first["size"] == (audio / f"{a_video}.main.mka").stat().st_size and first["size_exact"]
+                  and first["item"]["id"] == a_video and first["item"]["kind"] == "video" and first["rev"]
+                  and first["format"] == "flac 16/44100",
+                  f"... size, item, rev and format of the entry itself (got {first['size']}, {first['format']})")
+            second = off["items"][1]
+            check(second["size"] == (m / "Beta.mp3").stat().st_size and second["format"].startswith("mp3"),
+                  f"... a song: its file size and format (got {second['format']})")
             check(off["size"] == sum(e["size"] for e in off["items"]), "... total size")
             async with http.put(f"{BASE}/api/playlists/{pl}", json={"items": [g_song]}) as r:
                 check(r.status == 200, "playlist edited")
@@ -219,8 +228,8 @@ async def main(tmp):
             await ws.close()
             async with http.get(f"{BASE}/api/offline/loved") as r:
                 loved = await r.json()
-            check(loved["name"] == "Loved" and [(e["id"], e["source"]) for e in loved["items"]] == [(b_song, b_video)],
-                  "/api/offline/loved: the loved song -> its better video")
+            check(loved["name"] == "Loved" and [(e["id"], e["source"]) for e in loved["items"]] == [(b_song, b_song)],
+                  "/api/offline/loved: the loved song itself, not its lossless video")
     finally:
         proc.terminate()
         proc.wait(timeout=10)

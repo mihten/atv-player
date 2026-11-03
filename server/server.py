@@ -45,7 +45,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.16.9"
+VERSION = "0.16.10"
 ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
 
 log = logging.getLogger("atv-media")
@@ -1823,9 +1823,10 @@ def make_audio_only(it, out):
 
 
 # ---------------------------------------------------------------- offline downloads (iPhone app)
-# /media/<id>?audio=best: the version of the item (its group: the song and its music videos) with the best audio, as
-# audio only and never transcoded: a song's original file, a video's default audio track as a stream copy (the main
-# copy the atv-audio sink uses). /api/offline/<collection> lists what that serves for a whole list.
+# /media/<id>?audio=best: the item's OWN audio, never another version of its group (a group mixes different recordings:
+# studio song, live videos, covers by other singers) and never transcoded: a song's original file, a video's default
+# audio track (the best one in this library by the owner's default-track rule) as a stream copy (the main copy the
+# atv-audio sink uses). /api/offline/<collection> lists what that serves for a whole list.
 
 AUDIO_INFO: dict[int, tuple] = {}  # item id -> (mtime, audio_ord, info) from the audio_probe table / ffprobe
 MAIN_LOCKS: dict[int, asyncio.Lock] = {}
@@ -1893,45 +1894,8 @@ def audio_info(it):
     return info
 
 
-def cached_audio_info(it):
-    hit = AUDIO_INFO.get(it["id"])
-    return hit[2] if hit and hit[:2] == (it["mtime"], it.get("audio_ord")) else None
-
-
 def has_audio(it):
     return it["kind"] == "audio" or it.get("acodec") != ""  # "" = a video without an audio track
-
-
-def audio_rank(it, info):
-    """Bigger = better: lossless before lossy, then bit depth, sample rate, bit rate. Bit depth counts for lossless
-    only and bit rate for lossy only (a FLAC's bit rate says how well it compressed, not how good it sounds)."""
-    lossless = bool(it.get("lossless"))
-    info = info or {}
-    return (lossless, (info.get("bits") or 0) if lossless else 0, info.get("rate") or 0,
-            0 if lossless else (info.get("bitrate") or 0))
-
-
-def tied_members(item_id):
-    """Event loop only (LIB / VERSIONS are rebuilt there after a scan): the members of the item's group that can be the
-    best audio, i.e. those with audio tied on lossless / lossy. None = unknown item, [] = no member has audio."""
-    if item_id not in LIB:
-        return None
-    members = [LIB[i] for i in VERSIONS.get(item_id, [item_id]) if i in LIB and has_audio(LIB[i])]
-    if not members:
-        return []
-    top = max(bool(m.get("lossless")) for m in members)
-    return [m for m in members if bool(m.get("lossless")) == top]
-
-
-def pick_best(item_id, tied, infos):
-    """The best of the tied members (infos: id -> probe result); a tie keeps the requested item."""
-    if len(tied) == 1:
-        return tied[0]
-    ranks = {m["id"]: audio_rank(m, infos.get(m["id"])) for m in tied}
-    best = max(ranks.values())
-    if ranks.get(item_id) == best:
-        return next(m for m in tied if m["id"] == item_id)
-    return next(m for m in tied if ranks[m["id"]] == best)
 
 
 def probe_all(items):
@@ -1982,21 +1946,16 @@ async def offline_list(name, playlist=None):
         title = dict(AUTO_LISTS)[name]
     else:
         return None
-    rows = [(it["id"], tied_members(it["id"])) for it in collection(name, playlist=playlist)]
-    rows = [(i, tied) for i, tied in rows if tied]
-    infos = await probe([m for _, tied in rows if len(tied) > 1 for m in tied])
-    picked = [(i, pick_best(i, tied, infos)) for i, tied in rows]
-    # videos without their copy yet: the bit rate gives the size estimate
-    infos.update(await probe([src for _, src in picked if src["kind"] == "video" and src["id"] not in infos
-                              and not main_copy_fresh(src)]))
-    entries = [offline_entry(i, src, infos.get(src["id"]) or cached_audio_info(src)) for i, src in picked]
+    rows = [it for it in collection(name, playlist=playlist) if has_audio(it)]
+    infos = await probe(rows)  # format label, and the size estimate of a video without its copy yet (cached in the DB)
+    entries = [offline_entry(it["id"], it, infos.get(it["id"])) for it in rows]
     stamp = hashlib.sha1(json.dumps([title] + [(e["id"], e["rev"]) for e in entries]).encode()).hexdigest()[:16]
     return {"collection": name, "playlist": playlist, "name": title, "stamp": stamp, "items": entries,
             "size": sum(e["size"] or 0 for e in entries)}
 
 
 async def api_offline(request):
-    """A list for the iPhone's offline downloads: each entry with the id ?audio=best serves (source), its rev, size
+    """A list for the iPhone's offline downloads: each entry with the id ?audio=best serves (source = the entry), rev, size
     (exact, or estimated from the bit rate until a video's copy exists) and item; stamp changes with the list."""
     try:
         playlist = int(request.query["playlist"]) if "playlist" in request.query else None
@@ -2011,13 +1970,10 @@ async def api_offline(request):
 
 
 async def media_best(it):
-    tied = tied_members(it["id"])
-    if not tied:
+    if not has_audio(it):
         raise web.HTTPNotFound(text="no audio track")
-    infos = await probe(tied if len(tied) > 1 else [])
-    src = pick_best(it["id"], tied, infos)  # a snapshot: a rescan meanwhile does not change it under us
-    src_id = src["id"]
-    info = infos.get(src_id) or (await probe([src]))[src_id]
+    src, src_id = it, it["id"]  # the item itself (a snapshot: a rescan meanwhile does not change it under us)
+    info = (await probe([src]))[src_id]
     headers = {"X-Audio-Source": str(src_id), "X-Audio-Format": audio_format(src, info)}
     if src["kind"] == "audio":
         path = item_path(src)
