@@ -145,7 +145,9 @@ USB `3542:3001`, the one with report 0x34). The sink then:
 - knows when the headphones go and come back (the dongle's own events): the same pause / resume rules as with
   built-in Bluetooth;
 - shows the codec the dongle uses (e.g. aptX Adaptive) and offers Connect / Disconnect in the web remote
-  (Settings → atv-audio and the player card); new headphones are paired with the dongle's button;
+  (Settings → atv-audio and the player card); new headphones are paired with the dongle's button. Disconnect
+  pauses what plays, closes the sound device (an open stream makes the dongle connect the headphones again) and
+  opens nothing until Connect or the next Play, which connects the headphones again;
 - takes the headphone buttons the dongle forwards: tap and the wear sensor = play / pause (toggled against the
   queue's state), swipes = next / previous; fast forward / rewind arrive only if the dongle sends them;
 - sets the dongle's own volume to 0 dB (needs `amixer` from `alsa-utils`); the volume control (web remote slider,

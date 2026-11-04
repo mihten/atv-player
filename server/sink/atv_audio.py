@@ -720,6 +720,10 @@ class Sink:
         self.paused_lead = 0.0
         self.free_run = False        # box mode: the clock follows mpv (BoxDriver), no sync corrections
         self.output_ready_at = None  # when the output last became usable (headphone buttons ignore Play then)
+        self.released = False        # Disconnect from the web remote: output closed, nothing opens it until a Play
+        self.release_armed = False   # ... a Play counts only after a paused clock or a new item (the TV may still
+        self.release_item = None     #     send 'playing' for a moment before its pause arrives)
+        self.on_wake = None          # (): a Play arrived while released (dongle: connect the headphones again)
 
     # -- plumbing
     def log(self, message):
@@ -854,6 +858,8 @@ class Sink:
         elif t == "clock":
             prev, self.clock = self.clock, msg
             self.clock_seq += 1
+            if self.released and (msg.get("state") != "playing" or msg.get("item") != self.release_item):
+                self.release_armed = True
             if msg.get("state") == "playing" and (not prev or prev.get("state") != "playing"
                                                  or prev.get("item") != msg.get("item")):
                 if self.lost_item is not None and self.output_ok:
@@ -1096,6 +1102,36 @@ class Sink:
             pos += snow - float(c.get("at") or snow)
         return pos + self.lip_ms / 1000
 
+    def wants_play(self, snow):
+        """The queue plays this item now (a fresh 'playing' clock), whatever the output's state."""
+        c, it = self.clock, self.item
+        return bool(self.routed and it and c and snow is not None
+                    and c.get("item") == it.get("id") and c.get("state") == "playing"
+                    and self.clock_seq > self.block_seq
+                    and (self.block_at is None or float(c.get("at") or 0) > self.block_at)
+                    and snow - float(c.get("at") or 0) < STALE_CLOCK)
+
+    async def release(self, why):
+        """Close the output now (mpv stops, the sound device is closed) and keep it closed until a Play
+        (wake) or wake(): a dongle reconnects the headphones by itself while a stream is open."""
+        self.released = True
+        c = self.clock or {}
+        self.release_item = c.get("item")
+        self.release_armed = c.get("state") != "playing"
+        self._block()
+        self.want_loaded, self.hold_since, self.pending_ready = False, None, None
+        mpv = self.mpv
+        if mpv and self.loaded_id is not None:
+            with contextlib.suppress(MpvError):
+                await mpv.command("stop")
+        self.loaded_id, self.file_loaded = None, False
+        self.log(f"output released: {why}")
+
+    def wake(self, why):
+        if self.released:
+            self.released = False
+            self.log(f"output free again: {why}")
+
     def desired_playing(self, snow):
         c, it = self.clock, self.item
         return bool(self.routed and self.output_ok and it and c and snow is not None
@@ -1200,6 +1236,12 @@ class Sink:
         now, snow = self.mono(), self.server_now()
         p = mpv.props
         it = self.item
+        if self.released:
+            if not (self.release_armed and self.wants_play(snow)):
+                return  # disconnected on purpose: open nothing (an open stream makes the dongle reconnect)
+            self.wake("play")
+            if self.on_wake:
+                self.on_wake()
         desired = self.desired_playing(snow)
         if desired:
             self.want_loaded = True
@@ -1623,6 +1665,8 @@ class AudioControl:
         self.buttons = buttons
         self.on_output = on_output  # async (): re-detect the output after a change
         self.dongle = None          # btd700.Btd700: headphones through the dongle (connect / disconnect, no pairing)
+        self.on_disconnect = None   # async (): before a dongle disconnect: pause what plays, close the output
+        self.on_connect = None      # (): after a dongle connect: the output may open again
         self.bt = None
         self.error = None
         self.last = None
@@ -1658,8 +1702,13 @@ class AudioControl:
         if self.dongle and op in ("connect", "disconnect") and not msg.get("address"):
             if not self.dongle.present:
                 self.error = "the dongle is not connected"
-            elif not await self.dongle.connect(op == "connect"):
-                self.error = "the dongle did not answer"
+            else:
+                if op == "disconnect" and self.on_disconnect:
+                    await self.on_disconnect()
+                if not await self.dongle.connect(op == "connect"):
+                    self.error = "the dongle did not answer"
+                elif op == "connect" and self.on_connect:
+                    self.on_connect()
             self.update(force=True)
             return
         if op == "refresh":
@@ -1746,6 +1795,22 @@ async def run(cfg):
 
         dongle = btd700.Btd700(cfg.dongle, on_change=lambda: asyncio.ensure_future(dongle_changed()),
                                on_key=on_key, log=sink.log)
+
+        async def before_disconnect():
+            # the headphones go to another device: pause what plays here, close the stream (else the dongle
+            # connects them again within ~1.5 s), and open nothing until Connect or a Play
+            session = router.button_session()
+            if (buttons.state() if buttons else {}).get("status") == "Playing" or (box and box.want_play and router.owner == "box"):
+                sink.log(f"disconnect: pausing {session}")
+                sink_send({"type": "button", "cmd": "pause", "session": session})
+                if box and router.owner == "box":
+                    box.want_play = False
+                    box.report(force=True)
+            await sink.release("headphones disconnected from the web remote")
+
+        sink.on_wake = lambda: asyncio.ensure_future(dongle.connect(True))
+        audio.on_disconnect = before_disconnect
+        audio.on_connect = lambda: sink.wake("connect")
         dongle.first = asyncio.Event()
         outputs.dongle = audio.dongle = dongle
         early.append(asyncio.create_task(dongle.run()))

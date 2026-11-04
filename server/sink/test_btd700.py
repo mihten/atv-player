@@ -290,5 +290,74 @@ class SinkWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(asyncio.run(A.alsa_full_volume("pipewire", lambda m: None)), False)
 
 
+class ReleaseTest(unittest.IsolatedAsyncioTestCase):
+    """Disconnect from the web remote: the stream closes and stays closed until a real Play."""
+
+    async def asyncSetUp(self):
+        import test_sync as T
+        self.T = T
+        self.sink, self.clock, self.sent = T.make_sink(lip=0)
+        self.woken = []
+        self.sink.on_wake = lambda: self.woken.append(self.clock.t)
+        await T.start_item(self.sink, self.clock)
+        await T.run_for(self.sink, self.clock, 2.0, self.clock.t, 7, 0.0)
+        self.assertIs(self.sink.mpv.props["pause"], False, "playing before the disconnect")
+
+    async def test_release_stops_and_ignores_the_tvs_late_playing_clocks(self):
+        s, c, T = self.sink, self.clock, self.T
+        await s.release("test")
+        self.assertIn(("stop",), s.mpv.calls)
+        self.assertIsNone(s.loaded_id)
+        loads = len([x for x in s.mpv.calls if x[0] == "loadfile"])
+        await T.run_for(s, c, 1.0, c.t, 7, 2.0)          # the TV still says playing for a moment
+        await s.handle({"type": "load", "item": {"id": 8, "kind": "audio"}, "position": 0, "autoplay": False})
+        await T.play(s, c, 8, 0.0, state="paused")      # next item queued paused
+        for _ in range(5):
+            c.t += A.TICK
+            await s.tick()
+        self.assertEqual(len([x for x in s.mpv.calls if x[0] == "loadfile"]), loads, "nothing opened while released")
+        self.assertEqual(self.woken, [])
+        self.assertTrue(s.released)
+
+    async def test_play_after_pause_wakes_and_loads(self):
+        s, c, T = self.sink, self.clock, self.T
+        await s.release("test")
+        await T.play(s, c, 7, 2.0, state="paused")
+        c.t += A.TICK
+        await s.tick()
+        self.assertEqual(self.woken, [])
+        await T.run_for(s, c, 0.5, c.t, 7, 2.0)            # Play
+        self.assertEqual(len(self.woken), 1, "the Play reconnects the dongle")
+        self.assertFalse(s.released)
+        self.assertTrue(any(x[0] == "loadfile" for x in s.mpv.calls[-10:]), "and opens the stream again")
+
+    async def test_connect_wakes_without_play(self):
+        s = self.sink
+        await s.release("test")
+        s.wake("connect")
+        self.assertFalse(s.released)
+
+
+class DisconnectOpTest(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnect_closes_the_stream_before_the_dongle_is_told(self):
+        order = []
+        cfg = A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_OUTPUT": "alsa:default"})
+        ac = A.AudioControl(A.OutputWatch(cfg), lambda m: None)
+        d = D.Btd700("/dev/fake")
+        d.fd, d.state = 99, "streaming"
+
+        async def connect(on=True):
+            order.append("dongle " + ("on" if on else "off"))
+            return True
+
+        async def before():
+            order.append("release")
+        d.connect = connect
+        ac.dongle, ac.on_disconnect, ac.on_connect = d, before, lambda: order.append("wake")
+        await ac.handle({"op": "disconnect"})
+        await ac.handle({"op": "connect"})
+        self.assertEqual(order, ["release", "dongle off", "dongle on", "wake"])
+
+
 if __name__ == "__main__":
     unittest.main()
