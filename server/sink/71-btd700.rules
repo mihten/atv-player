@@ -1,0 +1,6 @@
+# atv-audio + Sennheiser BTD 700 dongle (USB 3542:3001): a fixed name for its control node (the hidraw of USB interface 0,
+# which carries the headphone state and the button reports), readable by group `audio` (the sink's account is in it).
+# Use with ATV_AUDIO_DONGLE=/dev/btd700-ctl and ATV_AUDIO_OUTPUT=alsa:plughw:CARD=B700,DEV=0.
+#   sudo install -m 644 71-btd700.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# All ATTRS of one rule must match the same parent device, so the interface is picked by DEVPATH.
+SUBSYSTEM=="hidraw", DEVPATH=="*:1.0/*", ATTRS{idVendor}=="3542", ATTRS{idProduct}=="3001", SYMLINK+="btd700-ctl", GROUP="audio", MODE="0660"

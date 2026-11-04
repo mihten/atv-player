@@ -1,0 +1,11 @@
+# Mounts the shares at boot and retries a failed one (NAS not up yet) every 2 minutes.
+[Unit]
+Description=ATV Player: keep the library's network shares mounted
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=2min
+Unit=atv-mountd.service
+
+[Install]
+WantedBy=timers.target

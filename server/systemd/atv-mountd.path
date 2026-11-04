@@ -1,0 +1,10 @@
+# The media server drops /var/lib/atv-media/mounts/apply when its share list changed.
+[Unit]
+Description=ATV Player: apply network share changes
+
+[Path]
+PathExists=/var/lib/atv-media/mounts/apply
+Unit=atv-mountd.service
+
+[Install]
+WantedBy=multi-user.target

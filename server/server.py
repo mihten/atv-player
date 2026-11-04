@@ -36,6 +36,7 @@ import loudness
 import lyrics
 import scanner
 import settings as settings_mod
+import shares as shares_mod
 
 # Site config comes from the environment (systemd EnvironmentFile, see server/site.example/). Library folders, their
 # display names, skip patterns, the rescan schedule, the server name and the optional admin password live in
@@ -45,13 +46,21 @@ DATA = Path(os.environ.get("ATV_DATA", "/var/lib/atv-media"))
 DATA.mkdir(parents=True, exist_ok=True)
 SETTINGS = settings_mod.Settings(str(DATA / "settings.json"))
 ROOTS = SETTINGS.roots()  # updated IN PLACE when the settings change (other modules hold this dict)
+# Network shares (Settings -> Library): mounted by the root helper atv_mountd.py below shares_mod.MOUNT_BASE, which is
+# always a place the folder picker may use.
+SPOOL = shares_mod.Spool(os.environ.get("ATV_MOUNTS_DIR") or str(DATA / "mounts"))
+if not any(shares_mod.MOUNT_BASE == b or shares_mod.MOUNT_BASE.startswith(b.rstrip("/") + "/") for b in SETTINGS.bases):
+    SETTINGS.extra_bases.append(shares_mod.MOUNT_BASE)
 CACHE = Path(os.environ.get("ATV_CACHE", "/var/cache/atv-media"))
+# Disk of the server's own data + cache: the web page shows a permanent note from this fill level (percent) on.
+DISK_WARN = float(os.environ.get("ATV_DISK_WARN", "80"))
+DISK: dict = {}
 AUDIO_DIR = CACHE / "audio"
 DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.19.0"
+VERSION = "0.20.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -325,7 +334,7 @@ class Session:
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
-            "server_name": server_name(),
+            "server_name": server_name(), "disk": DISK,
             "sink": sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box" else None,
             **(box_extra(self) if self.kind == "box" else {}),
         }
@@ -2902,7 +2911,124 @@ def settings_view(request):
     v.update({"unlocked": admin_ok(request), "server_name_default": socket.gethostname().split(".")[0],
               "next_rescan": settings_mod.next_rescan(SETTINGS.rescan, LAST_SCAN.get("finished_at")),
               "scanning": SCANNING})
+    v["shares"], v["mount_helper"] = shares_view()
     return v
+
+
+def shares_view():
+    """Each network share with its mount state and the library folders on it; and whether a mount helper runs."""
+    status = shares_mod.read_status()
+    out = []
+    for s in SETTINGS.shares():
+        out.append({**s, **shares_mod.share_state(status, s["key"]), "mount": shares_mod.mount_point(s["key"]),
+                    "roots": [r["key"] for r in SETTINGS.data["roots"]
+                              if shares_mod.share_of_path(r["path"]) == s["key"]]})
+    return out, status is not None
+
+
+async def wait_share(key, since, timeout=35.0):
+    """The helper's report on one share written after `since` (mounted / failed), or None after `timeout`."""
+    end = time.time() + timeout
+    while time.time() < end:
+        status = shares_mod.read_status()
+        if status is not None and float(status.get("at") or 0) >= since:
+            s = (status.get("shares") or {}).get(key)
+            if isinstance(s, dict) and s.get("state") in ("mounted", "failed"):
+                return s
+        await asyncio.sleep(0.4)
+    return None
+
+
+def publish_shares(secrets=None):
+    SPOOL.publish(SETTINGS.shares(), secrets)
+    return time.time() - 0.01
+
+
+def share_roots(key):
+    return [r for r in SETTINGS.data["roots"] if shares_mod.share_of_path(r["path"]) == key]
+
+
+async def api_settings_share_add(request):
+    """Mount a network share and add it (or a folder in it) to the library in one step."""
+    need_admin(request)
+    body = await _json_body(request)
+    try:
+        spec = shares_mod.clean_share(body)
+        sub = shares_mod.clean_subpath(body.get("path"))
+    except shares_mod.ShareError as e:
+        raise settings_error(e)
+    if shares_mod.read_status() is None:
+        raise web.HTTPBadRequest(text="this server cannot mount network shares: the mount helper (atv-mountd) is not "
+                                      "installed here (an unprivileged container cannot mount them at all)")
+    password = str(body.get("password") or "")
+    same = next((s for s in SETTINGS.shares() if s["server"].lower() == spec["server"].lower()
+                 and s["share"].lower() == spec["share"].lower()), None)
+    new = same is None
+    key = SETTINGS.add_share(spec, body.get("share_name") or spec["share"]) if new else same["key"]
+    if not new and password:
+        SETTINGS.update_share(key, spec)
+    since = publish_shares({key: password} if (new or password) else None)
+    res = await wait_share(key, since)
+    if not res or res.get("state") != "mounted":
+        if new:
+            SETTINGS.remove_share(key)
+            publish_shares()
+        msg = (res or {}).get("error") or "no answer from the mount helper within 35 s"
+        log.warning("settings: share //%s/%s did not mount: %s", spec["server"], spec["share"], msg)
+        raise web.HTTPBadRequest(text=f"could not mount //{spec['server']}/{spec['share']}: {msg}")
+    target = os.path.join(shares_mod.mount_point(key), sub) if sub else shares_mod.mount_point(key)
+    name = str(body.get("name") or "").strip() or (sub.rsplit("/", 1)[-1] if sub else spec["share"])
+    try:
+        root_key = SETTINGS.add_root(target, name, share=key)
+    except settings_mod.SettingsError as e:
+        if new and not share_roots(key):
+            SETTINGS.remove_share(key)
+            publish_shares()
+        raise settings_error(e)
+    log.info("settings: share //%s/%s mounted at %s, library folder %s added (%s)", spec["server"], spec["share"],
+             shares_mod.mount_point(key), root_key, target)
+    await library_changed(wait=False)
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_share_update(request):
+    """New user name / password / SMB version for a share (e.g. the NAS password changed)."""
+    need_admin(request)
+    key = request.match_info["key"]
+    old = SETTINGS.share(key)
+    if old is None:
+        raise web.HTTPNotFound(text="no such network share")
+    body = await _json_body(request)
+    try:
+        spec = shares_mod.clean_share({**old, **{k: body[k] for k in ("username", "domain", "vers") if k in body}})
+    except shares_mod.ShareError as e:
+        raise settings_error(e)
+    SETTINGS.update_share(key, spec)
+    password = body.get("password")
+    since = publish_shares({key: str(password)} if password is not None else None)
+    res = await wait_share(key, since)
+    log.info("settings: share %s updated -> %s", key, (res or {}).get("state", "no answer"))
+    if not res or res.get("state") != "mounted":
+        raise web.HTTPBadRequest(text=f"saved, but the share does not mount: "
+                                      f"{(res or {}).get('error') or 'no answer from the mount helper'}")
+    await library_changed(wait=False)
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_share_delete(request):
+    need_admin(request)
+    key = request.match_info["key"]
+    used = share_roots(key)
+    if used:
+        raise web.HTTPBadRequest(text="remove its library folder first: " + ", ".join(r.get("name") or r["key"]
+                                                                                    for r in used))
+    try:
+        SETTINGS.remove_share(key)
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+    publish_shares()
+    log.info("settings: share %s removed", key)
+    return web.json_response(settings_view(request))
 
 
 async def api_settings(request):
@@ -2992,12 +3118,17 @@ async def api_settings_root_update(request):
 async def api_settings_root_delete(request):
     need_admin(request)
     key = request.match_info["key"]
+    on_share = shares_mod.share_of_path(ROOTS.get(key, ""))
     try:
         SETTINGS.remove_root(key)
     except settings_mod.SettingsError as e:
         raise settings_error(e)
     log.info("settings: library folder %s removed", key)
     await library_changed(wait=True)  # its items go now: no request may still look for its path
+    if on_share and SETTINGS.share(on_share) and not share_roots(on_share):  # its share was only there for it
+        SETTINGS.remove_share(on_share)
+        publish_shares()
+        log.info("settings: share %s removed with its last library folder", on_share)
     return web.json_response(settings_view(request))
 
 
@@ -3067,6 +3198,47 @@ async def rescan_loop():
         await asyncio.sleep(1.0)
 
 
+def disk_usage():
+    """Fill level of the disk(s) under DATA and CACHE (the fullest one): {path, used_pct, free, total, warn}."""
+    seen, worst = set(), None
+    for p in (DATA, CACHE):
+        try:
+            dev = os.stat(p).st_dev
+            if dev in seen:
+                continue
+            seen.add(dev)
+            u = shutil.disk_usage(p)
+        except OSError:
+            continue
+        pct = round(100.0 * u.used / (u.used + u.free), 1) if (u.used + u.free) else 0.0  # as df shows it
+        if worst is None or pct > worst["used_pct"]:
+            worst = {"path": str(p), "used_pct": pct, "free": u.free, "total": u.total}
+    if worst is None:
+        return {}
+    worst["warn"] = worst["used_pct"] >= DISK_WARN
+    worst["warn_at"] = DISK_WARN
+    return worst
+
+
+async def disk_loop():
+    """Refresh DISK every minute; tell the pages when the warning starts/ends or its percent changes."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            new = await asyncio.get_running_loop().run_in_executor(None, disk_usage)
+        except Exception:
+            log.exception("disk check failed")
+            continue
+        old = dict(DISK)
+        DISK.clear()
+        DISK.update(new)
+        if new.get("warn") != old.get("warn") or (new.get("warn") and int(new.get("used_pct", 0))
+                                                   != int(old.get("used_pct", 0))):
+            if new.get("warn"):
+                log.warning("disk %s is %.1f %% full (%.1f GB free)", new["path"], new["used_pct"], new["free"] / 1e9)
+            await broadcast_all()
+
+
 def dir_size(path, pattern="*"):
     n = size = 0
     for f in Path(path).glob(pattern):
@@ -3100,7 +3272,7 @@ async def api_status(request):
                   "copy_job": bool(COPY_JOB["running"])},
         "loudness": loud, "lyrics": lyr, "playlists": len(PLAYLISTS), "loved": len(LOVED),
         "plays": sum(PLAY_COUNT.values()), "sessions": sessions_summary(), "sink": sink_state("tv"),
-        "admin": SETTINGS.has_password,
+        "admin": SETTINGS.has_password, "disk": DISK,
     })
 
 
@@ -3331,8 +3503,10 @@ async def on_startup(app):
     load_history()
     load_listening()
     APP_REF["app"] = app
+    DISK.update(disk_usage())
     asyncio.create_task(run_scan())
     asyncio.create_task(rescan_loop())
+    asyncio.create_task(disk_loop())
     await advertise(app)
 
 
@@ -3369,6 +3543,9 @@ def make_app():
     app.router.add_put("/api/settings/skip", api_settings_skip)
     app.router.add_put("/api/settings/rescan", api_settings_rescan)
     app.router.add_put("/api/settings/server", api_settings_server)
+    app.router.add_post("/api/settings/shares", api_settings_share_add)
+    app.router.add_put("/api/settings/shares/{key}", api_settings_share_update)
+    app.router.add_delete("/api/settings/shares/{key}", api_settings_share_delete)
     app.router.add_get("/api/status", api_status)
     app.router.add_post("/api/cache/clear", api_cache_clear)
     app.router.add_get("/api/backup", api_backup_get)

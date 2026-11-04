@@ -12,7 +12,7 @@ set -e
 id atvmedia >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin atvmedia
 python3 -c "import zeroconf" 2>/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-zeroconf >/dev/null
 EOF
-tar -czf - server.py box_sound.py settings.py scanner.py loudness.py lyrics.py atv_shot.py static systemd site | ssh "$ATV_HOST" '
+tar -czf - server.py box_sound.py settings.py shares.py atv_mountd.py scanner.py loudness.py lyrics.py atv_shot.py static systemd site | ssh "$ATV_HOST" '
 set -e
 install -d -m 755 /opt/atv-media
 tar -xzf - -C /opt/atv-media
@@ -27,6 +27,16 @@ fi
 rm -rf /opt/atv-media/site
 [ -x /opt/atv-shot/venv/bin/python ] && install -m 755 /opt/atv-media/atv_shot.py /opt/atv-shot/atv-shot.py
 install -m 644 /opt/atv-media/systemd/atv-media.service /etc/systemd/system/
+# server 0.20: network shares (Settings -> Library) are mounted by the root helper atv-mountd; only where mounting
+# works (a VM or bare metal: not inside a container) and cifs-utils is there
+if ! systemd-detect-virt --container --quiet; then
+  [ -x /sbin/mount.cifs ] || [ -x /usr/sbin/mount.cifs ] || DEBIAN_FRONTEND=noninteractive apt-get install -y -q cifs-utils >/dev/null
+  install -m 644 /opt/atv-media/systemd/atv-mountd.service /opt/atv-media/systemd/atv-mountd.path \
+    /opt/atv-media/systemd/atv-mountd.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now atv-mountd.path atv-mountd.timer >/dev/null 2>&1
+  systemctl start atv-mountd.service || true
+fi
 # server 0.18: the server schedules rescans itself (Settings -> Library); the old daily timer goes
 if [ -e /etc/systemd/system/atv-media-rescan.timer ]; then
   systemctl disable --now atv-media-rescan.timer >/dev/null 2>&1 || true

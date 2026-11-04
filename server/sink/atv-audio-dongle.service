@@ -1,0 +1,25 @@
+# atv-audio sink on a Sennheiser BTD 700 dongle (ALSA + its control node), as a SYSTEM unit (no PipeWire needed).
+# Next to a PipeWire sink on the same machine: give each its own ATV_AUDIO_ID, and keep PipeWire off the dongle
+# (wireplumber-no-btd700.conf). Account: a system user in group audio, e.g.
+#   sudo useradd --system --home /var/lib/atv-audio-dongle --shell /usr/sbin/nologin -G audio atvaudio
+#   sudo install -m 644 atv-audio-dongle.service /etc/systemd/system/ ; sudo install -D -m 600 env /etc/atv-audio/dongle.env
+#   sudo systemctl enable --now atv-audio-dongle
+# Without the dongle plugged in it keeps running and waits for it (output "not ready").
+[Unit]
+Description=atv-audio: Apple TV sound through a BTD 700 dongle (ATV Player sink)
+After=network-online.target atv-media.service
+Wants=network-online.target
+
+[Service]
+User=atvaudio
+SupplementaryGroups=audio
+StateDirectory=atv-audio-dongle
+Environment=HOME=/var/lib/atv-audio-dongle PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/atv-audio/dongle.env
+ExecStart=/usr/bin/python3 /opt/atv-audio/atv_audio.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

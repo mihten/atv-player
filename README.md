@@ -101,7 +101,13 @@ The program is the same everywhere; only its env file differs.
    PipeWire/PulseAudio socket if the host runs an audio system with built-in Bluetooth.
 2. **Media server + a separate audio machine or VM:** PipeWire + BlueZ + the sink on that machine (built-in
    Bluetooth or a dongle); it connects to the server over the LAN.
-3. **Docker (Linux hosts only):** `Dockerfile` + `compose.yaml` at the repo root. Create `.env` next to
+3. **Everything in one VM:** media server, a PipeWire/BlueZ sink (built-in Bluetooth passed through) and a dongle
+   sink (`atv-audio-dongle.service`, ALSA) on one machine, both connecting to `http://127.0.0.1:8080` with their own
+   `ATV_AUDIO_ID`. Keep PipeWire off the dongle with `server/sink/wireplumber-no-btd700.conf`, give the dongle a fixed
+   node name with `server/sink/71-btd700.rules`. A USB device passed through by vendor:product id may be unplugged:
+   the VM still starts, and the dongle sink waits for it. Library folders from the host can come in read-only through
+   virtiofs (mount them with `nofail` so the VM boots without them) or as network shares (Settings → Library).
+4. **Docker (Linux hosts only):** `Dockerfile` + `compose.yaml` at the repo root. Create `.env` next to
    `compose.yaml` (the format is in its header: host library folders, `ATV_ROOTS` with the container paths
    `/media/music` / `/media/videos`; keep it out of git), then `docker compose up -d` for the server, or
    `docker compose --profile audio up -d` with the sink. The server uses host networking for Bonjour. Pick
@@ -264,8 +270,17 @@ The ⚙ button opens **Settings**:
   file name per line, `*` and `?` work, case does not matter; a path with `/` counts from the library folder), and the
   **rescan schedule** (off, every 1–12 hours, or daily at a time; default daily 04:15). The server schedules rescans
   itself: the old `atv-media-rescan.timer` is removed by `deploy.sh`.
-  The folder picker only shows folders under `ATV_LIBRARY_BASES` (default: the parent folders of the first-start
-  `ATV_ROOTS`). A network share has to be mounted on the host / container first.
+  **Add network share** (the usual way): server, share, an optional folder inside it, user name and password; the
+  server mounts it read-only and adds it as a library folder in one step (a wrong password or an unreachable server is
+  reported in the form). Mounting needs the small root helper `atv-mountd` (`server/atv_mountd.py`, units in
+  `server/systemd/`), which `deploy.sh` installs on a VM or bare-metal host together with `cifs-utils`; the password
+  goes only into its root-only credentials file (`/etc/atv-media/smb/`), never into `settings.json`. Shares mount at
+  `/media/smb/<name>` (`ATV_MOUNT_BASE`); a share comes back by itself when the file server was down (retry every
+  2 minutes). An unprivileged container cannot mount network shares at all: mount them on its host and bind them in.
+  **Add server folder** picks a folder the server can already read, under `ATV_LIBRARY_BASES` (default: the parent
+  folders of the first-start `ATV_ROOTS`).
+  When the disk with the server's data and cache is 80 % full or more (`ATV_DISK_WARN`), the page shows a quiet
+  permanent note in the status line; Settings → Server → Delete audio copies frees the largest part.
 - **atv-audio**: the sound output (PipeWire / Pulse sinks) and the headphones: find, pair (headphones in pairing mode),
   connect, disconnect, forget. Pairing is only accepted while a pairing started here runs (60 s). The player card also
   shows a Connect / Disconnect button for the headphones.

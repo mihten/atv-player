@@ -250,6 +250,14 @@ textarea.set-in { min-height: 96px; resize: vertical; font-family: ui-monospace,
 .set-kv b { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
 .set-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink3); flex: none; }
 .set-dot.on { background: #4cd964; }
+.set-dot.bad { background: #ff8a8a; }
+.set-dot.wait { background: #f5c26b; }
+.set-g2 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; }
+.set-lbl { font-size: 12px; color: var(--ink3); margin: 2px 2px -4px; }
+.set-s.set-bad { color: #ff8a8a; white-space: normal; }
+/* server disk almost full: one quiet line in the status bar, as long as it lasts */
+.dwarn { color: #f5c26b; font-weight: 600; }
+.dwarn[hidden] { display: none; }
 .abt-big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .abt-big .pill { justify-content: center; padding: 14px 10px; font-size: 15px; }
 .abt-win { font-weight: 600; overflow-wrap: anywhere; }
@@ -533,7 +541,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <button id="lookBtn" class="ib" title="Settings"></button>
     </div>
   </header>
-  <div class="status"><span id="dot" class="dot"></span><span id="conn">connecting…</span><span class="grow"></span><span id="scan"></span><button id="acopy" class="pill" hidden title="Copy the main audio track of every music video for atv-audio, in the background"></button><button id="rescan" class="pill" title="Look for new, changed and removed files on the NAS"></button></div>
+  <div class="status"><span id="dot" class="dot"></span><span id="conn">connecting…</span><span id="diskWarn" class="dwarn" hidden></span><span class="grow"></span><span id="scan"></span><button id="acopy" class="pill" hidden title="Copy the main audio track of every music video for atv-audio, in the background"></button><button id="rescan" class="pill" title="Look for new, changed and removed files on the NAS"></button></div>
 
   <section id="player" class="card">
     <div class="eyebrow eyebrow-top"><span class="eq"><i></i><i></i><i></i><i></i></span><span class="npl">Now playing</span></div>
@@ -953,6 +961,15 @@ function drawUpNext(s) {
     }).join("") + `</div>`;
 }
 
+/** Server disk almost full: a permanent, quiet note in the status line (server ATV_DISK_WARN, default 80 %). */
+function drawDisk(d) {
+  const el = $("diskWarn"), on = !!(d && d.warn);
+  el.hidden = !on;
+  if (on) {
+    el.textContent = `· server disk ${Math.round(d.used_pct)} % full`;
+    el.title = `${fmtBytes(d.free)} free of ${fmtBytes(d.total)} (${d.path}). Audio copies can be deleted in Settings → Server.`;
+  }
+}
 function onState(s) {
   const prevScan = st && st.scanning;
   st = s; clockOffset = s.server_time - Date.now() / 1000;
@@ -972,6 +989,7 @@ function onState(s) {
   drawBox(s);
   drawHeadphones(s);
   if (s.server_name) document.title = `ATV Player · ${s.server_name}`;
+  drawDisk(s.disk);
   setIcon($("pp"), s.playing ? "pause" : "play"); setIcon($("miniPP"), s.playing ? "pause" : "play");
   $("shuf").classList.toggle("on", s.shuffle);
   $("preferSw").classList.toggle("on", !!s.prefer_videos);
@@ -1513,12 +1531,19 @@ function unlockSheet(then) {
 async function libSheet() {
   await loadCfg(); if (lockedNow()) return unlockSheet(libSheet);
   const c = cfg, r = c.rescan;
-  const folders = c.roots.map((x) => `<div class="set-row"><span class="set-dot${x.online ? " on" : ""}" title="${x.online ? "Reachable" : "Not reachable"}"></span>` +
-    `<div class="set-main"><div class="set-t">${esc(x.name)}</div><div class="set-s">${esc(x.path)} · ${x.items} item${x.items === 1 ? "" : "s"}</div></div>` +
-    `<button class="ib" data-l="rename" data-k="${esc(x.key)}" title="Rename">${ic("pencil")}</button><button class="ib" data-l="remove" data-k="${esc(x.key)}" title="Remove">${ic("trash")}</button></div>`).join("");
+  const shareOf = (x) => (c.shares || []).find((s) => (s.roots || []).includes(x.key));
+  const folders = c.roots.map((x) => { const sh = shareOf(x); return `<div class="set-row"><span class="set-dot${x.online ? " on" : ""}" title="${x.online ? "Reachable" : "Not reachable"}"></span>` +
+    `<div class="set-main"><div class="set-t">${esc(x.name)}</div><div class="set-s">${sh ? `//${esc(sh.server)}/${esc(sh.share)}${x.path.length > sh.mount.length ? esc(x.path.slice(sh.mount.length)) : ""}` : esc(x.path)} · ${x.items} item${x.items === 1 ? "" : "s"}</div></div>` +
+    `<button class="ib" data-l="rename" data-k="${esc(x.key)}" title="Rename">${ic("pencil")}</button><button class="ib" data-l="remove" data-k="${esc(x.key)}" title="Remove">${ic("trash")}</button></div>`; }).join("");
+  const stateTxt = { mounted: "connected", failed: "not connected", pending: "connecting…", "no-helper": "cannot mount here" };
+  const shares = (c.shares || []).map((s) => `<div class="set-row"><span class="set-dot${s.state === "mounted" ? " on" : s.state === "pending" ? " wait" : " bad"}"></span>` +
+    `<div class="set-main"><div class="set-t">//${esc(s.server)}/${esc(s.share)}</div><div class="set-s${s.state === "mounted" ? "" : " set-bad"}">${esc(stateTxt[s.state] || s.state)}${s.username ? ` · ${esc(s.username)}` : " · guest"}${s.error ? ` · ${esc(s.error)}` : ""}</div></div>` +
+    `<button class="ib" data-l="shedit" data-k="${esc(s.key)}" title="User name, password, SMB version">${ic("pencil")}</button>` +
+    ((s.roots || []).length ? "" : `<button class="ib" data-l="shdel" data-k="${esc(s.key)}" title="Remove this share">${ic("trash")}</button>`) + `</div>`).join("");
   const hours = [1, 2, 3, 4, 6, 8, 12].map((h) => `<option value="${h}"${r.hours === h ? " selected" : ""}>${h} h</option>`).join("");
   openSheet(`<div class="st">Library</div>` + sec("Folders") + (folders || `<div class="set-hint">No library folder yet.</div>`) +
-    `<div class="set-btns"><button class="pill" data-l="add">${ic("plus")} Add folder</button><span class="grow"></span><button class="pill" data-l="scan">${ic("refresh")} Rescan now</button></div>` +
+    `<div class="set-btns"><button class="pill primary" data-l="addshare">${ic("plus")} Add network share</button><button class="pill" data-l="add">${ic("folder")} Add server folder</button><span class="grow"></span><button class="pill" data-l="scan">${ic("refresh")} Rescan now</button></div>` +
+    (shares ? sec("Network shares") + shares : "") +
     sec("Skip") + `<textarea class="set-in" id="skipTxt" placeholder="_work&#10;*sample*" aria-label="Skip list">${esc(c.skip.join("\n"))}</textarea>` +
     `<div class="set-hint">One per line: a folder or file name (* and ? work, case does not matter), or a path from the library folder with /.</div>` +
     `<div class="set-btns"><span class="grow"></span><button class="pill" data-l="skip">Save skip list</button></div>` +
@@ -1537,6 +1562,13 @@ async function libClick(e) {
   try {
     if (a === "back") return settingsMenu();
     if (a === "add") return folderPicker(null);
+    if (a === "addshare") return shareSheet(null);
+    if (a === "shedit") return shareSheet(k);
+    if (a === "shdel") {
+      const s = (cfg.shares || []).find((x) => x.key === k); if (!s) return;
+      if (!confirm(`Disconnect //${s.server}/${s.share}? No library folder uses it.`)) return;
+      b.disabled = true; await sapi("DELETE", `/api/settings/shares/${encodeURIComponent(k)}`, undefined, libSheet); toast("Share removed"); return libSheet();
+    }
     if (a === "scan") { await sapi("POST", "/api/rescan"); toast("Rescan started"); return; }
     if (a === "rename" && root) {
       const name = prompt("Display name:", root.name); if (!name || !name.trim() || name === root.name) return;
@@ -1546,7 +1578,7 @@ async function libClick(e) {
       const parts = [`${root.items} item${root.items === 1 ? "" : "s"} leave the library`];
       if (root.playlist_entries) parts.push(`${root.playlist_entries} playlist entr${root.playlist_entries === 1 ? "y shows" : "ies show"} as missing`);
       if (root.loved) parts.push(`${root.loved} heart${root.loved === 1 ? " is" : "s are"} lost`);
-      if (!confirm(`Remove "${root.name}" from the library?\n\n${parts.join(", ")}. Adding the folder again gives its files new ids. The files themselves are not touched.`)) return;
+      if (!confirm(`Remove "${root.name}" from the library?\n\n${parts.join(", ")}. Adding the folder again gives its files new ids. The files themselves are not touched.${(cfg.shares || []).some((s) => (s.roots || []).length === 1 && s.roots[0] === k) ? " Its network share is disconnected too." : ""}`)) return;
       b.disabled = true; await sapi("DELETE", `/api/settings/roots/${encodeURIComponent(k)}`, undefined, libSheet); toast(`Removed "${root.name}"`); loadLibrary(); return libSheet();
     }
     if (a === "skip") {
@@ -1559,6 +1591,49 @@ async function libClick(e) {
     }
   } catch { b.disabled = false; }
 }
+/** Network share: add (mount + library folder in one step) or, with `key`, change its login / SMB version. */
+function shareSheet(key) {
+  const s = key ? (cfg.shares || []).find((x) => x.key === key) : null;
+  if (key && !s) return libSheet();
+  const v = s || { server: "", share: "", username: "", domain: "", vers: "3.1.1" };
+  const vers = ["3.1.1", "3.0", "2.1", "default"].map((x) => `<option value="${x}"${v.vers === x ? " selected" : ""}>${x === "default" ? "Automatic" : "SMB " + x}</option>`).join("");
+  const field = (id, label, val, extra = "") => `<div class="set-lbl">${label}</div><input class="set-in" id="${id}" value="${esc(val || "")}" ${extra}>`;
+  openSheet(`<div class="st">${s ? `//${esc(s.server)}/${esc(s.share)}` : "Add a network share"}</div>` +
+    (s ? "" : `<div class="set-hint">Read-only SMB share (Windows / NAS). Paste \\\\server\\share or fill in the two fields.</div>` +
+      `<div class="set-g2"><div>${field("shSrv", "Server", "", 'placeholder="fileserver or 10.0.0.5" autocapitalize="off" spellcheck="false"')}</div><div>${field("shShare", "Share", "", 'placeholder="music" autocapitalize="off" spellcheck="false"')}</div></div>` +
+      field("shPath", "Folder in the share (empty = all of it)", "", 'placeholder="Music/Albums" autocapitalize="off" spellcheck="false"')) +
+    `<div class="set-g2"><div>${field("shUser", "User name (empty = guest)", v.username, 'autocomplete="off" autocapitalize="off" spellcheck="false"')}</div><div>${field("shDom", "Domain", v.domain, 'placeholder="optional" autocapitalize="off"')}</div></div>` +
+    `<div class="set-lbl">Password${s ? " (empty = keep the saved one)" : ""}</div><input class="set-in" type="password" id="shPw" autocomplete="new-password">` +
+    `<div class="set-g2"><div>${s ? "" : field("shName", "Display name", "", 'placeholder="like the folder"')}</div><div><div class="set-lbl">Protocol</div><select class="set-in" id="shVers">${vers}</select></div></div>` +
+    `<div class="set-err" id="shErr"></div><div class="set-btns"><button class="pill" data-h="back">Cancel</button><span class="grow"></span>` +
+    `<button class="pill primary" data-h="ok">${s ? "Save and reconnect" : "Connect and add"}</button></div>` +
+    `<div class="set-hint">The password is kept only by the server's mount helper (readable by root only), never in the settings file or this page.</div>`,
+  async (e) => {
+    const b = e.target.closest("[data-h]"); if (!b) return;
+    if (b.dataset.h === "back") return libSheet();
+    const err = $("shErr"); err.textContent = "";
+    const body = { username: $("shUser").value.trim(), domain: $("shDom").value.trim(), vers: $("shVers").value };
+    const pw = $("shPw").value;
+    if (!s) {
+      let srv = $("shSrv").value.trim(), share = $("shShare").value.trim();
+      const m = srv.match(/^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)(?:[\\/]+(.*))?$/);  // \\fileserver\media\music pasted
+      if (m) { srv = m[1]; share = share || m[2]; if (m[3] && !$("shPath").value.trim()) $("shPath").value = m[3]; }
+      Object.assign(body, { server: srv, share, path: $("shPath").value.trim(), name: $("shName").value.trim(), password: pw });
+      if (!srv || !share) { err.textContent = "Server and share are needed."; return; }
+    } else if (pw) body.password = pw;
+    b.disabled = true; const label = b.textContent; b.textContent = "Connecting…";
+    try {
+      const url = s ? `/api/settings/shares/${encodeURIComponent(s.key)}` : "/api/settings/shares";
+      const r = await fetch(url, { method: s ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const text = await r.text();
+      if (r.status === 403 && /locked/.test(text)) { unlockSheet(() => shareSheet(key)); return; }
+      if (!r.ok) { err.textContent = text || `Error ${r.status}`; b.disabled = false; b.textContent = label; return; }
+      toast(s ? "Share reconnected" : "Share added, reading it in the background"); loadLibrary(); return libSheet();
+    } catch (x) { err.textContent = String(x); b.disabled = false; b.textContent = label; }
+  });
+  if (!cfg.mount_helper) $("shErr").textContent = "This server has no mount helper: network shares cannot be mounted here.";
+  ($("shSrv") || $("shPw")).focus();
+}
 /** Folder picker: only folders under the server's allowed base folders. */
 async function folderPicker(path) {
   let b; try { b = await sapi("GET", `/api/settings/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`, undefined, () => folderPicker(path)); } catch { return; }
@@ -1569,7 +1644,7 @@ async function folderPicker(path) {
     (b.dirs.length ? "" : `<div class="set-hint">No subfolders.</div>`) + `</div>` +
     (b.path ? `<input class="set-in" id="newName" value="${esc(b.path.split("/").pop())}" aria-label="Display name" placeholder="Display name">` +
       `<div class="set-btns"><button class="pill" data-p="__back">Cancel</button><span class="grow"></span><button class="pill primary" data-p="__add"${used.has(b.path) ? " disabled" : ""}>Add this folder</button></div>`
-      : `<div class="set-hint">Folders the server can read (${esc((cfg.bases || []).join(", "))}). A share must be mounted on the server first.</div><button class="opt cancel" data-p="__back">Cancel</button>`),
+      : `<div class="set-hint">Folders the server can read (${esc((cfg.bases || []).join(", "))}). For a NAS or Windows share use Add network share.</div><button class="opt cancel" data-p="__back">Cancel</button>`),
   async (e) => {
     const x = e.target.closest("[data-p]"); if (!x) return;
     if (x.dataset.p === "__back") return libSheet();

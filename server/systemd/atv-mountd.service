@@ -1,0 +1,12 @@
+# Mounts the SMB library shares the ATV media server asks for (Settings -> Library -> Add network share).
+# Runs as root on request (atv-mountd.path) and every 2 minutes (atv-mountd.timer: retries failed mounts).
+# Needs cifs-utils. Not usable in an unprivileged container (it cannot mount CIFS).
+[Unit]
+Description=ATV Player: mount the library's network shares
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/atv-media
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/atv-media/atv_mountd.py

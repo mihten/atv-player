@@ -137,6 +137,7 @@ class Settings:
         except ValueError:
             names = {}
         self.bases = _bases_from_env(env, seed)
+        self.extra_bases = []  # also allowed (the network-share mount folder), listed only when it exists
         self.tokens = {}  # admin session token -> expiry (memory only: a restart asks again)
         loaded = None
         try:
@@ -155,6 +156,37 @@ class Settings:
         self.data["rescan"] = clean_rescan(self.data.get("rescan"))
         self.data.setdefault("server_name", "")
         self.data.setdefault("admin", None)
+        if not isinstance(self.data.get("shares"), list):
+            self.data["shares"] = []
+
+    # -- network shares (shares.py; the password never lands here, only in the mount helper's root-only file)
+    def shares(self):
+        return [dict(s) for s in self.data["shares"]]
+
+    def share(self, key):
+        return next((dict(s) for s in self.data["shares"] if s["key"] == key), None)
+
+    def add_share(self, spec, name):
+        name = (str(name or "").strip() or spec["share"])[:60]
+        key = slug(name, {s["key"] for s in self.data["shares"]})
+        self.data["shares"].append({"key": key, "name": name, **spec})
+        self.save()
+        return key
+
+    def update_share(self, key, spec):
+        for s in self.data["shares"]:
+            if s["key"] == key:
+                s.update(spec)
+                self.save()
+                return
+        raise SettingsError("no such network share")
+
+    def remove_share(self, key):
+        before = len(self.data["shares"])
+        self.data["shares"] = [s for s in self.data["shares"] if s["key"] != key]
+        if len(self.data["shares"]) == before:
+            raise SettingsError("no such network share")
+        self.save()
 
     # -- persistence
     def save(self):
@@ -189,7 +221,8 @@ class Settings:
     def public(self):
         """What the web page may read (never the password hash)."""
         return {"roots": [dict(r) for r in self.data["roots"]], "skip": self.skip, "rescan": self.rescan,
-                "server_name": self.data.get("server_name") or "", "admin": self.has_password, "bases": self.bases}
+                "server_name": self.data.get("server_name") or "", "admin": self.has_password, "bases": self.bases,
+                "shares": self.shares()}
 
     # -- paths
     def allowed(self, path):
@@ -197,7 +230,7 @@ class Settings:
         if not path or not os.path.isabs(path):
             return None
         real = os.path.realpath(path)
-        for b in self.bases:
+        for b in self.bases + self.extra_bases:
             if (real == b or real.startswith(b.rstrip("/") + "/")) and os.path.isdir(real):
                 return real
         return None
@@ -206,7 +239,7 @@ class Settings:
         """Folders the picker may show: the bases, or the direct subfolders of an allowed folder."""
         if not path:
             return {"path": None, "parent": None,
-                    "dirs": [{"path": b, "name": b} for b in self.bases if os.path.isdir(b)]}
+                    "dirs": [{"path": b, "name": b} for b in self.bases + self.extra_bases if os.path.isdir(b)]}
         real = self.allowed(path)
         if real is None:
             raise SettingsError("not an allowed folder")
@@ -220,7 +253,7 @@ class Settings:
                 "dirs": [{"path": os.path.join(real, n), "name": n} for n in names[:500]]}
 
     # -- changes
-    def add_root(self, path, name):
+    def add_root(self, path, name, share=None):
         real = self.allowed(path)
         if real is None:
             raise SettingsError("pick a folder inside " + ", ".join(self.bases))
@@ -229,7 +262,10 @@ class Settings:
                 raise SettingsError(f"already in the library as \"{r.get('name') or r['key']}\"")
         name = (name or os.path.basename(real) or real).strip()[:60]
         key = slug(name, {r["key"] for r in self.data["roots"]})
-        self.data["roots"].append({"key": key, "path": real, "name": name})
+        root = {"key": key, "path": real, "name": name}
+        if share:
+            root["share"] = share
+        self.data["roots"].append(root)
         self.save()
         return key
 
