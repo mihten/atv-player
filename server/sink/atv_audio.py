@@ -1886,7 +1886,7 @@ async def run(cfg):
         early.append(asyncio.create_task(dongle.run()))
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(dongle.first.wait(), 3.0)  # report the headphones' real state from the start
-    standby = {"on": False, "here_since": None, "kicked": -1e9, "last_bt": None}
+    standby = {"on": None, "here_since": None, "kicked": -1e9, "last_bt": None}
 
     def bt_devices():
         return [d for d in ((audio.bt or {}).get("devices") or []) if d.get("paired") and d.get("audio")]
@@ -1898,25 +1898,41 @@ async def run(cfg):
                 await stream_closed()
                 await dongle.connect(False)
         elif buttons:
+            # block, not just disconnect: headphones reconnect to a trusted device by themselves within ~3 s
+            # (seen 2026-11-04) and then the other program cannot get them (the phone holds the second link)
             for d in bt_devices():
                 if d.get("connected"):
                     standby["last_bt"] = d["address"]
-                    buttons.bt("disconnect", d["address"])
+                buttons.bt("block", d["address"])
         sink.log(f"standby: headphones freed ({why})")
 
     async def take_headphones():
         if dongle is not None:
             if dongle.present and not dongle.ready:
                 await dongle.connect(True)
-        elif buttons and not sink.output_ok:
+        elif buttons:
             devs = bt_devices()
+            for d in devs:
+                buttons.bt("unblock", d["address"])
             addr = standby["last_bt"] or (devs[0]["address"] if devs else None)
-            if addr:
+            if addr and not sink.output_ok:
                 buttons.bt("connect", addr)
 
+    standby_lock = asyncio.Lock()
+
     async def on_standby(on):
+        async with standby_lock:  # one change at a time, in the order the server sent them
+            await _on_standby(on)
+
+    async def _on_standby(on):
         if on == standby["on"]:
             return
+        first = standby["on"] is None
+        if first and dongle is None and buttons and not bt_devices():
+            for _ in range(20):  # the helper reports the paired headphones a moment after the start
+                await asyncio.sleep(0.25)
+                if bt_devices():
+                    break
         standby["on"], standby["here_since"] = on, None
         if on:
             if box:

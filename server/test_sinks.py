@@ -65,6 +65,8 @@ class FakeProgram:
                     self.ready = False
                     await self.report()
                 else:
+                    if self.take is None:  # never gets the headphones (they went to a third device)
+                        continue
                     await asyncio.sleep(self.take)
                     self.ready = True
                     await self.report()
@@ -220,6 +222,39 @@ async def main(tmp):
             check(len(plays) == 5 and all(m["position"] == 2 for m in plays), f"5 excerpts (2x2 + replay) from 2 s ({len(plays)})")
             st = await sinks(http)
             check(st["output"]["name"] == "Headphones X" and len(st["sinks"]) == 2, "after the test: back to the chosen program")
+
+            # ---- a program that never gets the headphones: the test stops with a message, never hangs
+            await req(http, "POST", "/api/abtest", json={"op": "clear"})
+            dongle.take = None
+            code, ab = await req(http, "POST", "/api/abtest", json={"op": "start", "items": [{"id": ids[1], "start": 0}],
+                                                                       "per_song": 2, "length": 5})
+            ok = await until_done(http, 40)
+            code, ab = await req(http, "GET", "/api/abtest")
+            check(ok and not ab["running"] and "did not get the headphones" in (ab["error"] or ""),
+                  f"no headphones -> test ends with a message ({ab['error']})")
+            st = await sinks(http)
+            check(st["connected"] and len(st["sinks"]) == 2, f"... and an active program again ({st['connected']})")
+            code, _ = await req(http, "POST", "/api/atv-audio", json={"op": "refresh"})
+            check(code == 200, "audio commands work again after it")
+
+            # ---- Stop pressed twice while a switch hangs: never stuck in 'finishing'
+            await req(http, "POST", "/api/abtest", json={"op": "clear"})
+            dongle.take = 4.0
+            bt.take = 4.0
+            code, ab = await req(http, "POST", "/api/abtest", json={"op": "start", "items": [{"id": ids[1], "start": 0}],
+                                                                       "per_song": 1, "length": 5})
+            await until_phase(http, "switch_a", 5)
+            await asyncio.sleep(0.3)
+            await req(http, "POST", "/api/abtest", json={"op": "stop"})
+            await asyncio.sleep(0.2)
+            await req(http, "POST", "/api/abtest", json={"op": "stop"})
+            ok = await until_done(http, 40)
+            code, ab = await req(http, "GET", "/api/abtest")
+            st = await sinks(http)
+            check(ok and not ab["running"] and ab["phase"] == "done" and ab["error"] == "stopped",
+                  f"double Stop during a switch: test over ({ab['phase']}, {ab['error']})")
+            check(st["connected"] and sum(x["active"] for x in st["sinks"]) == 1, "... one program active afterwards")
+            dongle.take = bt.take = 0.2
 
             # ---- restart: the chosen one wins even if the other connects first
             await dongle.close()

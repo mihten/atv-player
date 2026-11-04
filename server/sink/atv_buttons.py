@@ -15,7 +15,9 @@ It also manages the headphones for the web remote (Settings -> atv-audio): list 
 (with an agent that accepts only a pairing started here, within PAIR_WINDOW s), connect, disconnect, forget.
 
   stdin:  JSON lines from atv_audio.py  {"status": "Playing"|"Paused"|"Stopped", "title", "artist", "length" (s)}
-          or {"op": "bt", "action": "refresh"|"scan"|"pair"|"connect"|"disconnect"|"forget", "address": ...}
+          or {"op": "bt", "action": "refresh"|"scan"|"pair"|"connect"|"disconnect"|"forget"|"block"|"unblock",
+              "address": ...}   (block: BlueZ refuses the device's connections, pairing kept; used while another
+              atv-audio program has the headphones, since they reconnect to a trusted device by themselves)
   stdout: JSON lines to atv_audio.py    {"cmd": "play"|"pause"|"next"|"prev"}, {"cmd": "seek", "delta": s},
           {"bt": {"devices": [...], "scanning", "busy", "error"}} and {"log": "..."}
 
@@ -451,6 +453,20 @@ class Headphones:
         self.busy = "Disconnecting…"
         self.emit(force=True)
         dev.Disconnect(reply_handler=lambda: self.done(), error_handler=self.fail("disconnect"), timeout=20)
+
+    def _blocked(self, address, on):
+        path, _ = self.device(address)
+        props = dbus.Interface(self.bus.get_object("org.bluez", path), dbus.PROPERTIES_IFACE)
+        if bool(props.Get("org.bluez.Device1", "Blocked")) != on:
+            props.Set("org.bluez.Device1", "Blocked", dbus.Boolean(on))  # blocking also disconnects
+            note(f"{'blocked' if on else 'unblocked'} {address}")
+        self.done()
+
+    def do_block(self, address):
+        self._blocked(address, True)
+
+    def do_unblock(self, address):
+        self._blocked(address, False)
 
     def do_forget(self, address):
         path, _ = self.device(address)

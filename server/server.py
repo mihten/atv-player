@@ -1134,10 +1134,21 @@ async def switch_sink(new_sid, gap=None, persist=True):
     """Move atv-audio's output to program `new_sid`: the old one goes to standby and frees the headphones FIRST
     (headphones with two-device multipoint have room for only one of them next to a phone), then the new one takes them and
     gets the current state. gap: the switch takes exactly this long (blind test: timing must not tell). Returns
-    the real duration (s) or None when `new_sid` is not connected."""
+    the real duration (s) or None when `new_sid` is not connected. SWITCH_OK[0] says whether the new program got
+    the headphones. Runs shielded: a cancelled caller (Stop) never leaves a half-done switch without an active
+    program."""
+    return await asyncio.shield(_switch_sink(new_sid, gap, persist))
+
+
+SWITCH_OK = [True]
+
+
+async def _switch_sink(new_sid, gap=None, persist=True):
     async with SWITCH_LOCK:
         t0 = time.monotonic()
+        SWITCH_OK[0] = True
         if new_sid not in SINK_POOL:
+            SWITCH_OK[0] = False
             return None
         if persist and SETTINGS.data.get("active_sink") != new_sid:
             SETTINGS.data["active_sink"] = new_sid
@@ -1162,6 +1173,7 @@ async def switch_sink(new_sid, gap=None, persist=True):
             ACTIVE_SINK["id"] = new_sid
             await send(SINK_POOL[new_sid]["ws"], {"type": "standby", "on": False})
             if not await wait_sink(new_sid, True, SWITCH_TAKE_WAIT):
+                SWITCH_OK[0] = False
                 log.warning("atv-audio: %s has no headphones after %d s", new_sid, SWITCH_TAKE_WAIT)
             if new_sid in SINK_POOL:
                 await sink_activate(tv, new_sid)
@@ -1234,6 +1246,8 @@ async def abtest_excerpt(t, which):
     sid = t[which]
     ABTEST["phase"] = f"switch_{which}"
     await switch_sink(sid, gap=ABTEST_GAP, persist=False)
+    if not SWITCH_OK[0]:
+        raise RuntimeError(f"{which.upper()} did not get the headphones (are they connected to a third device?)")
     ws = BOX_OF.get(sid)
     item = LIB.get(t["id"])
     if ws is None or item is None:
@@ -1293,17 +1307,30 @@ async def abtest_run(trials, labels, before):
         log.warning("blind test: %s", ABTEST["error"])
     finally:
         ABTEST["phase"] = "finishing"
+        # its own task: a second Stop (cancel) must not interrupt the way back
+        AB["finish"] = asyncio.ensure_future(abtest_finish(before))
+
+
+async def abtest_finish(before):
+    """After a blind test (done, stopped or failed): pause, back to the program chosen before, test over. Always ends
+    with running False and, when any program is connected, an active one."""
+    try:
         ws = BOX_OF.get(ACTIVE_SINK["id"])
         if ws is not None:
-            await send(ws, {"type": "control", "action": "pause"})
-        if before and before in SINK_POOL and before != ACTIVE_SINK["id"]:
             with contextlib.suppress(Exception):
-                await switch_sink(before, persist=False)  # back to the chosen program before the test counts as over
+                await send(ws, {"type": "control", "action": "pause"})
+        target = before if before in SINK_POOL else (ACTIVE_SINK["id"] if ACTIVE_SINK["id"] in SINK_POOL
+                                                     else next(iter(sorted(SINK_POOL)), None))
+        if target is not None and (target != ACTIVE_SINK["id"] or SINKS.get("tv") is None):
+            with contextlib.suppress(Exception):
+                await switch_sink(target, persist=False)  # back to the chosen program before the test counts as over
+    finally:
         ABTEST["running"], ABTEST["phase"] = False, "done"
         ws = BOX_OF.get(ACTIVE_SINK["id"])
-        if ws is not None:
-            await box_player_join(ws)  # the box queue as it was (paused)
-        await broadcast_all()
+        with contextlib.suppress(Exception):
+            if ws is not None:
+                await box_player_join(ws)  # the box queue as it was (paused)
+            await broadcast_all()
 
 
 async def api_abtest(request):
@@ -1337,7 +1364,7 @@ async def api_abtest(request):
             t["a"], t["b"] = random.sample(ids, 2)
         labels = {sid: sink_label(sid) for sid in ids}
         ABTEST.update(running=True, phase="starting", trial=0, trials=trials, result=None, error=None)
-        AB.update(vote=None, replay=None)
+        AB.update(vote=None, replay=None, stopping=False)
         log.info("blind test: %d trials (%d songs x %d), %s vs %s", len(trials), len(items), per, *ids)
         AB["task"] = asyncio.create_task(abtest_run(trials, labels, ACTIVE_SINK["id"]))
     elif op == "vote":
@@ -1351,7 +1378,8 @@ async def api_abtest(request):
         AB["replay"] = body["which"]
         AB["evt"].set()
     elif op == "stop":
-        if AB["task"] and not AB["task"].done():
+        if AB["task"] and not AB["task"].done() and not AB.get("stopping"):
+            AB["stopping"] = True  # one cancel: a second click must not break the way back
             AB["task"].cancel()
     elif op == "clear":
         if not ABTEST["running"]:
