@@ -135,6 +135,27 @@ With an ALSA output it can also run as a system unit (see the comments in `atv-a
 
 `ATV_AUDIO_NAME` is the name shown on the TV (default `atv-audio`).
 
+### Sennheiser BTD 700 dongle
+
+A plain USB dongle tells Linux nothing about the headphones. The BTD 700 does, over its HID interface
+(`server/sink/btd700.py`, protocol after [btd700ctl](https://github.com/sobalap/btd700ctl); no extra
+packages). Set `ATV_AUDIO_OUTPUT=alsa:plughw:CARD=B700,DEV=0` and `ATV_AUDIO_DONGLE=<hidraw node>` (interface 0 of
+USB `3542:3001`, the one with report 0x34). The sink then:
+
+- knows when the headphones go and come back (the dongle's own events): the same pause / resume rules as with
+  built-in Bluetooth;
+- shows the codec the dongle uses (e.g. aptX Adaptive) and offers Connect / Disconnect in the web remote
+  (Settings → atv-audio and the player card); new headphones are paired with the dongle's button;
+- takes the headphone buttons the dongle forwards: tap and the wear sensor = play / pause (toggled against the
+  queue's state), swipes = next / previous; fast forward / rewind arrive only if the dongle sends them;
+- sets the dongle's own volume to 0 dB (needs `amixer` from `alsa-utils`) and reports no volume: the
+  headphones keep their own volume (the web remote shows no volume slider).
+
+In an unprivileged container, give it the dongle's `/dev/snd` nodes and the hidraw node with read/write for the
+container's `audio` group. Bind them from a host directory with `optional` mounts (a udev rule can create the
+nodes there), so the container still starts when the dongle is unplugged; per-device passthrough entries that
+must exist at start would stop it from booting.
+
 ### Pairing headphones
 
 A dongle pairs by its own button; Linux sees a USB sound card. Built-in Bluetooth is paired once with
@@ -160,7 +181,8 @@ plugins, e.g. Debian's `libspa-0.2-bluetooth`).
 
 - **Settings → Sound → Sound output = atv-audio** (selectable while the sink is connected; the choice is
   kept when it is not). The status line under it shows `atv-audio: not connected`, or
-  `connected · <headphones> · <codec>`; a USB dongle shows `codec unknown` (it encodes by itself).
+  `connected · <headphones> · <codec>`; a USB dongle shows `codec unknown` (it encodes by itself), except a
+  BTD 700 with `ATV_AUDIO_DONGLE`.
 - **Lip sync** (only with atv-audio): how much earlier the sink plays, −200 … +400 ms, default −100
   (Bluetooth adds a delay that cannot be measured). Set it by ear on a video with clear drum hits or speech:
   raise it if the sound comes late, lower it if it comes early. Changes apply live.

@@ -15,7 +15,10 @@ Environment (see env.example):
   ATV_AUDIO_MPV     mpv binary (default mpv)
   ATV_AUDIO_HOLD    seconds the output stays open after pause / stop / route off (default 300)
   ATV_AUDIO_BOX     1 (default) / 0: also play the server's "atv-audio" queue (session box, web remote only)
-  ATV_AUDIO_BUTTONS 1 (default) / 0: headphone buttons through BlueZ (atv_buttons.py, needs python3-dbus)
+  ATV_AUDIO_BUTTONS 1 (default) / 0: headphone buttons (BlueZ: atv_buttons.py, needs python3-dbus; dongle: its keys)
+  ATV_AUDIO_DONGLE  hidraw node of a Sennheiser BTD 700 dongle (with ATV_AUDIO_OUTPUT=alsa:...): headphone state,
+                    codec, connect / disconnect and buttons through the dongle (btd700.py); volume stays on the
+                    headphones (the dongle is set to 0 dB, no volume control)
 
 Run: python3 atv_audio.py
 """
@@ -68,6 +71,7 @@ class Config:
             self.hold = 300.0
         self.box = (env.get("ATV_AUDIO_BOX") or "1") not in ("0", "no", "off", "false")
         self.buttons = (env.get("ATV_AUDIO_BUTTONS") or "1") not in ("0", "no", "off", "false")
+        self.dongle = env.get("ATV_AUDIO_DONGLE") or ""
 
     @property
     def ws_url(self):
@@ -562,6 +566,17 @@ async def _run(*args, env_extra=None, timeout=3.0):
     return out.decode(errors="replace") if p.returncode == 0 else None
 
 
+async def alsa_full_volume(output, log):
+    """Dongle: its own PCM volume to 0 dB (unmuted), so the headphones' volume is the only one. Needs amixer."""
+    kind, _, arg = output.partition(":")
+    m = re.search(r"CARD=([^,]+)", arg) or re.match(r"^(?:plug)?hw:([^,]+)", arg)
+    if kind != "alsa" or not m or shutil.which("amixer") is None:
+        return False
+    ok = await _run("amixer", "-q", "-c", m.group(1), "sset", "PCM", "100%", "unmute") is not None
+    log(f"dongle: sound card {m.group(1)} volume {'set to 0 dB' if ok else 'not set (amixer failed)'}")
+    return ok
+
+
 class OutputWatch:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -572,6 +587,7 @@ class OutputWatch:
         self.key = None          # pactl name of the sink the reported output is (None: not ready / unknown)
         self.sinks = []          # last 'pactl list sinks' result (Settings -> atv-audio: sound output list)
         self.default = None
+        self.dongle = None       # btd700.Btd700: its headphone state decides `ready` (the ALSA card is always there)
 
     async def set_default(self, key):
         """Settings -> atv-audio -> Sound output: make `key` PipeWire's / Pulse's default sink (mpv follows it)."""
@@ -603,8 +619,13 @@ class OutputWatch:
                 with open("/proc/asound/cards") as f:
                     text = f.read()
             except OSError:
-                return {"kind": "other", "name": arg or "ALSA", "codec": None, "ready": True}
-            return alsa_output(arg or "default", text)
+                card = {"kind": "other", "name": arg or "ALSA", "codec": None, "ready": True}
+            else:
+                card = alsa_output(arg or "default", text)
+            dongle = self.dongle.output() if self.dongle else None
+            if dongle and not (card and card.get("ready")):
+                return dict(dongle, ready=False)  # the dongle answers but its sound card is not there
+            return dongle or card
         if shutil.which("pactl") is None:
             self.no_tool = True  # status unknown: assume the output works
             return {"kind": "other", "name": self.cfg.output, "codec": None, "ready": True}
@@ -675,6 +696,7 @@ class Sink:
         self.volume_task = None
         self.volume_at = -1e9        # last volume set: the output poll keeps it for a moment (pactl may lag)
         self.mpv_volume = (100, False)
+        self.fixed_volume = False    # dongle: the volume stays on the headphones (no volume reported or set)
         self.failed_id = None        # mpv could not play this item: no reload until the next load / route on
         self.ao_error_until = 0.0    # mpv could not open the output: reported not ready until then
         self.want_loaded = False
@@ -893,7 +915,7 @@ class Sink:
     def set_output(self, out, volume_set=False):
         if out and out.get("ready") and self.mono() < self.ao_error_until:
             out = dict(out, ready=False)  # mpv could not open it a moment ago
-        if out and self.volume_backend is None:
+        if out and self.volume_backend is None and not self.fixed_volume:
             out = dict(out, volume=self.mpv_volume[0], muted=self.mpv_volume[1])  # mpv's own volume
         elif (out and not volume_set and self.output and "volume" in self.output and out.get("name") == self.output.get("name")
               and self.mono() - self.volume_at < VOLUME_KEEP):
@@ -949,6 +971,8 @@ class Sink:
         except (TypeError, ValueError, OverflowError):
             return None
         muted = bool(msg.get("muted"))
+        if self.fixed_volume:
+            return None  # dongle: the headphones' own buttons set the volume
         if not self.output_ok and self.volume_backend is not None:
             return None  # pactl: the device keeps its own volume
         self.want_volume = (percent, muted)
@@ -1450,8 +1474,9 @@ class Buttons:
 
     HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atv_buttons.py")
 
-    def __init__(self, router, send):
+    def __init__(self, router, send, helper=True):
         self.router, self.send = router, send
+        self.helper = helper  # False with a dongle: no BlueZ, the keys come from btd700.py (on_key)
         self.proc = None
         self.last = None
         self.on_bt = None   # AudioControl.on_bt: the helper's headphone list
@@ -1497,12 +1522,26 @@ class Buttons:
         sink.log(f"button {cmd} -> {session}")
         self.send({"type": "button", "cmd": cmd, "session": session})
 
+    def on_key(self, name):
+        """A key from the dongle (btd700.KEYS). Tap and the wear sensor both send play/pause: toggle against the
+        state of the queue the buttons act on. Volume keys only report what the headphones already did."""
+        if name == "playpause":
+            self.on_cmd("pause" if self.state()["status"] == "Playing" else "play")
+        elif name in ("play", "pause", "next", "prev"):
+            self.on_cmd(name)
+        elif name == "stop":
+            self.on_cmd("pause")
+        elif name in ("ff", "rew"):
+            self.on_seek(10.0 if name == "ff" else -10.0)
+
     def on_seek(self, delta):
         session = self.router.button_session()
         self.router.sink.log(f"button seek {delta:+.0f} s -> {session}")
         self.send({"type": "button", "cmd": "seek", "delta": delta, "session": session})
 
     async def run(self):
+        if not self.helper:
+            return
         backoff = 5.0
         while True:
             try:
@@ -1558,6 +1597,7 @@ class AudioControl:
         self.outputs, self.send = outputs, send
         self.buttons = buttons
         self.on_output = on_output  # async (): re-detect the output after a change
+        self.dongle = None          # btd700.Btd700: headphones through the dongle (connect / disconnect, no pairing)
         self.bt = None
         self.error = None
         self.last = None
@@ -1574,7 +1614,8 @@ class AudioControl:
         bt = self.bt or {}
         return {"type": "audio_info", "outputs": outs, "devices": bt.get("devices") or [],
                 "scanning": bool(bt.get("scanning")), "busy": bt.get("busy"), "error": self.error or bt.get("error"),
-                "can_bluetooth": self.bt is not None, "can_outputs": self.outputs.has_pactl}
+                "can_bluetooth": self.bt is not None, "can_outputs": self.outputs.has_pactl,
+                "dongle": self.dongle.info() if self.dongle else None}
 
     def update(self, force=False):
         msg = self.info()
@@ -1589,7 +1630,17 @@ class AudioControl:
     async def handle(self, msg):
         op = msg.get("op")
         self.error = None
+        if self.dongle and op in ("connect", "disconnect") and not msg.get("address"):
+            if not self.dongle.present:
+                self.error = "the dongle is not connected"
+            elif not await self.dongle.connect(op == "connect"):
+                self.error = "the dongle did not answer"
+            self.update(force=True)
+            return
         if op == "refresh":
+            if self.dongle and self.dongle.present:
+                with contextlib.suppress(OSError, asyncio.TimeoutError):
+                    await self.dongle.refresh()
             if self.buttons:
                 self.buttons.bt("refresh")
             if self.on_output:
@@ -1636,8 +1687,9 @@ async def run(cfg):
     router_ref["r"] = router
     box = BoxDriver(sink, router, ws_send("box")) if cfg.box else None
     router.box = box
-    buttons = Buttons(router, sink_send) if cfg.buttons else None
+    buttons = Buttons(router, sink_send, helper=not cfg.dongle) if cfg.buttons else None
     outputs = OutputWatch(cfg)
+    dongle = None
 
     async def output_now():
         if sink.set_output(await outputs.detect()):
@@ -1649,6 +1701,30 @@ async def run(cfg):
         buttons.on_bt = audio.on_bt
     if outputs.has_pactl:
         sink.volume_backend = outputs.set_volume
+    early = []
+    if cfg.dongle:
+        import btd700
+        seen = {"present": False}
+
+        async def dongle_changed():
+            if dongle.present and not seen["present"]:
+                await alsa_full_volume(cfg.output, sink.log)  # the volume stays on the headphones
+            seen["present"] = dongle.present
+            await output_now()
+            audio.update()
+
+        def on_key(name):
+            if buttons:
+                buttons.on_key(name)
+
+        dongle = btd700.Btd700(cfg.dongle, on_change=lambda: asyncio.ensure_future(dongle_changed()),
+                               on_key=on_key, log=sink.log)
+        dongle.first = asyncio.Event()
+        outputs.dongle = audio.dongle = dongle
+        sink.fixed_volume = True
+        early.append(asyncio.create_task(dongle.run()))
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(dongle.first.wait(), 3.0)  # report the headphones' real state from the start
     sink.set_output(await outputs.detect())
     if outputs.no_tool:
         log("pactl not available: output status not detected")
@@ -1726,8 +1802,8 @@ async def run(cfg):
         box.report(force=True)
         return None
 
-    tasks = [asyncio.create_task(proc.supervise()), asyncio.create_task(poll_outputs()),
-             asyncio.create_task(ticker())]
+    tasks = early + [asyncio.create_task(proc.supervise()), asyncio.create_task(poll_outputs()),
+                     asyncio.create_task(ticker())]
     if buttons:
         tasks.append(asyncio.create_task(buttons.run()))
     try:

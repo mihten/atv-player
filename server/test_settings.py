@@ -234,6 +234,17 @@ async def main(tmp):
             await asyncio.sleep(0.3)
             a = (await H.state(http, "box"))["sink"]["audio"]
             check(a and a["devices"][0]["name"] == "HP" and "junk" not in a, f"audio_info in the box state ({a})")
+            check(a and a.get("dongle") is None, "no dongle -> dongle None")
+            await sink.send_json({"type": "audio_info", "outputs": [], "devices": [], "can_bluetooth": False,
+                                  "can_outputs": False, "dongle": {"name": "BTD 700", "state": "streaming",
+                                  "codec": "aptx_adaptive", "firmware": "3.11.0", "junk": "y"}})
+            await asyncio.sleep(0.3)
+            a = (await H.state(http, "box"))["sink"]["audio"]
+            check(a and a["dongle"] == {"name": "BTD 700", "state": "streaming", "codec": "aptx_adaptive",
+                                        "firmware": "3.11.0"}, f"dongle in the box state, extra keys dropped ({a})")
+            code, _ = await req(http, "POST", "/api/atv-audio", json={"op": "disconnect"})
+            msgs = await H.drain(sink)
+            check(code == 200 and {"type": "audio_cmd", "op": "disconnect"} in msgs, "dongle disconnect (no address) relayed")
             await sink.close()
             await asyncio.sleep(0.3)
             code, _ = await req(http, "POST", "/api/atv-audio", json={"op": "refresh"})

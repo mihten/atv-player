@@ -49,7 +49,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.18.0"
+VERSION = "0.18.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -810,7 +810,8 @@ def sink_state(kind):
 
 def clean_audio_info(data):
     """The sink's audio_info: {outputs: [{key, name, kind, codec, default}], devices: [{address, name, paired, connected,
-    audio}], scanning, busy, error, can_bluetooth, can_outputs}. Bounded and typed, the rest dropped."""
+    audio}], scanning, busy, error, can_bluetooth, can_outputs, dongle: {name, state, codec, firmware} | None (a USB
+    Bluetooth dongle that reports its headphones, e.g. BTD 700)}. Bounded and typed, the rest dropped."""
     def s(v, n=120):
         return str(v)[:n] if v is not None else None
     outs = [{"key": s(o.get("key"), 200), "name": s(o.get("name")), "kind": s(o.get("kind"), 20),
@@ -819,9 +820,12 @@ def clean_audio_info(data):
     devs = [{"address": s(d.get("address"), 40), "name": s(d.get("name")), "paired": bool(d.get("paired")),
              "connected": bool(d.get("connected")), "audio": bool(d.get("audio"))}
             for d in (data.get("devices") or [])[:40] if isinstance(d, dict) and d.get("address")]
+    dg = data.get("dongle")
+    dongle = ({"name": s(dg.get("name"), 60), "state": s(dg.get("state"), 20), "codec": s(dg.get("codec"), 40),
+               "firmware": s(dg.get("firmware"), 20)} if isinstance(dg, dict) else None)
     return {"outputs": outs, "devices": devs, "scanning": bool(data.get("scanning")), "busy": s(data.get("busy"), 200),
             "error": s(data.get("error"), 300), "can_bluetooth": bool(data.get("can_bluetooth")),
-            "can_outputs": bool(data.get("can_outputs"))}
+            "can_outputs": bool(data.get("can_outputs")), "dongle": dongle}
 
 
 # ---------------------------------------------------------------- the "atv-audio" session (box)
