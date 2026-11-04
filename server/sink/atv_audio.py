@@ -579,6 +579,40 @@ async def alsa_full_volume(output, log):
     return ok
 
 
+def alsa_playback_open(output, root="/proc/asound"):
+    """True while any playback substream of the ALSA card in `output` (alsa:...CARD=X...) is open, False when all
+    are closed, None when that cannot be read (not an ALSA output, card unknown)."""
+    kind, _, arg = output.partition(":")
+    m = re.search(r"CARD=([^,]+)", arg) or re.match(r"^(?:plug)?hw:([^,]+)", arg)
+    if kind != "alsa" or not m:
+        return None
+    card = os.path.join(root, m.group(1) if not m.group(1).isdigit() else f"card{m.group(1)}")
+    found = None
+    try:
+        for pcm in os.listdir(card):
+            if not (pcm.startswith("pcm") and pcm.endswith("p")):
+                continue
+            for sub in os.listdir(os.path.join(card, pcm)):
+                if sub.startswith("sub"):
+                    with open(os.path.join(card, pcm, sub, "status")) as f:
+                        state = f.read().strip()
+                    found = found or state != "closed"
+    except OSError:
+        return None
+    return found
+
+
+async def wait_until(cond, timeout, step=0.05):
+    """Poll cond() until true or timeout; returns the seconds waited, or None on timeout."""
+    t0 = time.monotonic()
+    while True:
+        if cond():
+            return time.monotonic() - t0
+        if time.monotonic() - t0 >= timeout:
+            return None
+        await asyncio.sleep(step)
+
+
 class OutputWatch:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -1318,6 +1352,7 @@ class Sink:
 # ---------------------------------------------------------------- one output, two sources: TV and box
 
 TV_STATE = ("route", "lip_sync", "sound", "load", "clock")  # replayed in this order when the TV gets the output back
+DISCONNECT_SETTLE = 0.5  # s between the dongle leaving "streaming" and the disconnect command
 PLAY_GUARD = 10.0  # s after the headphones (re)connected: a Play from their buttons is ignored (no auto start)
 
 
@@ -1355,7 +1390,8 @@ class Router:
         t = msg.get("type")
         if t == "audio_cmd":
             if self.audio:
-                await self.audio.handle(msg)
+                # its own task: a dongle disconnect waits seconds for the stream to close, the TV's clocks must not
+                self.audio.run(msg)
             return
         if t in TV_STATE:
             self.tv_last[t] = msg
@@ -1696,6 +1732,19 @@ class AudioControl:
         self.bt = info
         self.update()
 
+    def run(self, msg):
+        """Handle `msg` in its own task, one command after the other (a second click waits for the first)."""
+        async def one(prev):
+            if prev:
+                with contextlib.suppress(BaseException):
+                    await prev
+            try:
+                await self.handle(msg)
+            except Exception as e:
+                log(f"audio_cmd {msg.get('op')}: {e!r}")
+        self._last = asyncio.ensure_future(one(getattr(self, "_last", None)))
+        return self._last
+
     async def handle(self, msg):
         op = msg.get("op")
         self.error = None
@@ -1807,6 +1856,13 @@ async def run(cfg):
                     box.want_play = False
                     box.report(force=True)
             await sink.release("headphones disconnected from the web remote")
+            # the dongle connects the headphones again while it still streams: wait until the sound device is
+            # closed and the dongle has left "streaming", then a short settle, before it is told to disconnect
+            closed = await wait_until(lambda: alsa_playback_open(cfg.output) is not True, 3.0)
+            idle = await wait_until(lambda: dongle.state != "streaming", 3.0)
+            await asyncio.sleep(DISCONNECT_SETTLE)
+            sink.log(f"disconnect: sound device {'closed after %d ms' % (closed * 1000) if closed is not None else 'still open after 3 s'}"
+                     f", dongle {'idle after %d ms' % (idle * 1000) if idle is not None else 'still streaming after 3 s'}")
 
         sink.on_wake = lambda: asyncio.ensure_future(dongle.connect(True))
         audio.on_disconnect = before_disconnect

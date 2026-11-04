@@ -354,9 +354,40 @@ class DisconnectOpTest(unittest.IsolatedAsyncioTestCase):
             order.append("release")
         d.connect = connect
         ac.dongle, ac.on_disconnect, ac.on_connect = d, before, lambda: order.append("wake")
-        await ac.handle({"op": "disconnect"})
-        await ac.handle({"op": "connect"})
+        ac.run({"op": "disconnect"})
+        await ac.run({"op": "connect"})   # queued behind the disconnect, never interleaved
         self.assertEqual(order, ["release", "dongle off", "dongle on", "wake"])
+
+
+class AlsaStatusTest(unittest.TestCase):
+    def test_reads_playback_substreams(self):
+        import tempfile
+        root = tempfile.mkdtemp()
+        sub = os.path.join(root, "B700", "pcm0p", "sub0")
+        os.makedirs(sub)
+        os.makedirs(os.path.join(root, "B700", "pcm0c", "sub0"))
+        with open(os.path.join(root, "B700", "pcm0c", "sub0", "status"), "w") as f:
+            f.write("state: RUNNING\n")       # capture is ignored
+        with open(os.path.join(sub, "status"), "w") as f:
+            f.write("state: RUNNING\nowner_pid: 1\n")
+        out = "alsa:plughw:CARD=B700,DEV=0"
+        self.assertIs(A.alsa_playback_open(out, root), True)
+        with open(os.path.join(sub, "status"), "w") as f:
+            f.write("closed\n")
+        self.assertIs(A.alsa_playback_open(out, root), False)
+        self.assertIsNone(A.alsa_playback_open("pipewire", root))
+        self.assertIsNone(A.alsa_playback_open("alsa:plughw:CARD=NONE,DEV=0", root))
+
+
+class WaitUntilTest(unittest.IsolatedAsyncioTestCase):
+    async def test_waits_and_times_out(self):
+        box = {"n": 0}
+
+        def cond():
+            box["n"] += 1
+            return box["n"] >= 3
+        self.assertIsNotNone(await A.wait_until(cond, 1.0, step=0.01))
+        self.assertIsNone(await A.wait_until(lambda: False, 0.05, step=0.01))
 
 
 if __name__ == "__main__":

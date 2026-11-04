@@ -166,11 +166,16 @@ class AudioControlTest(unittest.IsolatedAsyncioTestCase):
         router = A.Router(sink)
         got = []
 
-        class Audio:
+        class Audio(A.AudioControl):
+            def __init__(self):
+                pass
+
             async def handle(self, msg):
                 got.append(msg)
         router.audio = Audio()
         await router.from_tv({"type": "audio_cmd", "op": "refresh"})
+        self.assertEqual(got, [], "runs in its own task, not inside the message loop")
+        await router.audio._last
         self.assertEqual(got, [{"type": "audio_cmd", "op": "refresh"}])
         self.assertIsNone(sink.item, "not treated as a TV message")
 
