@@ -78,6 +78,7 @@ SINK_AUDIO: dict = {}  # session kind -> the sink's last audio_info (outputs, he
 # the others are in standby (told so, get nothing else, their messages are dropped). ACTIVE_SINK keeps the chosen id
 # while that program is away (a restart), so the output never moves by itself.
 SINK_POOL: dict = {}  # sink id -> {"ws", "name", "output", "audio"}
+SINK_SEEN: dict = {}  # sink id -> {"name", "codec"} of its last real output (a program in standby has none)
 SINK_IDS: dict = {}  # sink ws -> sink id
 BOX_OF: dict = {}  # sink id -> the box player ws of that program
 BOX_SINK: dict = {}  # box player ws -> sink id
@@ -831,9 +832,9 @@ def sinks_list():
         return []
     out = []
     for sid, p in sorted(SINK_POOL.items()):
-        o = p.get("output") or {}
-        out.append({"id": sid, "name": o.get("name") or sid, "codec": o.get("codec"), "ready": bool(o.get("ready")),
-                    "active": sid == ACTIVE_SINK["id"]})
+        o, seen = p.get("output") or {}, SINK_SEEN.get(sid) or {}
+        out.append({"id": sid, "name": o.get("name") or seen.get("name") or sid, "codec": o.get("codec") or seen.get("codec"),
+                    "ready": bool(o.get("ready")), "active": sid == ACTIVE_SINK["id"]})
     return out
 
 
@@ -1039,6 +1040,12 @@ async def sink_message(s, ws, data):
         return
     if sid is not None and kind == "sink":
         SINK_POOL[sid].update(name=str(data.get("name") or "")[:120] or None, output=clean_output(data.get("output")))
+        o = SINK_POOL[sid]["output"] or {}
+        if o.get("name"):
+            seen = SINK_SEEN.setdefault(sid, {})
+            seen["name"] = o["name"]
+            if o.get("codec"):
+                seen["codec"] = o["codec"]
         SINK_WAKE.set()
     elif sid is not None and kind == "audio_info":
         SINK_POOL[sid]["audio"] = clean_audio_info(data)
@@ -1183,7 +1190,7 @@ def abtest_status(ws, data):
 
 
 def sink_label(sid):
-    o = (SINK_POOL.get(sid) or {}).get("output") or {}
+    o = dict(SINK_SEEN.get(sid) or {}, **{k: v for k, v in ((SINK_POOL.get(sid) or {}).get("output") or {}).items() if v})
     codec = {"aptx_hd": "aptX HD", "aptx_adaptive": "aptX Adaptive", "aptx": "aptX", "sbc": "SBC", "ldac": "LDAC"}.get(
         o.get("codec") or "", o.get("codec") or "")
     return f"{o.get('name') or sid}{' · ' + codec if codec else ''} ({sid})"

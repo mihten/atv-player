@@ -159,6 +159,8 @@ async def main(tmp):
             st = await sinks(http)
             check(st["output"]["name"] == "Headphones X" and [x["active"] for x in st["sinks"]] == [True, False],
                   "state follows the switch")
+            check(st["sinks"][1]["name"] == "BTD 700" and st["sinks"][1]["codec"] == "aptx_adaptive" and not st["sinks"][1]["ready"],
+                  f"standby program keeps its last device name + codec ({st['sinks'][1]})")
             saved = json.loads((tmp / "data" / "settings.json").read_text())
             check(saved.get("active_sink") == "atv-audio-bt", "choice saved in settings.json")
             log = (tmp / "server.log").read_text()
