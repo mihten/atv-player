@@ -148,8 +148,9 @@ USB `3542:3001`, the one with report 0x34). The sink then:
   (Settings → atv-audio and the player card); new headphones are paired with the dongle's button;
 - takes the headphone buttons the dongle forwards: tap and the wear sensor = play / pause (toggled against the
   queue's state), swipes = next / previous; fast forward / rewind arrive only if the dongle sends them;
-- sets the dongle's own volume to 0 dB (needs `amixer` from `alsa-utils`) and reports no volume: the
-  headphones keep their own volume (the web remote shows no volume slider).
+- sets the dongle's own volume to 0 dB (needs `amixer` from `alsa-utils`); the volume control (web remote slider,
+  Apple TV quick menu) is mpv's own volume, so set the headphones to their maximum once. It is kept across restarts
+  in `$ATV_AUDIO_STATE` / systemd's `StateDirectory`.
 
 In an unprivileged container, give it the dongle's `/dev/snd` nodes and the hidraw node with read/write for the
 container's `audio` group. Bind them from a host directory with `optional` mounts (a udev rule can create the

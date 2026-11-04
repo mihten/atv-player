@@ -17,8 +17,9 @@ Environment (see env.example):
   ATV_AUDIO_BOX     1 (default) / 0: also play the server's "atv-audio" queue (session box, web remote only)
   ATV_AUDIO_BUTTONS 1 (default) / 0: headphone buttons (BlueZ: atv_buttons.py, needs python3-dbus; dongle: its keys)
   ATV_AUDIO_DONGLE  hidraw node of a Sennheiser BTD 700 dongle (with ATV_AUDIO_OUTPUT=alsa:...): headphone state,
-                    codec, connect / disconnect and buttons through the dongle (btd700.py); volume stays on the
-                    headphones (the dongle is set to 0 dB, no volume control)
+                    codec, connect / disconnect and buttons through the dongle (btd700.py); the dongle's own
+                    volume is set to 0 dB, the volume control is mpv's (set the headphones to their maximum)
+  ATV_AUDIO_STATE   directory for small state (mpv's volume with an ALSA output); default $STATE_DIRECTORY (systemd)
 
 Run: python3 atv_audio.py
 """
@@ -72,6 +73,7 @@ class Config:
         self.box = (env.get("ATV_AUDIO_BOX") or "1") not in ("0", "no", "off", "false")
         self.buttons = (env.get("ATV_AUDIO_BUTTONS") or "1") not in ("0", "no", "off", "false")
         self.dongle = env.get("ATV_AUDIO_DONGLE") or ""
+        self.state_dir = env.get("ATV_AUDIO_STATE") or env.get("STATE_DIRECTORY") or ""
 
     @property
     def ws_url(self):
@@ -696,7 +698,7 @@ class Sink:
         self.volume_task = None
         self.volume_at = -1e9        # last volume set: the output poll keeps it for a moment (pactl may lag)
         self.mpv_volume = (100, False)
-        self.fixed_volume = False    # dongle: the volume stays on the headphones (no volume reported or set)
+        self.volume_file = os.path.join(cfg.state_dir, "volume.json") if cfg.state_dir else None
         self.failed_id = None        # mpv could not play this item: no reload until the next load / route on
         self.ao_error_until = 0.0    # mpv could not open the output: reported not ready until then
         self.want_loaded = False
@@ -915,7 +917,7 @@ class Sink:
     def set_output(self, out, volume_set=False):
         if out and out.get("ready") and self.mono() < self.ao_error_until:
             out = dict(out, ready=False)  # mpv could not open it a moment ago
-        if out and self.volume_backend is None and not self.fixed_volume:
+        if out and self.volume_backend is None:
             out = dict(out, volume=self.mpv_volume[0], muted=self.mpv_volume[1])  # mpv's own volume
         elif (out and not volume_set and self.output and "volume" in self.output and out.get("name") == self.output.get("name")
               and self.mono() - self.volume_at < VOLUME_KEEP):
@@ -971,8 +973,6 @@ class Sink:
         except (TypeError, ValueError, OverflowError):
             return None
         muted = bool(msg.get("muted"))
-        if self.fixed_volume:
-            return None  # dongle: the headphones' own buttons set the volume
         if not self.output_ok and self.volume_backend is not None:
             return None  # pactl: the device keeps its own volume
         self.want_volume = (percent, muted)
@@ -998,6 +998,31 @@ class Sink:
                 self.warn(f"volume: {e!r}")
             if not ok:
                 self.warn(f"volume {percent} %{' muted' if muted else ''}: not set")
+            elif self.volume_backend is None:
+                self.save_volume()
+
+    def load_volume(self):
+        """mpv's own volume (ALSA output) from the last run: a restart must not jump back to 100 %."""
+        if not self.volume_file:
+            return
+        try:
+            with open(self.volume_file) as f:
+                v = json.load(f)
+            self.mpv_volume = (max(0, min(100, int(v["percent"]))), bool(v.get("muted")))
+        except (OSError, ValueError, KeyError, TypeError):
+            return
+        self.log(f"volume {self.mpv_volume[0]} %{' muted' if self.mpv_volume[1] else ''} (saved)")
+
+    def save_volume(self):
+        if not self.volume_file:
+            return
+        tmp = self.volume_file + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump({"percent": self.mpv_volume[0], "muted": self.mpv_volume[1]}, f)
+            os.replace(tmp, self.volume_file)
+        except OSError as e:
+            self.warn(f"volume not saved: {e}")
 
     async def _mpv_set_volume(self, percent, muted):
         mpv = self.mpv
@@ -1701,6 +1726,8 @@ async def run(cfg):
         buttons.on_bt = audio.on_bt
     if outputs.has_pactl:
         sink.volume_backend = outputs.set_volume
+    else:
+        sink.load_volume()
     early = []
     if cfg.dongle:
         import btd700
@@ -1708,7 +1735,7 @@ async def run(cfg):
 
         async def dongle_changed():
             if dongle.present and not seen["present"]:
-                await alsa_full_volume(cfg.output, sink.log)  # the volume stays on the headphones
+                await alsa_full_volume(cfg.output, sink.log)  # mpv's volume is the only one besides the headphones
             seen["present"] = dongle.present
             await output_now()
             audio.update()
@@ -1721,7 +1748,6 @@ async def run(cfg):
                                on_key=on_key, log=sink.log)
         dongle.first = asyncio.Event()
         outputs.dongle = audio.dongle = dongle
-        sink.fixed_volume = True
         early.append(asyncio.create_task(dongle.run()))
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(dongle.first.wait(), 3.0)  # report the headphones' real state from the start

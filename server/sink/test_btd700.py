@@ -258,13 +258,21 @@ class SinkWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["ready"], False)
         self.assertEqual(out["kind"], "other")  # plain ALSA status again
 
-    def test_fixed_volume_reports_and_takes_none(self):
-        s = A.Sink(A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_OUTPUT": "alsa:default"}), lambda m: None)
-        s.fixed_volume = True
+    async def test_dongle_volume_is_mpvs_and_survives_a_restart(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        cfg = A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_OUTPUT": "alsa:default", "ATV_AUDIO_STATE": d})
+        s = A.Sink(cfg, lambda m: None)
         s.set_output({"kind": "bluetooth", "name": "BTD 700", "codec": None, "ready": True})
-        self.assertNotIn("volume", s.output)
-        self.assertIsNone(s.on_volume({"percent": 30, "muted": False}))
-        self.assertEqual(s.mpv_volume, (100, False))
+        self.assertEqual((s.output["volume"], s.output["muted"]), (100, False))
+        await s.on_volume({"percent": 35, "muted": False})
+        self.assertEqual(s.output["volume"], 35)
+        s2 = A.Sink(cfg, lambda m: None)
+        s2.load_volume()
+        self.assertEqual(s2.mpv_volume, (35, False), "a restarted sink keeps the volume")
+        s3 = A.Sink(A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_OUTPUT": "alsa:default"}), lambda m: None)
+        s3.load_volume()
+        self.assertEqual(s3.mpv_volume, (100, False), "no state dir: default")
 
     def test_audio_info_carries_the_dongle(self):
         cfg = A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_OUTPUT": "alsa:default"})
