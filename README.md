@@ -212,3 +212,26 @@ sends those two keys only to its `<headphones> (AVRCP)` input device, so install
 
 The EQ list includes **Custom**: **Edit** opens a preamp + 10-band editor (±12 dB, 1 dB steps, changes are heard at once,
 "Start from a preset" copies a preset's curve). The curve is kept on the server with the queue's other sound settings.
+
+## Settings (web remote)
+
+The ⚙ button opens **Settings**:
+
+- **Look**: per browser.
+- **Library**: library folders with a display name per folder (add one with a folder picker, rename, remove; a
+  removed folder's items leave the library and their playlist entries show as missing), a **skip list** (one folder or
+  file name per line, `*` and `?` work, case does not matter; a path with `/` counts from the library folder), and the
+  **rescan schedule** (off, every 1–12 hours, or daily at a time; default daily 04:15). The server schedules rescans
+  itself: the old `atv-media-rescan.timer` is removed by `deploy.sh`.
+  The folder picker only shows folders under `ATV_LIBRARY_BASES` (default: the parent folders of the first-start
+  `ATV_ROOTS`). A network share has to be mounted on the host / container first.
+- **atv-audio**: the sound output (PipeWire / Pulse sinks) and the headphones: find, pair (headphones in pairing mode),
+  connect, disconnect, forget. Pairing is only accepted while a pairing started here runs (60 s). The player card also
+  shows a Connect / Disconnect button for the headphones.
+- **Server**: status (version, library, last and next scan, loudness, audio copies with **Delete audio copies**,
+  playlists / hearts / plays), the server's name (shown in the page title and the Bonjour name), and an **optional
+  admin password**. Without one (the default) anyone on the network can change the settings; with one, changes need an
+  unlocked browser (cookie, 30 days). Playback, queues and playlists never ask for it. Lost password: delete the
+  `admin` entry in `<ATV_DATA>/settings.json` and restart the server.
+- **Backup**: one JSON file with playlists, Loved, the play history and atv-audio's sound settings. A restore replaces
+  them; ids are matched through the stored file paths, so it also works on a rebuilt library.

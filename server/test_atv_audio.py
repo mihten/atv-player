@@ -169,7 +169,7 @@ async def main(tmp):
             phone = await connect(http, "role=player&kind=phone")
             remote = await connect(http, "role=remote&session=tv")
             tv_state, ph_state = await state(http, "tv"), await state(http, "phone")
-            check(tv_state["sink"] == {"connected": False, "name": None, "output": None, "route": False}
+            check(tv_state["sink"] == {"connected": False, "name": None, "output": None, "route": False, "audio": None}
                   and ph_state["sink"] is None,
                   "state.sink: not connected on tv, null on phone")
 
@@ -203,7 +203,7 @@ async def main(tmp):
             out = {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": True}
             await sink.send_json({"type": "sink", "name": "atv-audio", "output": out})
             tv_msgs, ph_msgs, rm_msgs = await drain(tv), await drain(phone), await drain(remote)
-            want = {"connected": True, "name": "atv-audio", "output": out, "route": True}
+            want = {"connected": True, "name": "atv-audio", "output": out, "route": True, "audio": None}
             check((last_state(tv_msgs) or {}).get("sink") == want, "sink status reaches the TV player's state")
             check((last_state(rm_msgs) or {}).get("sink") == want, "... and the TV web remote's state")
             check(last_state(ph_msgs) is None or last_state(ph_msgs)["sink"] is None, "... not the phone's")
@@ -212,7 +212,7 @@ async def main(tmp):
                   "output change (ready false) is broadcast")
             await sink.send_json({"type": "sink", "name": "atv-audio", "output": None})
             check((await state(http, "tv"))["sink"] == {"connected": True, "name": "atv-audio", "output": None,
-                                                        "route": True},
+                                                        "route": True, "audio": None},
                   "output null = connected without an output")
             await sink.send_json({"type": "sink", "name": "atv-audio", "output": out})
             await drain(sink)
@@ -329,7 +329,7 @@ async def main(tmp):
             await sink2.close()
             await asyncio.sleep(0.3)
             st = await state(http, "tv")
-            check(st["sink"] == {"connected": False, "name": None, "output": None, "route": True} and st["playing"] and
+            check(st["sink"] == {"connected": False, "name": None, "output": None, "route": True, "audio": None} and st["playing"] and
                   st["players"] == 1, "sink disconnects -> state.sink not connected, TV still playing")
             await drain(tv)
 

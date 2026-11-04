@@ -143,7 +143,7 @@ html[data-look="classic"] .eyebrow { letter-spacing: .06em; }
 
 /* ── Now playing ──────────────────────────────────────────────────────────── */
 #player { border-radius: var(--r); padding: 16px; display: grid; gap: 0 16px; position: relative; overflow: hidden;
-  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "bnote bnote" "vol vol" "snd snd" "next next"; }
+  grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art meta" "bar bar" "times times" "ctl ctl" "bnote bnote" "vol vol" "bconn bconn" "snd snd" "next next"; }
 html[data-look="aurora"] #player { background: linear-gradient(90deg, color-mix(in srgb, var(--t0) 38%, transparent), transparent 75%), var(--card); }
 .stage { grid-area: art; position: relative; width: var(--art); height: var(--art); align-self: center; }
 html[data-look="vinyl"] .stage { width: calc(var(--art) * 1.36); }
@@ -229,6 +229,31 @@ html[data-look="classic"] .tb.play { background: var(--acc); color: #fff; }
 .tog::after { content: ""; position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .2s; }
 .tog.on { background: var(--acc); }
 .tog.on::after { transform: translateX(18px); }
+/* atv-audio headphones on the player card (connect / disconnect) */
+.bconn { grid-area: bconn; display: flex; align-items: center; gap: 10px; padding: 6px 0 2px; color: var(--ink2); font-size: 12.5px; }
+.bconn[hidden] { display: none; }
+.bconn span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bconn .pill { padding: 5px 12px; }
+/* Settings sheets (server): set- prefix, nothing else on the page uses it */
+.set-sec { font: 700 11.5px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: var(--ink3); margin: 12px 2px 2px; }
+.set-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r-s); border: 1px solid var(--card-line); background: var(--card-hi); }
+.set-main { flex: 1; min-width: 0; }
+.set-t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-s { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-in { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--r-s); border: 1px solid var(--card-line); background: rgba(0,0,0,.28); color: var(--ink); font: inherit; font-size: 14px; }
+textarea.set-in { min-height: 96px; resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
+.set-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.set-btns .grow { flex: 1; }
+.set-err { color: #ff8a8a; font-size: 12.5px; }
+.set-hint { color: var(--ink3); font-size: 12px; }
+.set-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; font-size: 13px; color: var(--ink2); padding: 2px 2px 4px; }
+.set-kv b { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
+.set-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink3); flex: none; }
+.set-dot.on { background: #4cd964; }
+.set-row .ib { flex: none; }
+.sheet [hidden] { display: none !important; }
+.sheet > div { grid-template-columns: minmax(0, 1fr); }  /* one column that may shrink: long paths ellipsize */
+.sheet a.opt, .sheet label.opt { color: inherit; text-decoration: none; }
 /* custom equalizer editor (sheet) */
 .eqed { display: grid; gap: 4px; }
 .eqr { display: grid; grid-template-columns: 4.6em minmax(0, 1fr) 4.2em; align-items: center; gap: 10px; font-size: 13px; color: var(--ink2); }
@@ -435,7 +460,7 @@ html[data-look="vinyl"] .sheet > div { background: linear-gradient(#2e1f14, #1a1
     grid-template-areas: "player top" "player status" "player quick" "player tabs" "player main"; grid-template-rows: auto auto auto auto 1fr; }
   .top { grid-area: top; padding-top: 26px; } .status { grid-area: status; } .quick { grid-area: quick; } nav#tabs { grid-area: tabs; margin: 10px 0 0; padding: 10px 0; } main { grid-area: main; }
   #player { grid-area: player; align-self: start; position: sticky; top: 20px; margin-top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; scrollbar-width: none;
-    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "bnote" "vol" "snd" "next"; padding: 24px 28px; gap: 0; }
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "eyebrow" "art" "meta" "bar" "times" "ctl" "bnote" "vol" "bconn" "snd" "next"; padding: 24px 28px; gap: 0; }
   #player::-webkit-scrollbar { display: none; }
   #player .stage { justify-self: center; margin: 16px 0 22px; }
   .np-title { font-size: 28px; }
@@ -495,7 +520,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
     <div class="brand"><svg class="disc-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor"/><circle cx="12" cy="12" r="3.6" fill="#000"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/></svg><h1>ATV Player</h1></div>
     <div class="topacts">
       <select id="out" class="pill" title="Which queue this page controls: the Apple TV's, the iPhone's or atv-audio's own"></select>
-      <button id="lookBtn" class="ib" title="Look"></button>
+      <button id="lookBtn" class="ib" title="Settings"></button>
     </div>
   </header>
   <div class="status"><span id="dot" class="dot"></span><span id="conn">connecting…</span><span class="grow"></span><span id="scan"></span><button id="acopy" class="pill" hidden title="Copy the main audio track of every music video for atv-audio, in the background"></button><button id="rescan" class="pill" title="Look for new, changed and removed files on the NAS"></button></div>
@@ -528,6 +553,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <input type="range" id="volRange" min="0" max="100" step="1" aria-label="atv-audio volume">
       <span class="vn" id="volNum"></span>
     </div>
+    <div class="bconn" id="bconn" hidden><span id="bconnText"></span><button class="pill" id="bconnBtn"></button></div>
     <div class="snd" id="snd" hidden title="Sound of atv-audio's own queue (the Apple TV keeps its own settings)">
       <span>EQ</span><div class="sctl"><select class="pill" id="sndPreset" aria-label="Equalizer"></select><button class="pill" id="sndEdit" hidden>Edit</button></div>
       <span>Boost</span><div class="sctl"><button class="ib" id="sndDown" aria-label="Boost down">−</button><span class="num" id="sndBoost">+0 dB</span><button class="ib" id="sndUp" aria-label="Boost up">+</button></div>
@@ -579,6 +605,7 @@ const ICONS = {
   plus: S("M12 5v14M5 12h14", 2.4), x: S("M6.5 6.5l11 11M17.5 6.5l-11 11", 2.2),
   up: S("M12 19V5M6 11l6-6 6 6", 2.2), down: S("M12 5v14M6 13l6 6 6-6", 2.2),
   refresh: S("M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5", 2.2),
+  lock: S("M7.5 11V8a4.5 4.5 0 0 1 9 0v3M5.5 11h13v9.5h-13z", 2),
   look: S("M4 7h9M17 7h3M4 17h3M11 17h9", 2) + `<circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/>`,
   search: `<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>` + S("M15.5 15.5l5 5", 2.4),
   folder: F("M3 7.2A2.2 2.2 0 0 1 5.2 5h4l2 2.2h7.6A2.2 2.2 0 0 1 21 9.4v8.4a2.2 2.2 0 0 1-2.2 2.2H5.2A2.2 2.2 0 0 1 3 17.8z"),
@@ -933,6 +960,8 @@ function onState(s) {
   drawUpNext(s);
   drawVolume(s);
   drawBox(s);
+  drawHeadphones(s);
+  if (s.server_name) document.title = `ATV Player · ${s.server_name}`;
   setIcon($("pp"), s.playing ? "pause" : "play"); setIcon($("miniPP"), s.playing ? "pause" : "play");
   $("shuf").classList.toggle("on", s.shuffle);
   $("preferSw").classList.toggle("on", !!s.prefer_videos);
@@ -1406,11 +1435,244 @@ function lookSheet() {
     `<button class="opt cancel" data-close="1">Done</button>`;
   openSheet(draw(), (e) => {
     const b = e.target.closest("[data-look],[data-motion],[data-close]"); if (!b) return;
-    if (b.dataset.close) return closeSheet();
+    if (b.dataset.close) return settingsMenu();
     if (b.dataset.look) { look = b.dataset.look; localStorage.setItem("atvLook", look); }
     if (b.dataset.motion) { motion = !motion; localStorage.setItem("atvMotion", motion ? "on" : "off"); }
     applyLook(); $("sheetBody").innerHTML = draw();
   });
+}
+/* ── Settings (server side): Library, atv-audio, Server, Backup. Open on the home network; with the OPTIONAL admin
+   password set, changes need this browser to be unlocked (cookie). Look stays a per-browser choice. ── */
+let cfg = null;
+const fmtBytes = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(0)} MB` : `${Math.round((b || 0) / 1e3)} kB`;
+const fmtWhen = (t) => { if (!t) return "—"; const d = new Date(t * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? `today ${time}` : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`; };
+const fmtAgo = (t) => { if (!t) return "never"; const m = Math.round((Date.now() / 1000 - t) / 60);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+/** Settings API call: errors as a toast; a locked server opens the password sheet, then `retry`. */
+async function sapi(method, url, body, retry) {
+  const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const text = await r.text();
+  if (r.status === 403 && /locked/.test(text)) { unlockSheet(retry); throw new Error("locked"); }
+  if (!r.ok) { toast(text || `Error ${r.status}`); throw new Error(text); }
+  try { return JSON.parse(text); } catch { return text; }
+}
+async function loadCfg() { cfg = await sapi("GET", "/api/settings"); return cfg; }
+const lockedNow = () => cfg && cfg.admin && !cfg.unlocked;
+const sec = (t) => `<div class="set-sec">${esc(t)}</div>`;
+
+async function settingsMenu() {
+  try { await loadCfg(); } catch { cfg = null; }
+  const row = (k, icon, t, sub) => `<button class="opt" data-m="${k}">${ic(icon)}<span class="grow"><span class="t">${t}</span>${sub ? `<span class="s" style="display:block">${esc(sub)}</span>` : ""}</span>${ic("chev")}</button>`;
+  openSheet(`<div class="st">Settings</div>` + row("look", "look", "Look", "This browser") +
+    row("lib", "folder", "Library", cfg ? `${cfg.roots.length} folder${cfg.roots.length === 1 ? "" : "s"}` : "") +
+    row("audio", "speaker", "atv-audio", "Sound output and headphones") + row("server", "refresh", "Server", "Status, name, password") +
+    row("backup", "save", "Backup", "Playlists, Loved, play history") +
+    (cfg && cfg.admin ? `<div class="set-hint">${ic("lock")} ${cfg.unlocked ? "Unlocked in this browser" : "Locked: changes ask for the admin password"}</div>` : "") +
+    `<button class="opt cancel" data-m="close">Done</button>`, (e) => {
+    const b = e.target.closest("[data-m]"); if (!b) return;
+    ({ look: lookSheet, lib: libSheet, audio: audioSheet, server: serverSheet, backup: backupSheet, close: closeSheet })[b.dataset.m]();
+  });
+}
+
+function unlockSheet(then) {
+  openSheet(`<div class="st">${ic("lock")} Admin password</div><input class="set-in" type="password" id="pw" autocomplete="current-password" placeholder="Password">` +
+    `<div class="set-err" id="pwErr"></div><div class="set-btns"><span class="grow"></span><button class="pill" data-u="cancel">Cancel</button><button class="pill primary" data-u="ok">Unlock</button></div>`, async (e) => {
+    const b = e.target.closest("[data-u]"); if (!b) return;
+    if (b.dataset.u === "cancel") return closeSheet();
+    const r = await fetch("/api/settings/unlock", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("pw").value }) });
+    if (!r.ok) { $("pwErr").textContent = "Wrong password"; $("pw").select(); return; }
+    toast("Unlocked"); if (then) then(); else settingsMenu();
+  });
+  $("pw").focus();
+  $("pw").onkeydown = (e) => { if (e.key === "Enter") $("sheetBody").querySelector('[data-u="ok"]').click(); };
+}
+
+/* Library: folders (display name, add with a picker, remove with what it affects), skip list, rescan schedule */
+async function libSheet() {
+  await loadCfg(); if (lockedNow()) return unlockSheet(libSheet);
+  const c = cfg, r = c.rescan;
+  const folders = c.roots.map((x) => `<div class="set-row"><span class="set-dot${x.online ? " on" : ""}" title="${x.online ? "Reachable" : "Not reachable"}"></span>` +
+    `<div class="set-main"><div class="set-t">${esc(x.name)}</div><div class="set-s">${esc(x.path)} · ${x.items} item${x.items === 1 ? "" : "s"}</div></div>` +
+    `<button class="ib" data-l="rename" data-k="${esc(x.key)}" title="Rename">${ic("pencil")}</button><button class="ib" data-l="remove" data-k="${esc(x.key)}" title="Remove">${ic("trash")}</button></div>`).join("");
+  const hours = [1, 2, 3, 4, 6, 8, 12].map((h) => `<option value="${h}"${r.hours === h ? " selected" : ""}>${h} h</option>`).join("");
+  openSheet(`<div class="st">Library</div>` + sec("Folders") + (folders || `<div class="set-hint">No library folder yet.</div>`) +
+    `<div class="set-btns"><button class="pill" data-l="add">${ic("plus")} Add folder</button><span class="grow"></span><button class="pill" data-l="scan">${ic("refresh")} Rescan now</button></div>` +
+    sec("Skip") + `<textarea class="set-in" id="skipTxt" placeholder="_work&#10;*sample*" aria-label="Skip list">${esc(c.skip.join("\n"))}</textarea>` +
+    `<div class="set-hint">One per line: a folder or file name (* and ? work, case does not matter), or a path from the library folder with /.</div>` +
+    `<div class="set-btns"><span class="grow"></span><button class="pill" data-l="skip">Save skip list</button></div>` +
+    sec("Rescan") + `<div class="set-btns"><select class="pill" id="rsMode" aria-label="Rescan"><option value="off"${r.mode === "off" ? " selected" : ""}>Off</option>` +
+    `<option value="hours"${r.mode === "hours" ? " selected" : ""}>Every</option><option value="daily"${r.mode === "daily" ? " selected" : ""}>Daily at</option></select>` +
+    `<select class="pill" id="rsHours"${r.mode === "hours" ? "" : " hidden"} aria-label="Hours">${hours}</select>` +
+    `<input class="set-in" type="time" id="rsAt" value="${esc(r.at)}" style="width:auto"${r.mode === "daily" ? "" : " hidden"} aria-label="Time">` +
+    `<span class="grow"></span><button class="pill" data-l="rescan">Save</button></div>` +
+    `<div class="set-hint">${c.scanning ? "Scanning now…" : `Last scan ${fmtAgo(st && st.last_scan && st.last_scan.finished_at)}`}${c.next_rescan ? ` · next ${fmtWhen(c.next_rescan)}` : ""}</div>` +
+    `<button class="opt cancel" data-l="back">Back</button>`, (e) => libClick(e));
+  $("rsMode").onchange = (e) => { $("rsHours").hidden = e.target.value !== "hours"; $("rsAt").hidden = e.target.value !== "daily"; };
+}
+async function libClick(e) {
+  const b = e.target.closest("[data-l]"); if (!b) return;
+  const a = b.dataset.l, k = b.dataset.k, root = cfg && cfg.roots.find((x) => x.key === k);
+  try {
+    if (a === "back") return settingsMenu();
+    if (a === "add") return folderPicker(null);
+    if (a === "scan") { await sapi("POST", "/api/rescan"); toast("Rescan started"); return; }
+    if (a === "rename" && root) {
+      const name = prompt("Display name:", root.name); if (!name || !name.trim() || name === root.name) return;
+      await sapi("PUT", `/api/settings/roots/${encodeURIComponent(k)}`, { name }, libSheet); toast("Renamed"); return libSheet();
+    }
+    if (a === "remove" && root) {
+      const parts = [`${root.items} item${root.items === 1 ? "" : "s"} leave the library`];
+      if (root.playlist_entries) parts.push(`${root.playlist_entries} playlist entr${root.playlist_entries === 1 ? "y shows" : "ies show"} as missing`);
+      if (root.loved) parts.push(`${root.loved} heart${root.loved === 1 ? " is" : "s are"} lost`);
+      if (!confirm(`Remove "${root.name}" from the library?\n\n${parts.join(", ")}. Adding the folder again gives its files new ids. The files themselves are not touched.`)) return;
+      b.disabled = true; await sapi("DELETE", `/api/settings/roots/${encodeURIComponent(k)}`, undefined, libSheet); toast(`Removed "${root.name}"`); loadLibrary(); return libSheet();
+    }
+    if (a === "skip") {
+      const skip = $("skipTxt").value.split("\n").map((x) => x.trim()).filter(Boolean);
+      b.disabled = true; await sapi("PUT", "/api/settings/skip", { skip }, libSheet); toast("Skip list saved, library rescanned"); loadLibrary(); return libSheet();
+    }
+    if (a === "rescan") {
+      await sapi("PUT", "/api/settings/rescan", { mode: $("rsMode").value, hours: +$("rsHours").value, at: $("rsAt").value || "04:15" }, libSheet);
+      toast("Rescan schedule saved"); return libSheet();
+    }
+  } catch { b.disabled = false; }
+}
+/** Folder picker: only folders under the server's allowed base folders. */
+async function folderPicker(path) {
+  let b; try { b = await sapi("GET", `/api/settings/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`, undefined, () => folderPicker(path)); } catch { return; }
+  const used = new Set(cfg.roots.map((x) => x.path));
+  openSheet(`<div class="st">Add a library folder</div>` + (b.path ? `<div class="set-row"><div class="set-main"><div class="set-t">${esc(b.path.split("/").pop() || b.path)}</div><div class="set-s">${esc(b.path)}</div></div></div>` : "") +
+    `<div class="list">` + (b.parent ? `<button class="opt" data-p="${esc(b.parent)}">${ic("back")}<span class="t" style="flex:1">Up</span></button>` : b.path ? `<button class="opt" data-p="">${ic("back")}<span class="t" style="flex:1">Up</span></button>` : "") +
+    b.dirs.map((d) => `<button class="opt" data-p="${esc(d.path)}">${ic("folder")}<span class="t" style="flex:1">${esc(d.name)}</span>${used.has(d.path) ? `<span class="s">in library</span>` : ""}${ic("chev")}</button>`).join("") +
+    (b.dirs.length ? "" : `<div class="set-hint">No subfolders.</div>`) + `</div>` +
+    (b.path ? `<input class="set-in" id="newName" value="${esc(b.path.split("/").pop())}" aria-label="Display name" placeholder="Display name">` +
+      `<div class="set-btns"><button class="pill" data-p="__back">Cancel</button><span class="grow"></span><button class="pill primary" data-p="__add"${used.has(b.path) ? " disabled" : ""}>Add this folder</button></div>`
+      : `<div class="set-hint">Folders the server can read (${esc((cfg.bases || []).join(", "))}). A share must be mounted on the server first.</div><button class="opt cancel" data-p="__back">Cancel</button>`),
+  async (e) => {
+    const x = e.target.closest("[data-p]"); if (!x) return;
+    if (x.dataset.p === "__back") return libSheet();
+    if (x.dataset.p === "__add") {
+      x.disabled = true;
+      try { await sapi("POST", "/api/settings/roots", { path: b.path, name: $("newName").value }); toast("Folder added, reading it in the background"); return libSheet(); } catch { x.disabled = false; return; }
+    }
+    folderPicker(x.dataset.p || null);
+  });
+}
+
+/* atv-audio: sound output + headphones (scan, pair, connect, disconnect, forget); polls the state while open */
+let audioPoll = null;
+async function audioSheet() {
+  await loadCfg(); if (lockedNow()) return unlockSheet(audioSheet);
+  let lastKey = null;
+  const draw = async () => {
+    if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-audio-sheet]")) { clearInterval(audioPoll); audioPoll = null; return; }
+    let s; try { s = await (await fetch("/api/state?session=box")).json(); } catch { return; }
+    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output]);
+    if (key === lastKey) return;
+    lastKey = key;
+    const outs = (a.outputs || []).map((o) => `<option value="${esc(o.key)}"${o.default ? " selected" : ""}>${esc(o.name)}${o.codec ? ` (${esc(o.codec)})` : ""}</option>`).join("");
+    const devs = (a.devices || []).map((d) => `<div class="set-row"><span class="set-dot${d.connected ? " on" : ""}"></span><div class="set-main"><div class="set-t">${esc(d.name || d.address)}</div>` +
+      `<div class="set-s">${d.connected ? "Connected" : d.paired ? "Paired" : "Found: in pairing mode"}</div></div>` +
+      (d.paired ? `<button class="pill" data-a="${d.connected ? "disconnect" : "connect"}" data-addr="${esc(d.address)}">${d.connected ? "Disconnect" : "Connect"}</button>` +
+        `<button class="ib" data-a="forget" data-addr="${esc(d.address)}" title="Forget">${ic("trash")}</button>`
+        : `<button class="pill primary" data-a="pair" data-addr="${esc(d.address)}">Pair</button>`) + `</div>`).join("");
+    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">atv-audio</div>` +
+      (!k.connected ? `<div class="set-hint">atv-audio is not running.</div>` :
+        (a.can_outputs ? sec("Sound output") + `<select class="pill" id="aOut" style="max-width:none" aria-label="Sound output">${outs}</select>` : "") +
+        sec("Headphones") + (a.can_bluetooth ? (devs || `<div class="set-hint">No headphones paired yet.</div>`) +
+          `<div class="set-btns"><button class="pill" data-a="scan"${a.scanning ? " disabled" : ""}>${a.scanning ? "Looking…" : "Find headphones"}</button><span class="grow"></span></div>` +
+          `<div class="set-hint">${esc(a.busy || (a.scanning ? "Put the headphones in pairing mode." : ""))}</div>`
+          : `<div class="set-hint">Headphone control is not available on this atv-audio.</div>`) +
+        (a.error ? `<div class="set-err">${esc(a.error)}</div>` : "")) +
+      `<button class="opt cancel" data-a="back">Back</button>`;
+    const sel = $("aOut"); if (sel) sel.onchange = () => audioCmd({ op: "set_output", output: sel.value });
+  };
+  const audioCmd = async (body) => { try { await sapi("POST", "/api/atv-audio", body, audioSheet); } catch { /* toast shown */ } setTimeout(draw, 300); };
+  openSheet(`<div class="st" data-audio-sheet="1">atv-audio</div><div class="set-hint">Loading…</div>`, (e) => {
+    const b = e.target.closest("[data-a]"); if (!b) return;
+    if (b.dataset.a === "back") { clearInterval(audioPoll); audioPoll = null; return settingsMenu(); }
+    if (b.dataset.a === "forget" && !confirm("Forget these headphones? They have to be paired again.")) return;
+    b.disabled = true; audioCmd({ op: b.dataset.a, address: b.dataset.addr });
+  });
+  audioCmd({ op: "refresh" });
+  clearInterval(audioPoll); audioPoll = setInterval(draw, 1500); draw();
+}
+
+/** Headphones on the player card: atv-audio's own queue, or the Apple TV while its sound goes to atv-audio. */
+function drawHeadphones(s) {
+  const k = s.sink || {}, a = k.audio;
+  const show = !!(a && a.can_bluetooth && (s.session === "box" || k.route));
+  $("bconn").hidden = !show; if (!show) return;
+  const devs = (a.devices || []).filter((d) => d.paired && d.audio);
+  const d = devs.find((x) => x.connected) || devs[0];
+  if (!d) { $("bconn").hidden = true; return; }
+  $("bconnText").textContent = `${d.name} · ${a.busy ? a.busy.replace(/…$/, "…") : d.connected ? "connected" : "not connected"}`;
+  $("bconnBtn").textContent = d.connected ? "Disconnect" : "Connect";
+  $("bconnBtn").disabled = !!a.busy;
+  $("bconnBtn").onclick = async () => { $("bconnBtn").disabled = true;
+    try { await sapi("POST", "/api/atv-audio", { op: d.connected ? "disconnect" : "connect", address: d.address }); } catch { $("bconnBtn").disabled = false; } };
+}
+
+/* Server: status, name, optional admin password, audio-copy cache */
+async function serverSheet() {
+  await loadCfg();
+  let t; try { t = await sapi("GET", "/api/status"); } catch { return; }
+  const kv = (k, v) => `<span>${esc(k)}</span><b>${v}</b>`;
+  const ls = t.last_scan || {}, loud = t.loudness || {}, lyr = t.lyrics || {};
+  const up = Math.round((t.now - t.started) / 3600);
+  openSheet(`<div class="st">Server</div>` + `<div class="set-kv">` + kv("Version", esc(t.version)) + kv("Library", `${t.items.songs} songs, ${t.items.videos} videos`) +
+    kv("Folders", t.roots.map((r) => `${esc(r.name)}${r.online ? "" : " (not reachable)"}`).join(", ") || "—") +
+    kv("Last scan", ls.finished_at ? `${fmtAgo(ls.finished_at)}: +${ls.added || 0} −${ls.removed || 0}${ls.failed ? `, ${ls.failed} unreadable` : ""}${ls.skipped ? `, ${ls.skipped} skipped` : ""}` : "never") +
+    kv("Next rescan", t.next_rescan ? fmtWhen(t.next_rescan) : "off") +
+    kv("Loudness", loud.done != null ? `${loud.done} measured${loud.pending ? `, ${loud.pending} waiting` : ""}` : "—") +
+    kv("Audio copies", `${t.cache.audio_files} (${fmtBytes(t.cache.audio_bytes)})`) +
+    kv("Playlists", `${t.playlists} · ${t.loved} loved · ${t.plays} plays`) + kv("Running for", up < 48 ? `${up} h` : `${Math.round(up / 24)} days`) + `</div>` +
+    `<div class="set-btns"><button class="pill" data-s="clear"${t.cache.audio_files && !t.cache.copy_job ? "" : " disabled"}>Delete audio copies</button></div>` +
+    sec("Name") + `<div class="set-btns"><input class="set-in" id="srvName" style="flex:1;width:auto" value="${esc(cfg.server_name)}" placeholder="${esc(cfg.server_name_default)}" aria-label="Server name"><button class="pill" data-s="name">Save</button></div>` +
+    sec("Admin password") + (cfg.admin
+      ? `<div class="set-hint">${cfg.unlocked ? "Set. This browser is unlocked." : "Set. This browser is locked."}</div><div class="set-btns">` +
+        (cfg.unlocked ? `<button class="pill" data-s="pwchange">Change</button><button class="pill" data-s="pwoff">Remove</button><span class="grow"></span><button class="pill" data-s="lock">${ic("lock")} Lock</button>` : `<button class="pill primary" data-s="unlock">Unlock</button>`) + `</div>`
+      : `<div class="set-hint">Off: anyone on the network can change the settings.</div><div class="set-btns"><button class="pill" data-s="pwchange">Set a password</button></div>`) +
+    `<button class="opt cancel" data-s="back">Back</button>`, async (e) => {
+    const b = e.target.closest("[data-s]"); if (!b) return;
+    const a = b.dataset.s;
+    try {
+      if (a === "back") return settingsMenu();
+      if (a === "unlock") return unlockSheet(serverSheet);
+      if (a === "clear") { if (!confirm("Delete all audio copies? They are made again when atv-audio needs them.")) return;
+        const r = await sapi("POST", "/api/cache/clear", undefined, serverSheet); toast(`Deleted ${r.removed} (${fmtBytes(r.freed)})`); return serverSheet(); }
+      if (a === "name") { await sapi("PUT", "/api/settings/server", { name: $("srvName").value }, serverSheet); toast("Name saved"); return serverSheet(); }
+      if (a === "lock") { await sapi("POST", "/api/settings/lock"); toast("Locked"); return serverSheet(); }
+      if (a === "pwoff") { if (!confirm("Remove the admin password? Anyone on the network can then change the settings.")) return;
+        await sapi("POST", "/api/settings/password", { password: "" }, serverSheet); toast("Password removed"); return serverSheet(); }
+      if (a === "pwchange") {
+        const p1 = prompt("New admin password (at least 6 characters):"); if (!p1) return;
+        if (prompt("The same password again:") !== p1) { toast("The passwords differ"); return; }
+        await sapi("POST", "/api/settings/password", { password: p1 }, serverSheet); toast("Password set"); return serverSheet();
+      }
+    } catch { /* toast shown */ }
+  });
+}
+
+/* Backup: one JSON file with playlists, Loved, play history and atv-audio's sound; restore maps ids through file paths */
+async function backupSheet() {
+  await loadCfg(); if (lockedNow()) return unlockSheet(backupSheet);
+  openSheet(`<div class="st">Backup</div>` + `<a class="opt" href="/api/backup" download>${ic("save")}<span class="t" style="flex:1">Download backup</span></a>` +
+    `<label class="opt">${ic("refresh")}<span class="t" style="flex:1">Restore from a backup file…</span><input type="file" id="bkFile" accept=".json,application/json" hidden></label>` +
+    `<div class="set-hint">A restore replaces all playlists, Loved and the play history.</div><button class="opt cancel" data-b="back">Back</button>`, (e) => {
+    if (e.target.closest('[data-b="back"]')) settingsMenu();
+  });
+  $("bkFile").onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    if (!confirm(`Restore "${f.name}"? This replaces all playlists, Loved and the play history.`)) { e.target.value = ""; return; }
+    try {
+      const r = await sapi("POST", "/api/backup", JSON.parse(await f.text()), backupSheet);
+      toast(`Restored ${r.playlists} playlists, ${r.loved} loved${r.missing ? ` (${r.missing} files not in the library)` : ""}`);
+      closeSheet(); loadPlaylists(); loadAuto();
+    } catch (err) { if (err instanceof SyntaxError) toast("Not a backup file"); }
+  };
 }
 $("sheet").onclick = (e) => { if (e.target === $("sheet")) closeSheet(); };
 // the sticky Select / Done bar sits right under the sticky tabs, whatever their height (font, wrap)
@@ -1481,7 +1743,7 @@ $("shuf").onclick = () => cmd("shuffle", { on: !(st && st.shuffle) });
 $("love").onclick = () => { const c = st && st.current; if (c) cmd("love", { id: c.id, on: !c.loved }); };
 $("preferSw").onclick = () => cmd("prefer_videos", { on: !(st && st.prefer_videos) });
 $("rep").onclick = () => cmd("repeat");
-$("lookBtn").onclick = lookSheet;
+$("lookBtn").onclick = settingsMenu;
 $("out").onchange = (e) => {
   mode = e.target.value; localStorage.setItem("atvSession", mode);
   if (mode === "auto") { follow(); } else if (mode !== session) { switchSession(mode); }

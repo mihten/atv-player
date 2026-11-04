@@ -570,6 +570,14 @@ class OutputWatch:
         self.last = None
         self.fails = 0
         self.key = None          # pactl name of the sink the reported output is (None: not ready / unknown)
+        self.sinks = []          # last 'pactl list sinks' result (Settings -> atv-audio: sound output list)
+        self.default = None
+
+    async def set_default(self, key):
+        """Settings -> atv-audio -> Sound output: make `key` PipeWire's / Pulse's default sink (mpv follows it)."""
+        if not self.has_pactl or key not in {s[0] for s in self.sinks}:
+            return False
+        return await _run(*self._pactl(), "set-default-sink", key) is not None
 
     def _pactl(self):
         kind, _, arg = self.cfg.output.partition(":")
@@ -613,6 +621,7 @@ class OutputWatch:
                 return self._no_answer(kind)
             sinks = parse_pactl_text(text)
         self.fails = 0
+        self.sinks, self.default = sinks, default
         out, self.preferred = pick_output(sinks, default, self.preferred)
         chosen = choose_sink(sinks, default)
         self.key = chosen[0] if chosen and out and out.get("ready") else None
@@ -1232,6 +1241,7 @@ class Router:
         self.owner = "tv"
         self.tv_last = {}
         self.box = None
+        self.audio = None   # AudioControl (Settings -> atv-audio in the web remote)
 
     def tv_routed(self):
         return bool((self.tv_last.get("route") or {}).get("sink"))
@@ -1252,6 +1262,10 @@ class Router:
 
     async def from_tv(self, msg):
         t = msg.get("type")
+        if t == "audio_cmd":
+            if self.audio:
+                await self.audio.handle(msg)
+            return
         if t in TV_STATE:
             self.tv_last[t] = msg
         if t in ("pong", "volume"):
@@ -1440,6 +1454,16 @@ class Buttons:
         self.router, self.send = router, send
         self.proc = None
         self.last = None
+        self.on_bt = None   # AudioControl.on_bt: the helper's headphone list
+
+    def bt(self, action, address=None):
+        """Headphone action for the helper (BlueZ). False when the helper is not running."""
+        if not (self.proc and self.proc.stdin and not self.proc.stdin.is_closing()):
+            return False
+        with contextlib.suppress(Exception):
+            self.proc.stdin.write((json.dumps({"op": "bt", "action": action, "address": address}) + "\n").encode())
+            return True
+        return False
 
     def state(self):
         r = self.router
@@ -1499,10 +1523,14 @@ class Buttons:
                     self.on_cmd(msg["cmd"])
                 elif msg.get("cmd") == "seek" and isinstance(msg.get("delta"), (int, float)):
                     self.on_seek(float(msg["delta"]))
+                elif isinstance(msg.get("bt"), dict) and self.on_bt:
+                    self.on_bt(msg["bt"])
                 elif msg.get("log"):
                     self.router.sink.log(f"buttons: {str(msg['log'])[:300]}")
             code = await self.proc.wait()
             self.proc = None
+            if self.on_bt:
+                self.on_bt(None)  # headphone control gone until the helper is back
             if code == 3:
                 log("buttons: python3-dbus not available, headphone buttons off")
                 return
@@ -1518,6 +1546,66 @@ class Buttons:
                 self.proc.terminate()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(self.proc.wait(), 3)
+
+
+class AudioControl:
+    """Settings -> atv-audio in the web remote: the sound output (PipeWire / Pulse sinks) and the headphones (through
+    the helper). Its state goes to the server as `audio_info` (only when it changed), commands arrive as `audio_cmd`."""
+
+    BT_OPS = ("scan", "pair", "connect", "disconnect", "forget")
+
+    def __init__(self, outputs, send, buttons=None, on_output=None):
+        self.outputs, self.send = outputs, send
+        self.buttons = buttons
+        self.on_output = on_output  # async (): re-detect the output after a change
+        self.bt = None
+        self.error = None
+        self.last = None
+
+    def info(self):
+        outs = []
+        if self.outputs.has_pactl:
+            for name, desc, props, _vol in self.outputs.sinks or []:
+                if name.startswith("auto_null"):
+                    continue
+                o = _sink_output(name, desc, props)
+                outs.append({"key": name, "name": o["name"], "kind": o["kind"], "codec": o["codec"],
+                             "default": name == self.outputs.default})
+        bt = self.bt or {}
+        return {"type": "audio_info", "outputs": outs, "devices": bt.get("devices") or [],
+                "scanning": bool(bt.get("scanning")), "busy": bt.get("busy"), "error": self.error or bt.get("error"),
+                "can_bluetooth": self.bt is not None, "can_outputs": self.outputs.has_pactl}
+
+    def update(self, force=False):
+        msg = self.info()
+        if force or msg != self.last:
+            self.last = msg
+            self.send(msg)
+
+    def on_bt(self, info):
+        self.bt = info
+        self.update()
+
+    async def handle(self, msg):
+        op = msg.get("op")
+        self.error = None
+        if op == "refresh":
+            if self.buttons:
+                self.buttons.bt("refresh")
+            if self.on_output:
+                await self.on_output()
+            self.update(force=True)
+        elif op == "set_output":
+            key = str(msg.get("output") or "")
+            if not await self.outputs.set_default(key):
+                self.error = "that sound output is not available"
+            elif self.on_output:
+                await self.on_output()
+            self.update(force=True)
+        elif op in self.BT_OPS:
+            if not (self.buttons and self.buttons.bt(op, msg.get("address"))):
+                self.error = "headphone control is not available (python3-dbus / BlueZ)"
+                self.update(force=True)
 
 
 # ---------------------------------------------------------------- main
@@ -1550,6 +1638,15 @@ async def run(cfg):
     router.box = box
     buttons = Buttons(router, sink_send) if cfg.buttons else None
     outputs = OutputWatch(cfg)
+
+    async def output_now():
+        if sink.set_output(await outputs.detect()):
+            await sink.tick()
+
+    audio = AudioControl(outputs, sink_send, buttons, output_now)
+    router.audio = audio
+    if buttons:
+        buttons.on_bt = audio.on_bt
     if outputs.has_pactl:
         sink.volume_backend = outputs.set_volume
     sink.set_output(await outputs.detect())
@@ -1563,6 +1660,7 @@ async def run(cfg):
             try:
                 if sink.set_output(await outputs.detect()):
                     await sink.tick()
+                audio.update()
             except Exception as e:
                 log(f"output check: {e!r}")
 
@@ -1621,6 +1719,7 @@ async def run(cfg):
         task = asyncio.create_task(pinger(ws))
         sink_send(sink.status_message())
         sink.log(f"connected ({cfg.output})")
+        audio.update(force=True)
         return task
 
     async def box_open(ws):

@@ -33,21 +33,25 @@ import box_sound
 import loudness
 import lyrics
 import scanner
+import settings as settings_mod
 
-# Site config comes from the environment (systemd EnvironmentFile, see server/site.example/).
-# ATV_ROOTS is required: JSON {"<root key>": "<path>"}; the keys are stored in the library DB.
-if not os.environ.get("ATV_ROOTS"):
-    raise SystemExit("ATV_ROOTS is not set (JSON object root key -> library path)")
-ROOTS = json.loads(os.environ["ATV_ROOTS"])
+# Site config comes from the environment (systemd EnvironmentFile, see server/site.example/). Library folders, their
+# display names, skip patterns, the rescan schedule, the server name and the optional admin password live in
+# DATA/settings.json and are changed in the web remote; ATV_ROOTS / ATV_ROOT_NAMES only fill that file on the first
+# start (JSON {"<root key>": "<path>"}; the keys are stored in the library DB). Without either the library starts empty.
 DATA = Path(os.environ.get("ATV_DATA", "/var/lib/atv-media"))
+DATA.mkdir(parents=True, exist_ok=True)
+SETTINGS = settings_mod.Settings(str(DATA / "settings.json"))
+ROOTS = SETTINGS.roots()  # updated IN PLACE when the settings change (other modules hold this dict)
 CACHE = Path(os.environ.get("ATV_CACHE", "/var/cache/atv-media"))
 AUDIO_DIR = CACHE / "audio"
 DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.17.1"
-ROOT_NAMES = json.loads(os.environ.get("ATV_ROOT_NAMES") or "{}")  # optional display names per root key
+VERSION = "0.18.0"
+ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
+STARTED = time.time()
 
 log = logging.getLogger("atv-media")
 mimetypes.add_type("video/x-matroska", ".mkv")
@@ -66,6 +70,7 @@ SINK_INFO: dict = {}  # session kind -> {"name", "output"} as last reported by i
 RELAY_TYPES = ("route", "sound", "lip_sync", "clock", "volume")  # TV -> sink, replayed in this order on sink connect
 SINK_RELAY: dict = {}  # session kind -> {type: last message of that type from its TV}
 SINK_LOGGED: dict = {}  # session kind -> the last output line logged
+SINK_AUDIO: dict = {}  # session kind -> the sink's last audio_info (outputs, headphones; Settings -> atv-audio)
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
@@ -307,6 +312,7 @@ class Session:
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
+            "server_name": server_name(),
             "sink": sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box" else None,
             **(box_extra(self) if self.kind == "box" else {}),
         }
@@ -796,9 +802,26 @@ def sink_state(kind):
     # route: the TV's Sound output is atv-audio (its last route message; false once the TV is gone)
     route = bool((SINK_RELAY.get(kind, {}).get("route") or {}).get("sink"))
     if SINKS.get(kind) is None:
-        return {"connected": False, "name": None, "output": None, "route": route}
+        return {"connected": False, "name": None, "output": None, "route": route, "audio": None}
     info = SINK_INFO.get(kind) or {}
-    return {"connected": True, "name": info.get("name"), "output": info.get("output"), "route": route}
+    return {"connected": True, "name": info.get("name"), "output": info.get("output"), "route": route,
+            "audio": SINK_AUDIO.get(kind)}
+
+
+def clean_audio_info(data):
+    """The sink's audio_info: {outputs: [{key, name, kind, codec, default}], devices: [{address, name, paired, connected,
+    audio}], scanning, busy, error, can_bluetooth, can_outputs}. Bounded and typed, the rest dropped."""
+    def s(v, n=120):
+        return str(v)[:n] if v is not None else None
+    outs = [{"key": s(o.get("key"), 200), "name": s(o.get("name")), "kind": s(o.get("kind"), 20),
+             "codec": s(o.get("codec"), 40), "default": bool(o.get("default"))}
+            for o in (data.get("outputs") or [])[:20] if isinstance(o, dict) and o.get("key")]
+    devs = [{"address": s(d.get("address"), 40), "name": s(d.get("name")), "paired": bool(d.get("paired")),
+             "connected": bool(d.get("connected")), "audio": bool(d.get("audio"))}
+            for d in (data.get("devices") or [])[:40] if isinstance(d, dict) and d.get("address")]
+    return {"outputs": outs, "devices": devs, "scanning": bool(data.get("scanning")), "busy": s(data.get("busy"), 200),
+            "error": s(data.get("error"), 300), "can_bluetooth": bool(data.get("can_bluetooth")),
+            "can_outputs": bool(data.get("can_outputs"))}
 
 
 # ---------------------------------------------------------------- the "atv-audio" session (box)
@@ -963,6 +986,13 @@ async def sink_message(s, ws, data):
         log.info("sink[%s]: %s", s.kind, str(data.get("message"))[:1500])
     elif kind == "button":
         await on_button(data)
+    elif kind == "audio_info":
+        info = clean_audio_info(data)
+        if info != SINK_AUDIO.get(s.kind):
+            SINK_AUDIO[s.kind] = info
+            await broadcast_state(s)
+            if SESSIONS["box"].kind != s.kind:
+                await broadcast_state(SESSIONS["box"])
 
 
 async def relay_to_sink(s, data):
@@ -1627,6 +1657,7 @@ async def ws_handler(request):
             if SINKS.get(s.kind) is ws:  # not when a newer sink replaced this one
                 SINKS.pop(s.kind, None)
                 SINK_INFO.pop(s.kind, None)
+                SINK_AUDIO.pop(s.kind, None)
                 PREFETCHED.pop(s.kind, None)
                 await broadcast_state(s)
         elif role == "player":
@@ -1931,7 +1962,8 @@ async def api_rescan(request):
 
 
 def item_path(it):
-    return os.path.join(ROOTS[it["root"]], it["relpath"])
+    """A folder removed in the settings a moment ago: no path (treated as a missing file until the rescan)."""
+    return os.path.join(ROOTS.get(it["root"], "/nonexistent-library-folder"), it["relpath"])
 
 
 AUDIO_LOCKS: dict[int, asyncio.Lock] = {}
@@ -2266,7 +2298,7 @@ async def run_loudness():
     async def job():
         try:
             await asyncio.get_running_loop().run_in_executor(
-                None, loudness.run, DB, ROOTS, _loudness_result)
+                None, loudness.run, DB, dict(ROOTS), _loudness_result)
         except Exception:
             log.exception("loudness job failed")
     LOUDNESS_TASK = asyncio.create_task(job())
@@ -2289,7 +2321,7 @@ async def run_lyrics():
 
     async def job():
         try:
-            await asyncio.get_running_loop().run_in_executor(None, lyrics.run, DB, ROOTS, _lyrics_result)
+            await asyncio.get_running_loop().run_in_executor(None, lyrics.run, DB, dict(ROOTS), _lyrics_result)
         except Exception:
             log.exception("lyrics job failed")
     LYRICS_TASK = asyncio.create_task(job())
@@ -2331,7 +2363,7 @@ async def api_lyrics(request):
     """Embedded lyrics of one item: {"id", "lyr": 0|1|2, "tracks": [{ord, lang, title, is_default, forced,
     synced, cues: [{s, e, t}]}]}. Extracted on demand when the background job has not reached the file yet."""
     item_id = int(request.match_info["id"])
-    found = await asyncio.get_running_loop().run_in_executor(None, lyrics.get_or_extract, DB, ROOTS, item_id)
+    found = await asyncio.get_running_loop().run_in_executor(None, lyrics.get_or_extract, DB, dict(ROOTS), item_id)
     if found is None:
         raise web.HTTPNotFound(text="no such item")
     lvl, data = found
@@ -2379,7 +2411,8 @@ async def run_scan(force=False, wait=False):
         SCANNING = True
         await broadcast_all()
         try:
-            stats = await asyncio.get_running_loop().run_in_executor(None, scanner.scan, DB, ROOTS, force)
+            stats = await asyncio.get_running_loop().run_in_executor(
+                None, scanner.scan, DB, dict(ROOTS), force, settings_mod.skip_matcher(SETTINGS.skip))
             log.info("scan done: %s", stats)
             for item_id in stats.get("renamed_ids", []):  # art is cached by id; the file changed
                 for stale in (*(CACHE / "art").glob(f"{item_id}.*"), *AUDIO_DIR.glob(f"{item_id}.*")):
@@ -2396,6 +2429,419 @@ async def run_scan(force=False, wait=False):
             await broadcast_all()
     await run_lyrics()
     await run_loudness()
+
+# ---------------------------------------------------------------- settings, status, backup (web remote: Settings)
+# Every change below is open on the home network; with an admin password set (optional, Settings -> Password) it needs
+# an unlocked browser (cookie with a server-side token). Playback, queues and playlists never need it.
+
+APP_REF: dict = {}
+RESCAN_WAKE = asyncio.Event()
+ADMIN_COOKIE = "atv_admin"
+
+
+def server_name():
+    return SETTINGS.server_name(socket.gethostname().split(".")[0])
+
+
+def admin_ok(request):
+    return SETTINGS.authorized(request.cookies.get(ADMIN_COOKIE))
+
+
+def need_admin(request):
+    if not admin_ok(request):
+        raise web.HTTPForbidden(text="locked: enter the admin password in Settings")
+
+
+def settings_error(e):
+    return web.HTTPBadRequest(text=str(e))
+
+
+def apply_roots():
+    """settings.json -> ROOTS / ROOT_NAMES (in place: the scanner, loudness and lyrics workers hold these dicts)."""
+    ROOTS.clear()
+    ROOTS.update(SETTINGS.roots())
+    ROOT_NAMES.clear()
+    ROOT_NAMES.update(SETTINGS.root_names())
+
+
+def root_usage():
+    """Per root key: items, how many playlist entries and hearts point at them (what removing it would affect)."""
+    by_root: dict = {}
+    for it in LIB.values():
+        by_root.setdefault(it["root"], set()).add(it["id"])
+    out = {}
+    for key in set(ROOTS) | set(by_root):
+        ids = by_root.get(key, set())
+        out[key] = {"items": len(ids),
+                    "playlist_entries": sum(1 for pl in PLAYLISTS.values() for i in pl["items"] if i in ids),
+                    "loved": sum(1 for i in LOVED if i in ids)}
+    return out
+
+
+def settings_view(request):
+    v = SETTINGS.public()
+    usage = root_usage()
+    for r in v["roots"]:
+        r.update(usage.get(r["key"], {"items": 0, "playlist_entries": 0, "loved": 0}))
+        r["online"] = os.path.isdir(r["path"])
+    v.update({"unlocked": admin_ok(request), "server_name_default": socket.gethostname().split(".")[0],
+              "next_rescan": settings_mod.next_rescan(SETTINGS.rescan, LAST_SCAN.get("finished_at")),
+              "scanning": SCANNING})
+    return v
+
+
+async def api_settings(request):
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_unlock(request):
+    body = await _json_body(request)
+    token = SETTINGS.unlock(str(body.get("password") or ""))
+    if token is None:
+        await asyncio.sleep(1.0)  # slows down guessing
+        log.warning("settings: wrong admin password from %s", request.remote)
+        raise web.HTTPForbidden(text="wrong password")
+    resp = web.json_response({"ok": True})
+    resp.set_cookie(ADMIN_COOKIE, token, max_age=settings_mod.TOKEN_SECONDS, httponly=True, samesite="Strict",
+                    secure=request.secure)
+    return resp
+
+
+async def api_settings_lock(request):
+    SETTINGS.tokens.pop(request.cookies.get(ADMIN_COOKIE) or "", None)
+    resp = web.json_response({"ok": True})
+    resp.del_cookie(ADMIN_COOKIE)
+    return resp
+
+
+async def api_settings_password(request):
+    need_admin(request)
+    body = await _json_body(request)
+    password = str(body.get("password") or "")
+    if password and len(password) < 6:
+        raise web.HTTPBadRequest(text="at least 6 characters")
+    SETTINGS.set_password(password)
+    log.info("settings: admin password %s", "set" if password else "removed")
+    resp = web.json_response({"ok": True, "admin": SETTINGS.has_password})
+    if password:  # this browser stays unlocked
+        resp.set_cookie(ADMIN_COOKIE, SETTINGS.unlock(password), max_age=settings_mod.TOKEN_SECONDS, httponly=True,
+                        samesite="Strict", secure=request.secure)
+    return resp
+
+
+async def api_settings_browse(request):
+    need_admin(request)
+    try:
+        return web.json_response(SETTINGS.browse(request.query.get("path")))
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+
+
+async def library_changed(wait):
+    """After a library-folder / skip change: rescan (now and waited for, or in the background) and tell every page."""
+    apply_roots()
+    if wait:
+        await run_scan(wait=True)
+    else:
+        asyncio.create_task(run_scan())
+    await broadcast_all()
+
+
+async def api_settings_root_add(request):
+    need_admin(request)
+    body = await _json_body(request)
+    try:
+        key = SETTINGS.add_root(str(body.get("path") or ""), str(body.get("name") or ""))
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+    log.info("settings: library folder %s added (%s)", key, ROOTS.get(key) or SETTINGS.roots()[key])
+    await library_changed(wait=False)  # a new folder may take minutes to read: in the background
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_root_update(request):
+    need_admin(request)
+    key = request.match_info["key"]
+    body = await _json_body(request)
+    old_path = ROOTS.get(key)
+    try:
+        SETTINGS.update_root(key, body.get("name"), body.get("path"))
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+    moved = SETTINGS.roots().get(key) != old_path
+    log.info("settings: library folder %s -> name %r, path %s", key, SETTINGS.root_names()[key], SETTINGS.roots()[key])
+    await library_changed(wait=moved)
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_root_delete(request):
+    need_admin(request)
+    key = request.match_info["key"]
+    try:
+        SETTINGS.remove_root(key)
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+    log.info("settings: library folder %s removed", key)
+    await library_changed(wait=True)  # its items go now: no request may still look for its path
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_skip(request):
+    need_admin(request)
+    body = await _json_body(request)
+    try:
+        SETTINGS.set_skip(body.get("skip") if isinstance(body.get("skip"), list) else [])
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+    log.info("settings: skip %s", SETTINGS.skip)
+    await library_changed(wait=True)
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_rescan(request):
+    need_admin(request)
+    body = await _json_body(request)
+    try:
+        SETTINGS.set_rescan({k: body[k] for k in ("mode", "hours", "at") if k in body})
+    except settings_mod.SettingsError as e:
+        raise settings_error(e)
+    log.info("settings: rescan %s", SETTINGS.rescan)
+    RESCAN_WAKE.set()
+    return web.json_response(settings_view(request))
+
+
+async def api_settings_server(request):
+    need_admin(request)
+    body = await _json_body(request)
+    SETTINGS.set_server_name(body.get("name"))
+    log.info("settings: server name %r", server_name())
+    asyncio.create_task(readvertise())
+    await broadcast_all()
+    return web.json_response(settings_view(request))
+
+
+async def readvertise():
+    app = APP_REF.get("app")
+    if app is None or "zeroconf" not in app:
+        return
+    zc, info = app.pop("zeroconf")
+    try:
+        await zc.async_unregister_service(info)
+        await zc.async_close()
+    except Exception:
+        log.exception("Bonjour: unregister failed")
+    await advertise(app)
+
+
+async def rescan_loop():
+    """The library rescan schedule (Settings -> Library). Replaces the old systemd timer."""
+    while True:
+        due = settings_mod.next_rescan(SETTINGS.rescan, LAST_SCAN.get("finished_at"))
+        RESCAN_WAKE.clear()
+        timeout = None if due is None else max(1.0, due - time.time())
+        try:
+            await asyncio.wait_for(RESCAN_WAKE.wait(), timeout)
+            continue  # schedule changed: compute again
+        except asyncio.TimeoutError:
+            pass
+        log.info("scheduled rescan (%s)", SETTINGS.rescan)
+        try:
+            await run_scan()
+        except Exception:
+            log.exception("scheduled rescan failed")
+        await asyncio.sleep(1.0)
+
+
+def dir_size(path, pattern="*"):
+    n = size = 0
+    for f in Path(path).glob(pattern):
+        try:
+            if f.is_file():
+                n += 1
+                size += f.stat().st_size
+        except OSError:
+            pass
+    return n, size
+
+
+async def api_status(request):
+    loop = asyncio.get_running_loop()
+    loud = await loop.run_in_executor(None, loudness.counts, DB)
+    lyr = await loop.run_in_executor(None, lyrics.counts, DB)
+    audio_n, audio_b = await loop.run_in_executor(None, dir_size, AUDIO_DIR, "*.mka")
+    art_n, art_b = await loop.run_in_executor(None, dir_size, CACHE / "art")
+    usage = root_usage()
+    visible = [it for it in LIB.values() if not it["hidden"]]
+    return web.json_response({
+        "version": VERSION, "server_name": server_name(), "started": STARTED, "now": time.time(),
+        "items": {"songs": sum(1 for it in visible if it["kind"] == "audio"),
+                  "videos": sum(1 for it in visible if it["kind"] == "video"),
+                  "hidden": len(LIB) - len(visible)},
+        "roots": [{"key": k, "name": ROOT_NAMES.get(k, k), "path": p, "online": os.path.isdir(p),
+                   "items": usage.get(k, {}).get("items", 0)} for k, p in ROOTS.items()],
+        "scanning": SCANNING, "last_scan": LAST_SCAN, "rescan": SETTINGS.rescan,
+        "next_rescan": settings_mod.next_rescan(SETTINGS.rescan, LAST_SCAN.get("finished_at")),
+        "cache": {"audio_files": audio_n, "audio_bytes": audio_b, "art_files": art_n, "art_bytes": art_b,
+                  "copy_job": bool(COPY_JOB["running"])},
+        "loudness": loud, "lyrics": lyr, "playlists": len(PLAYLISTS), "loved": len(LOVED),
+        "plays": sum(PLAY_COUNT.values()), "sessions": sessions_summary(), "sink": sink_state("tv"),
+        "admin": SETTINGS.has_password,
+    })
+
+
+async def api_cache_clear(request):
+    """Delete the audio copies (they are made again when needed). Not while the copy job runs."""
+    need_admin(request)
+    if COPY_JOB["running"]:
+        raise web.HTTPConflict(text="audio copies are being made right now: try again when that is done")
+    removed = freed = 0
+    for f in list(AUDIO_DIR.glob("*.mka")):
+        if f.name.endswith(".tmp.mka"):
+            continue
+        try:
+            freed += f.stat().st_size
+            f.unlink()
+            removed += 1
+        except OSError:
+            pass
+    load_audio_copies()
+    PREFETCHED.clear()
+    COPY_FAILED.clear()
+    await push_copies(force=True)
+    log.info("cache: %d audio copies deleted (%.1f MB)", removed, freed / 1e6)
+    return web.json_response({"ok": True, "removed": removed, "freed": freed})
+
+
+# Backup: playlists, hearts and the play history in one JSON file. Every id is stored with its file (root + path), so
+# a restore onto a rebuilt library (new ids) finds the same files again; entries whose file is gone are left out.
+BACKUP_FORMAT = "atv-media-backup"
+
+
+def backup_data():
+    con = listening()
+    loved = con.execute("SELECT id, at FROM loved ORDER BY at").fetchall()
+    plays = con.execute("SELECT id, at FROM plays ORDER BY at").fetchall()
+    ids = {i for i, _ in loved} | {i for i, _ in plays} | {i for pl in PLAYLISTS.values() for i in pl["items"]}
+    return {"format": BACKUP_FORMAT, "version": 1, "created": time.time(), "server": server_name(),
+            "server_version": VERSION,
+            "files": {str(i): [LIB[i]["root"], LIB[i]["relpath"]] for i in sorted(ids) if i in LIB},
+            "playlists": [{"name": pl["name"], "items": pl["items"], "created": pl["created"]}
+                          for pl in sorted(PLAYLISTS.values(), key=lambda p: p["id"])],
+            "loved": [[i, at] for i, at in loved], "plays": [[i, at] for i, at in plays],
+            "box_sound": SESSIONS["box"].sound}
+
+
+async def api_backup_get(request):
+    need_admin(request)
+    stamp = time.strftime("%Y%m%d-%H%M")
+    return web.json_response(backup_data(), headers={
+        "Content-Disposition": f'attachment; filename="atv-media-backup-{stamp}.json"'})
+
+
+async def api_backup_restore(request):
+    """Replaces playlists, hearts and the play history with the backup's (ids mapped through the stored file paths)."""
+    global NEXT_PLAYLIST_ID
+    need_admin(request)
+    try:
+        data = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        raise web.HTTPBadRequest(text="not a JSON file")
+    if not isinstance(data, dict) or data.get("format") != BACKUP_FORMAT:
+        raise web.HTTPBadRequest(text="not an ATV Player backup")
+    by_path = {(it["root"], it["relpath"]): i for i, it in LIB.items()}
+    rel_count: dict = {}
+    for it in LIB.values():
+        rel_count[it["relpath"]] = rel_count.get(it["relpath"], 0) + 1
+    by_rel = {it["relpath"]: i for i, it in LIB.items() if rel_count[it["relpath"]] == 1}  # another root key
+    files = data.get("files") if isinstance(data.get("files"), dict) else {}
+    lost: set = set()
+
+    def mapped(old):
+        try:
+            old = int(old)
+        except (TypeError, ValueError):
+            return None
+        f = files.get(str(old))
+        new = None
+        if isinstance(f, list) and len(f) == 2:
+            new = by_path.get((f[0], f[1]))
+            if new is None:
+                new = by_rel.get(f[1])
+        if new is None:
+            lost.add(old)
+        return new
+
+    def pairs(rows):
+        out = []
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, list) and len(row) == 2:
+                new = mapped(row[0])
+                try:
+                    at = float(row[1])
+                except (TypeError, ValueError):
+                    continue
+                if new is not None:
+                    out.append((new, at))
+        return out
+
+    loved = pairs(data.get("loved"))
+    plays = pairs(data.get("plays"))
+    lists = []
+    for pl in data.get("playlists") if isinstance(data.get("playlists"), list) else []:
+        if isinstance(pl, dict) and str(pl.get("name") or "").strip():
+            items = [n for n in (mapped(i) for i in pl.get("items") or []) if n is not None]
+            lists.append((str(pl["name"]).strip()[:120], items, pl.get("created")))
+    con = listening()
+    with con:
+        con.execute("DELETE FROM loved")
+        con.executemany("INSERT OR REPLACE INTO loved (id, at) VALUES (?, ?)", loved)
+        con.execute("DELETE FROM plays")
+        con.executemany("INSERT INTO plays (id, at) VALUES (?, ?)", plays)
+    load_listening()
+    cutoff = time.time() - HISTORY_DAYS * 86400
+    PLAYED.clear()
+    for i, at in plays:
+        if at > cutoff and at > PLAYED.get(i, 0):
+            PLAYED[i] = at
+    save_history()
+    PLAYLISTS.clear()
+    now = time.time()
+    for n, (name, items, created) in enumerate(lists, start=1):
+        PLAYLISTS[n] = {"id": n, "name": name, "items": items, "created": created or now, "updated": now}
+    NEXT_PLAYLIST_ID = len(lists) + 1
+    save_playlists()
+    if isinstance(data.get("box_sound"), dict):
+        SESSIONS["box"].sound = box_sound.clean(data["box_sound"])
+        SESSIONS["box"].save()
+    for s in SESSIONS.values():
+        s.source, s.source_items = None, []
+    log.info("backup restored: %d playlists, %d hearts, %d plays, %d ids without their file",
+             len(lists), len(loved), len(plays), len(lost))
+    await playlists_changed()
+    await loved_changed()
+    return web.json_response({"ok": True, "playlists": len(lists), "loved": len(loved), "plays": len(plays),
+                              "missing": len(lost)})
+
+
+async def api_atv_audio(request):
+    """Web remote -> the atv-audio program: sound output and headphones (list / scan / pair / connect / disconnect /
+    forget). The program answers with an `audio_info` message, shown in the state's sink.audio."""
+    need_admin(request)
+    body = await _json_body(request)
+    op = body.get("op")
+    if op not in ("refresh", "set_output", "scan", "pair", "connect", "disconnect", "forget"):
+        raise web.HTTPBadRequest(text="unknown op")
+    sink = SINKS.get("tv")
+    if sink is None:
+        raise web.HTTPServiceUnavailable(text="atv-audio is not connected")
+    msg = {"type": "audio_cmd", "op": op}
+    for k in ("address", "output"):
+        if isinstance(body.get(k), str):
+            msg[k] = body[k][:200]
+    log.info("atv-audio: %s %s", op, msg.get("address") or msg.get("output") or "")
+    await send(sink, msg)
+    return web.json_response({"ok": True})
+
 
 
 def advertised_ip():
@@ -2422,9 +2868,10 @@ async def advertise(app):
     try:
         ip = advertised_ip()
         host = socket.gethostname().split(".")[0]
-        info = AsyncServiceInfo("_atvmedia._tcp.local.", f"ATV Player on {host}._atvmedia._tcp.local.",
+        name = re.sub(r"[.\x00-\x1f]", " ", server_name())[:50]
+        info = AsyncServiceInfo("_atvmedia._tcp.local.", f"ATV Player on {name}._atvmedia._tcp.local.",
                                 addresses=[socket.inet_aton(ip)], port=PORT, server=f"{host}.local.",
-                                properties={"url": f"http://{ip}:{PORT}", "version": VERSION})
+                                properties={"url": f"http://{ip}:{PORT}", "version": VERSION, "name": server_name()})
         zc = AsyncZeroconf(ip_version=IPVersion.V4Only)
         await zc.async_register_service(info, allow_name_change=True)
         app["zeroconf"] = (zc, info)
@@ -2457,12 +2904,14 @@ async def on_startup(app):
     load_playlists()
     load_history()
     load_listening()
+    APP_REF["app"] = app
     asyncio.create_task(run_scan())
+    asyncio.create_task(rescan_loop())
     await advertise(app)
 
 
 def make_app():
-    app = web.Application(middlewares=[api_no_store])
+    app = web.Application(middlewares=[api_no_store], client_max_size=64 * 1024 * 1024)  # backup restore
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     app.router.add_get("/", index)
@@ -2483,6 +2932,22 @@ def make_app():
     app.router.add_post("/api/playlists/{id:\\d+}/items", api_playlist_add)
     app.router.add_delete("/api/playlists/{id:\\d+}", api_playlist_delete)
     app.router.add_post("/api/rescan", api_rescan)
+    app.router.add_get("/api/settings", api_settings)
+    app.router.add_post("/api/settings/unlock", api_settings_unlock)
+    app.router.add_post("/api/settings/lock", api_settings_lock)
+    app.router.add_post("/api/settings/password", api_settings_password)
+    app.router.add_get("/api/settings/browse", api_settings_browse)
+    app.router.add_post("/api/settings/roots", api_settings_root_add)
+    app.router.add_put("/api/settings/roots/{key}", api_settings_root_update)
+    app.router.add_delete("/api/settings/roots/{key}", api_settings_root_delete)
+    app.router.add_put("/api/settings/skip", api_settings_skip)
+    app.router.add_put("/api/settings/rescan", api_settings_rescan)
+    app.router.add_put("/api/settings/server", api_settings_server)
+    app.router.add_get("/api/status", api_status)
+    app.router.add_post("/api/cache/clear", api_cache_clear)
+    app.router.add_get("/api/backup", api_backup_get)
+    app.router.add_post("/api/backup", api_backup_restore)
+    app.router.add_post("/api/atv-audio", api_atv_audio)
     app.router.add_get("/api/loudness", api_loudness)
     app.router.add_get("/api/audio_copies", api_audio_copies)
     app.router.add_post("/api/audio_copies", api_audio_copies)

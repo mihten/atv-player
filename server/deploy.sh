@@ -12,7 +12,7 @@ set -e
 id atvmedia >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin atvmedia
 python3 -c "import zeroconf" 2>/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-zeroconf >/dev/null
 EOF
-tar -czf - server.py box_sound.py scanner.py loudness.py lyrics.py atv_shot.py static systemd site | ssh "$ATV_HOST" '
+tar -czf - server.py box_sound.py settings.py scanner.py loudness.py lyrics.py atv_shot.py static systemd site | ssh "$ATV_HOST" '
 set -e
 install -d -m 755 /opt/atv-media
 tar -xzf - -C /opt/atv-media
@@ -26,9 +26,13 @@ else
 fi
 rm -rf /opt/atv-media/site
 [ -x /opt/atv-shot/venv/bin/python ] && install -m 755 /opt/atv-media/atv_shot.py /opt/atv-shot/atv-shot.py
-install -m 644 /opt/atv-media/systemd/*.service /opt/atv-media/systemd/*.timer /etc/systemd/system/
+install -m 644 /opt/atv-media/systemd/atv-media.service /etc/systemd/system/
+# server 0.18: the server schedules rescans itself (Settings -> Library); the old daily timer goes
+if [ -e /etc/systemd/system/atv-media-rescan.timer ]; then
+  systemctl disable --now atv-media-rescan.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/atv-media-rescan.timer /etc/systemd/system/atv-media-rescan.service
+fi
 systemctl daemon-reload
-systemctl enable --now atv-media-rescan.timer >/dev/null
 systemctl enable atv-media.service >/dev/null
 systemctl restart atv-media.service
 echo deployed'

@@ -410,7 +410,9 @@ def carry_over_ids(con, gone, new_keys):
     return carried
 
 
-def scan(db_path, roots, force=False):
+def scan(db_path, roots, force=False, skip=None):
+    """skip: optional skip(relpath) -> True for folders / files to leave out (settings.skip_matcher). Skipped media
+    files still count as found, so a root whose files are all skipped is empty, not offline: its items go."""
     started = time.time()
     con = connect(db_path)
     existing = {(r["root"], r["relpath"]): r for r in con.execute(
@@ -424,9 +426,20 @@ def scan(db_path, roots, force=False):
     updates = ", ".join(f"{c} = excluded.{c}" for c in COLUMNS if c not in ("root", "relpath", "added"))
     sql = (f"INSERT INTO items ({', '.join(COLUMNS)}) VALUES ({placeholders}) "
            f"ON CONFLICT(root, relpath) DO UPDATE SET {updates}")
+    skipped = 0
     for root, base in roots.items():
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            if skip:
+                rel_dir = os.path.relpath(dirpath, base)
+                if rel_dir != "." and skip(rel_dir):
+                    # a skipped folder: count its media (offline detection) but do not read it
+                    for _, _, files in os.walk(dirpath):
+                        n = sum(1 for f in files if os.path.splitext(f)[1].lower() in AUDIO_EXT | VIDEO_EXT)
+                        found[root] += n
+                        skipped += n
+                    dirnames[:] = []
+                    continue
             for name in sorted(filenames):
                 if name.startswith("."):
                     continue
@@ -436,8 +449,11 @@ def scan(db_path, roots, force=False):
                     continue
                 full = os.path.join(dirpath, name)
                 key = (root, os.path.relpath(full, base))
-                seen.add(key)
                 found[root] += 1
+                if skip and skip(key[1]):
+                    skipped += 1
+                    continue
+                seen.add(key)
                 try:
                     st = os.stat(full)
                 except OSError:
@@ -503,7 +519,7 @@ def scan(db_path, roots, force=False):
     con.execute("DELETE FROM audio_probe WHERE item_id NOT IN (SELECT id FROM items)")
     hidden = dedupe(con)
     stats = {"added": added, "updated": updated, "removed": removed, "renamed": len(renamed),
-             "renamed_ids": sorted(renamed), "failed": failed, "offline_roots": offline,
+             "renamed_ids": sorted(renamed), "failed": failed, "offline_roots": offline, "skipped": skipped,
              "hidden_duplicates": hidden, "seconds": round(time.time() - started, 1),
              "finished_at": time.time()}
     con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_scan', ?)", (json.dumps(stats),))
