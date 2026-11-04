@@ -1944,6 +1944,18 @@ async def run(cfg):
             sink.wake("active again")
             await take_headphones()
             sink.log("active: headphones requested")
+            asyncio.ensure_future(take_retry())
+
+    async def take_retry():
+        """The other program may free the headphones late (or they were still busy): ask again every 5 s for 30 s
+        while this one is active, has none and was not disconnected on purpose."""
+        for _ in range(6):
+            await asyncio.sleep(5.0)
+            if standby["on"] or sink.output_ok or sink.released:
+                return
+            sink.log("active: still no headphones, asking again")
+            with contextlib.suppress(Exception):
+                await take_headphones()
 
     async def standby_guard():
         """In standby the headphones must not stay here (they reconnect to known devices on power-on): after 5 s

@@ -1029,6 +1029,7 @@ async def sink_activate(s, sid):
         if last is not None:
             await send(ws, last)
     PREFETCHED.pop(s.kind, None)  # queue copies for what plays now
+    await send(ws, {"type": "standby", "on": False})  # active: it takes the headphones (after the replay above)
     await broadcast_state(s)
 
 
