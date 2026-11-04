@@ -940,7 +940,7 @@ class ArgsTest(unittest.TestCase):
 
     def test_mpv_args_and_urls(self):
         cfg = A.Config({"ATV_AUDIO_SERVER": "https://media.example:8443/"})
-        self.assertEqual(cfg.ws_url, "wss://media.example:8443/ws?role=sink&session=tv")
+        self.assertEqual(cfg.ws_url, "wss://media.example:8443/ws?role=sink&session=tv&id=atv-audio")
         self.assertEqual(cfg.media_url(5), "https://media.example:8443/media/5?audio=main")
         args = A.mpv_args(cfg, "/run/x.sock")
         for a in ("--no-video", "--idle=yes", "--audio-pitch-correction=no", "--keep-open=always",

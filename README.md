@@ -135,6 +135,22 @@ With an ALSA output it can also run as a system unit (see the comments in `atv-a
 
 `ATV_AUDIO_NAME` is the name shown on the TV (default `atv-audio`).
 
+### Two atv-audio programs (e.g. a dongle and built-in Bluetooth)
+
+Several sink programs may connect to one server, each with its own `ATV_AUDIO_ID`. One is active; the others wait
+in standby (they close their output and hand the headphones over). Settings → atv-audio → **Sound goes to**
+switches: the active one frees the headphones first, then the chosen one connects them and continues where the
+queue or the Apple TV is (a few seconds of silence). The choice is kept across restarts. Use
+`ATV_AUDIO_VOLUME=mpv` on a PipeWire/BlueZ program so both have the same volume control (output pinned at 100 %,
+the slider is mpv's volume, as with a dongle).
+
+**Blind test** (Settings → atv-audio, needs exactly two programs): build a list from the songs you choose (play,
+pause where the excerpt should start, "Add current song"), set excerpt length and trials per song, Start. Each
+trial plays the same excerpt through A and B (the two programs in random order, the same fixed switch time
+before each, `ATV_ABTEST_GAP` seconds, default 10); vote A better / B better / Same, or replay A / B. The status
+line and settings hide which program plays until the end; the result lists every trial, the totals and an exact
+binomial p-value, and is saved in the server's data folder (`abtest-<time>.json`).
+
 ### Sennheiser BTD 700 dongle
 
 A plain USB dongle tells Linux nothing about the headphones. The BTD 700 does, over its HID interface

@@ -20,6 +20,10 @@ Environment (see env.example):
                     codec, connect / disconnect and buttons through the dongle (btd700.py); the dongle's own
                     volume is set to 0 dB, the volume control is mpv's (set the headphones to their maximum)
   ATV_AUDIO_STATE   directory for small state (mpv's volume with an ALSA output); default $STATE_DIRECTORY (systemd)
+  ATV_AUDIO_ID      this program's id when several atv-audio programs share one server (default = ATV_AUDIO_NAME);
+                    the server keeps one active, the others in standby (headphones handed over on a switch)
+  ATV_AUDIO_VOLUME  output (default: PipeWire / Pulse set the output's own volume = Bluetooth absolute volume) or
+                    mpv (the slider is mpv's volume, the output is pinned at 100 %: same behaviour as a dongle)
 
 Run: python3 atv_audio.py
 """
@@ -74,16 +78,18 @@ class Config:
         self.buttons = (env.get("ATV_AUDIO_BUTTONS") or "1") not in ("0", "no", "off", "false")
         self.dongle = env.get("ATV_AUDIO_DONGLE") or ""
         self.state_dir = env.get("ATV_AUDIO_STATE") or env.get("STATE_DIRECTORY") or ""
+        self.id = re.sub(r"[^A-Za-z0-9_.-]", "", env.get("ATV_AUDIO_ID") or self.name)[:40] or "atv-audio"
+        self.volume_mode = "mpv" if (env.get("ATV_AUDIO_VOLUME") or "").lower() == "mpv" else "output"
 
     @property
     def ws_url(self):
         base = re.sub(r"^http", "ws", self.server)
-        return f"{base}/ws?role=sink&session=tv"
+        return f"{base}/ws?role=sink&session=tv&id={self.id}"
 
     @property
     def box_ws_url(self):
         base = re.sub(r"^http", "ws", self.server)
-        return f"{base}/ws?role=player&kind=box"
+        return f"{base}/ws?role=player&kind=box&sink={self.id}"
 
     def media_url(self, item_id):
         return f"{self.server}/media/{item_id}?audio=main"
@@ -1363,6 +1369,7 @@ class Router:
     owner's last state into the Sink, so the Sink's TV logic stays as it is."""
 
     def __init__(self, sink):
+        self.on_standby = None  # (on): the server made this program the standby / active one
         self.sink = sink
         self.owner = "tv"
         self.tv_last = {}
@@ -1388,6 +1395,10 @@ class Router:
 
     async def from_tv(self, msg):
         t = msg.get("type")
+        if t == "standby":
+            if self.on_standby:
+                self.on_standby(bool(msg.get("on")))
+            return
         if t == "audio_cmd":
             if self.audio:
                 # its own task: a dongle disconnect waits seconds for the stream to close, the TV's clocks must not
@@ -1822,10 +1833,10 @@ async def run(cfg):
     router.audio = audio
     if buttons:
         buttons.on_bt = audio.on_bt
-    if outputs.has_pactl:
+    if outputs.has_pactl and cfg.volume_mode != "mpv":
         sink.volume_backend = outputs.set_volume
     else:
-        sink.load_volume()
+        sink.load_volume()  # mpv's own volume (a dongle, or ATV_AUDIO_VOLUME=mpv: the output pinned at 100 %)
     early = []
     if cfg.dongle:
         import btd700
@@ -1856,6 +1867,9 @@ async def run(cfg):
                     box.want_play = False
                     box.report(force=True)
             await sink.release("headphones disconnected from the web remote")
+            await stream_closed()
+
+        async def stream_closed():
             # the dongle connects the headphones again while it still streams: wait until the sound device is
             # closed and the dongle has left "streaming", then a short settle, before it is told to disconnect
             closed = await wait_until(lambda: alsa_playback_open(cfg.output) is not True, 3.0)
@@ -1872,7 +1886,81 @@ async def run(cfg):
         early.append(asyncio.create_task(dongle.run()))
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(dongle.first.wait(), 3.0)  # report the headphones' real state from the start
+    standby = {"on": False, "here_since": None, "kicked": -1e9, "last_bt": None}
+
+    def bt_devices():
+        return [d for d in ((audio.bt or {}).get("devices") or []) if d.get("paired") and d.get("audio")]
+
+    async def free_headphones(why):
+        """Hand the headphones to the other program: disconnect them from this side."""
+        if dongle is not None:
+            if dongle.present and dongle.ready:
+                await stream_closed()
+                await dongle.connect(False)
+        elif buttons:
+            for d in bt_devices():
+                if d.get("connected"):
+                    standby["last_bt"] = d["address"]
+                    buttons.bt("disconnect", d["address"])
+        sink.log(f"standby: headphones freed ({why})")
+
+    async def take_headphones():
+        if dongle is not None:
+            if dongle.present and not dongle.ready:
+                await dongle.connect(True)
+        elif buttons and not sink.output_ok:
+            devs = bt_devices()
+            addr = standby["last_bt"] or (devs[0]["address"] if devs else None)
+            if addr:
+                buttons.bt("connect", addr)
+
+    async def on_standby(on):
+        if on == standby["on"]:
+            return
+        standby["on"], standby["here_since"] = on, None
+        if on:
+            if box:
+                box.want_play = False
+                box.report(force=True)
+            await sink.release("standby: the other atv-audio program is active")
+            await free_headphones("switch")
+        else:
+            sink.wake("active again")
+            await take_headphones()
+            sink.log("active: headphones requested")
+
+    async def standby_guard():
+        """In standby the headphones must not stay here (they reconnect to known devices on power-on): after 5 s
+        here, send them away again (at most every 15 s)."""
+        while True:
+            await asyncio.sleep(1.0)
+            if not standby["on"] or not sink.output_ok:
+                standby["here_since"] = None
+                continue
+            now = time.monotonic()
+            if standby["here_since"] is None:
+                standby["here_since"] = now
+            elif now - standby["here_since"] >= 5 and now - standby["kicked"] >= 15:
+                standby["kicked"] = now
+                with contextlib.suppress(Exception):
+                    await free_headphones("they connected here while in standby")
+
+    router.on_standby = lambda on: asyncio.ensure_future(on_standby(on))
+    early.append(asyncio.create_task(standby_guard()))
+    pinned = {"key": None}
+
+    async def pin_output_volume():
+        """ATV_AUDIO_VOLUME=mpv: the output's own volume (Bluetooth absolute volume) at 100 % whenever a new output
+        appears, so mpv's volume (the slider) is the only one, as with a dongle."""
+        if cfg.volume_mode == "mpv" and outputs.has_pactl and outputs.key and outputs.key != pinned["key"]:
+            pinned["key"] = outputs.key
+            ok = await outputs.set_volume(100, False)
+            sink.log(f"output volume pinned at 100 % ({'ok' if ok else 'failed'})")
+        elif not outputs.key:
+            pinned["key"] = None
+
     sink.set_output(await outputs.detect())
+    await pin_output_volume()
     if outputs.no_tool:
         log("pactl not available: output status not detected")
     proc = MpvProcess(cfg, sink)
@@ -1883,6 +1971,7 @@ async def run(cfg):
             try:
                 if sink.set_output(await outputs.detect()):
                     await sink.tick()
+                await pin_output_volume()
                 audio.update()
             except Exception as e:
                 log(f"output check: {e!r}")

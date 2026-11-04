@@ -250,6 +250,16 @@ textarea.set-in { min-height: 96px; resize: vertical; font-family: ui-monospace,
 .set-kv b { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
 .set-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink3); flex: none; }
 .set-dot.on { background: #4cd964; }
+.abt-big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.abt-big .pill { justify-content: center; padding: 14px 10px; font-size: 15px; }
+.abt-win { font-weight: 600; overflow-wrap: anywhere; }
+.abt-phase { font: 700 22px/1.2 var(--font); text-align: center; padding: 12px 0 4px; }
+.abt-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; color: var(--ink2); }
+.abt-tbl td, .abt-tbl th { padding: 5px 4px; border-bottom: 1px solid var(--card-line); text-align: left; vertical-align: top; }
+.abt-tbl th { color: var(--ink3); font-weight: 600; }
+.abt-pos { width: 64px; flex: none; padding: 6px 8px; }
+.abt-opts { display: grid; grid-template-columns: max-content 72px; gap: 6px 10px; align-items: center; font-size: 13px; color: var(--ink2); }
+.abt-opts .set-in { padding: 6px 8px; }
 .set-row .ib { flex: none; }
 .sheet [hidden] { display: none !important; }
 .sheet > div { grid-template-columns: minmax(0, 1fr); }  /* one column that may shrink: long paths ellipsize */
@@ -1579,7 +1589,7 @@ async function audioSheet() {
   const draw = async () => {
     if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-audio-sheet]")) { clearInterval(audioPoll); audioPoll = null; return; }
     let s; try { s = await (await fetch("/api/state?session=box")).json(); } catch { return; }
-    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output]);
+    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks]);
     if (key === lastKey) return;
     lastKey = key;
     const outs = (a.outputs || []).map((o) => `<option value="${esc(o.key)}"${o.default ? " selected" : ""}>${esc(o.name)}${o.codec ? ` (${esc(codecLabel(o.codec))})` : ""}</option>`).join("");
@@ -1593,8 +1603,13 @@ async function audioSheet() {
       (d.paired ? `<button class="pill" data-a="${d.connected ? "disconnect" : "connect"}" data-addr="${esc(d.address)}">${d.connected ? "Disconnect" : "Connect"}</button>` +
         `<button class="ib" data-a="forget" data-addr="${esc(d.address)}" title="Forget">${ic("trash")}</button>`
         : `<button class="pill primary" data-a="pair" data-addr="${esc(d.address)}">Pair</button>`) + `</div>`).join("");
-    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">atv-audio</div>` +
-      (!k.connected ? `<div class="set-hint">atv-audio is not running.</div>` :
+    const progs = k.sinks || [];
+    const progRows = progs.length > 1 ? sec("Sound goes to") + progs.map((p) => `<div class="set-row"><span class="set-dot${p.ready ? " on" : ""}"></span>` +
+      `<div class="set-main"><div class="set-t">${esc(p.name)}${p.codec ? ` · ${esc(codecLabel(p.codec))}` : ""}</div><div class="set-s">${esc(p.id)}</div></div>` +
+      (p.active ? `<span class="set-s">In use</span>` : `<button class="pill" data-a="use" data-sink="${esc(p.id)}">Use</button>`) + `</div>`).join("") +
+      `<div class="set-btns"><button class="pill" data-a="abtest">${ic("speaker")} Blind test</button><span class="grow"></span></div>` : "";
+    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">atv-audio</div>` + progRows +
+      (!k.connected ? `<div class="set-hint">${progs.length ? "Switching…" : "atv-audio is not running."}</div>` :
         (a.can_outputs ? sec("Sound output") + `<select class="pill" id="aOut" style="max-width:none" aria-label="Sound output">${outs}</select>` : "") +
         sec("Headphones") + (dg ? dongle : a.can_bluetooth ? (devs || `<div class="set-hint">No headphones paired yet.</div>`) +
           `<div class="set-btns"><button class="pill" data-a="scan"${a.scanning ? " disabled" : ""}>${a.scanning ? "Looking…" : "Find headphones"}</button><span class="grow"></span></div>` +
@@ -1608,6 +1623,8 @@ async function audioSheet() {
   openSheet(`<div class="st" data-audio-sheet="1">atv-audio</div><div class="set-hint">Loading…</div>`, (e) => {
     const b = e.target.closest("[data-a]"); if (!b) return;
     if (b.dataset.a === "back") { clearInterval(audioPoll); audioPoll = null; return settingsMenu(); }
+    if (b.dataset.a === "abtest") { clearInterval(audioPoll); audioPoll = null; return abSheet(); }
+    if (b.dataset.a === "use") { b.disabled = true; toast("Moving the headphones…"); return audioCmd({ op: "set_sink", sink: b.dataset.sink }); }
     if (b.dataset.a === "forget" && !confirm("Forget these headphones? They have to be paired again.")) return;
     b.disabled = true; audioCmd({ op: b.dataset.a, address: b.dataset.addr });
   });
@@ -1639,6 +1656,88 @@ function drawHeadphones(s) {
   $("bconnBtn").disabled = !!a.busy;
   $("bconnBtn").onclick = async () => { $("bconnBtn").disabled = true;
     try { await sapi("POST", "/api/atv-audio", { op: d.connected ? "disconnect" : "connect", address: d.address }); } catch { $("bconnBtn").disabled = false; } };
+}
+
+/* Blind A/B test of the two atv-audio programs: his own list of excerpts (localStorage), then trials driven by the
+   server (it switches the programs and hides which one plays); A better / B better / Same, Replay A / B. */
+const abList = () => { try { return JSON.parse(localStorage.getItem("atvAbList") || "[]"); } catch { return []; } };
+const abSave = (l) => localStorage.setItem("atvAbList", JSON.stringify(l));
+const abOpts = () => { try { return Object.assign({ length: 30, per: 2, shuffle: false }, JSON.parse(localStorage.getItem("atvAbOpts") || "{}")); } catch { return { length: 30, per: 2, shuffle: false }; } };
+const parseTime = (t) => { const p = String(t).trim().split(":").map(Number); if (p.some(isNaN)) return null; return p.reduce((a, x) => a * 60 + x, 0); };
+let abPoll = null;
+async function abSheet() {
+  await loadCfg(); if (lockedNow()) return unlockSheet(abSheet);
+  let last = null;
+  const draw = async () => {
+    if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-ab-sheet]")) { clearInterval(abPoll); abPoll = null; return; }
+    let t; try { t = await (await fetch("/api/abtest")).json(); } catch { return; }
+    const key = JSON.stringify(t) + JSON.stringify(abList());
+    if (key === last) return;
+    last = key;
+    $("sheetBody").innerHTML = `<div class="st" data-ab-sheet="1">Blind test</div>` + (t.running ? abRunning(t) : t.result || t.error ? abDone(t) : abSetup(t));
+  };
+  openSheet(`<div class="st" data-ab-sheet="1">Blind test</div><div class="set-hint">Loading…</div>`, async (e) => {
+    const b = e.target.closest("[data-ab]"); if (!b) return;
+    const a = b.dataset.ab, l = abList();
+    if (a === "back") { clearInterval(abPoll); abPoll = null; return audioSheet(); }
+    if (a === "add") {
+      let s; try { s = await (await fetch("/api/state?session=box")).json(); } catch { return; }
+      if (!s.current) return toast("Play a song in the atv-audio queue first");
+      const pos = s.position + (s.playing ? Date.now() / 1000 - s.position_at : 0);
+      l.push({ id: s.current.id, title: `${s.current.artist ? s.current.artist + " – " : ""}${s.current.title}`, start: Math.max(0, Math.floor(pos)) });
+      abSave(l); toast("Added from " + fmt(pos)); last = null; return draw();
+    }
+    if (a === "rm") { l.splice(+b.dataset.i, 1); abSave(l); last = null; return draw(); }
+    if (a === "start") {
+      const o = { length: Math.max(5, Math.min(120, +$("abLen").value || 30)), per: Math.max(1, Math.min(4, +$("abPer").value || 2)), shuffle: $("abShuf").checked };
+      $("sheetBody").querySelectorAll(".abt-pos").forEach((inp) => { const v = parseTime(inp.value); if (v !== null) l[+inp.dataset.i].start = v; });
+      abSave(l); localStorage.setItem("atvAbOpts", JSON.stringify(o));
+      if (!l.length) return toast("Add at least one song");
+      b.disabled = true;
+      try { await sapi("POST", "/api/abtest", { op: "start", items: l.map((x) => ({ id: x.id, start: x.start })), length: o.length, per_song: o.per, shuffle: o.shuffle }, abSheet); } catch { b.disabled = false; }
+      last = null; return draw();
+    }
+    if (["a", "b", "same"].includes(a)) { b.disabled = true; try { await sapi("POST", "/api/abtest", { op: "vote", choice: a }); } catch { /* toast shown */ } last = null; return draw(); }
+    if (a === "ra" || a === "rb") { try { await sapi("POST", "/api/abtest", { op: "replay", which: a === "ra" ? "a" : "b" }); } catch { /* toast shown */ } last = null; return draw(); }
+    if (a === "stop" && confirm("Stop the blind test? Votes so far are kept.")) { await sapi("POST", "/api/abtest", { op: "stop" }); last = null; return draw(); }
+    if (a === "again") { await sapi("POST", "/api/abtest", { op: "clear" }); last = null; return draw(); }
+  });
+  clearInterval(abPoll); abPoll = setInterval(draw, 700); draw();
+}
+function abSetup(t) {
+  const l = abList(), o = abOpts();
+  const rows = l.map((x, i) => `<div class="set-row"><div class="set-main"><div class="set-t">${esc(x.title)}</div><div class="set-s">excerpt from</div></div>` +
+    `<input class="set-in abt-pos" data-i="${i}" value="${fmt(x.start)}" aria-label="Start"><button class="ib" data-ab="rm" data-i="${i}" title="Remove">${ic("trash")}</button></div>`).join("");
+  return `<div class="set-hint">Play a song in the atv-audio queue, pause where the excerpt should start, then "Add current song" (the start can be edited). Both outputs play the same excerpt in random order (A and B); you never see which is which until the end. The headphones move between them by themselves.</div>` +
+    sec("Songs") + (rows || `<div class="set-hint">No songs yet.</div>`) +
+    `<div class="set-btns"><button class="pill" data-ab="add">${ic("plus")} Add current song</button></div>` +
+    sec("Trials") + `<div class="abt-opts"><label for="abLen">Excerpt (seconds)</label><input class="set-in" id="abLen" inputmode="numeric" value="${o.length}">` +
+    `<label for="abPer">Trials per song</label><input class="set-in" id="abPer" inputmode="numeric" value="${o.per}">` +
+    `<label for="abShuf">Shuffle the order</label><input type="checkbox" id="abShuf"${o.shuffle ? " checked" : ""}></div>` +
+    (t.programs !== 2 ? `<div class="set-err">Needs both atv-audio programs connected (${t.programs} now).</div>` : "") +
+    `<div class="set-btns"><button class="pill" data-ab="back">Back</button><span class="grow"></span><button class="pill primary" data-ab="start"${t.programs !== 2 || !l.length ? " disabled" : ""}>Start ${l.length ? `(${l.length * o.per} trials)` : ""}</button></div>`;
+}
+function abRunning(t) {
+  const ph = t.phase || "";
+  const label = { starting: "Starting…", switch_a: "Switching…", play_a: "Playing A", switch_b: "Switching…", play_b: "Playing B", vote: "Which sounded better?", finishing: "Finishing…" }[ph] || "…";
+  const vote = ph === "vote";
+  return `<div class="set-s" style="text-align:center">Trial ${t.trial} of ${t.total} · ${esc(t.title || "")} · from ${fmt(t.start)} · ${Math.round(t.length || 0)} s</div>` +
+    `<div class="abt-phase">${label}</div>` +
+    `<div class="abt-big"><button class="pill primary" data-ab="a"${vote ? "" : " disabled"}>A better</button><button class="pill primary" data-ab="b"${vote ? "" : " disabled"}>B better</button></div>` +
+    `<div class="set-btns" style="justify-content:center"><button class="pill" data-ab="same"${vote ? "" : " disabled"}>Same</button><button class="pill" data-ab="ra"${vote ? "" : " disabled"}>Replay A</button><button class="pill" data-ab="rb"${vote ? "" : " disabled"}>Replay B</button></div>` +
+    `<div class="set-btns"><span class="grow"></span><button class="pill" data-ab="stop">Stop test</button></div>`;
+}
+function abDone(t) {
+  const r = t.result;
+  if (!r) return `<div class="set-err">${esc(t.error || "Stopped")}</div><div class="set-btns"><button class="pill" data-ab="again">New test</button><span class="grow"></span><button class="pill" data-ab="back">Back</button></div>`;
+  const vote = (x) => x.vote === "same" ? "same" : x.vote ? x.vote.toUpperCase() : "—";
+  const wins = Object.entries(r.wins).map(([k, v]) => `<div class="abt-win">${esc(k)}: ${v}</div>`).join("") || `<div class="set-s">No preference voted.</div>`;
+  const p = r.p == null ? "" : r.p <= 0.05 ? `p = ${r.p}: unlikely to be chance.` : `p = ${r.p}: could be chance (guessing gives a split like this ${Math.round(r.p * 100)} % of the time).`;
+  return (t.error ? `<div class="set-err">${esc(t.error)}</div>` : "") + sec("Result") + wins +
+    `<div class="set-hint">Same: ${r.same} · decided: ${r.decided}. ${esc(p)}</div>` + sec("Trials") +
+    `<table class="abt-tbl"><tr><th>#</th><th>Song</th><th>A</th><th>B</th><th>Vote</th><th>Preferred</th></tr>` +
+    r.rows.map((x, i) => `<tr><td>${i + 1}</td><td>${esc(x.title)} (${fmt(x.start)})</td><td>${esc(x.a)}</td><td>${esc(x.b)}</td><td>${vote(x)}</td><td>${esc(x.better || "—")}</td></tr>`).join("") + `</table>` +
+    `<div class="set-btns"><button class="pill" data-ab="again">New test</button><span class="grow"></span><button class="pill" data-ab="back">Back</button></div>`;
 }
 
 /* Server: status, name, optional admin password, audio-copy cache */

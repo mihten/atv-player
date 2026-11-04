@@ -11,10 +11,12 @@
   WebSocket; nothing polls.
 """
 import asyncio
+import contextlib
 import datetime
 import hashlib
 import json
 import logging
+import math
 import mimetypes
 import os
 import random
@@ -49,7 +51,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.18.1"
+VERSION = "0.19.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -71,6 +73,16 @@ RELAY_TYPES = ("route", "sound", "lip_sync", "clock", "volume")  # TV -> sink, r
 SINK_RELAY: dict = {}  # session kind -> {type: last message of that type from its TV}
 SINK_LOGGED: dict = {}  # session kind -> the last output line logged
 SINK_AUDIO: dict = {}  # session kind -> the sink's last audio_info (outputs, headphones; Settings -> atv-audio)
+# Several atv-audio programs (e.g. a USB dongle box and a built-in Bluetooth box) may connect, each with its own id
+# (/ws?role=sink&id=...). One is ACTIVE: it is SINKS["tv"] and its box player is a normal player of session "box";
+# the others are in standby (told so, get nothing else, their messages are dropped). ACTIVE_SINK keeps the chosen id
+# while that program is away (a restart), so the output never moves by itself.
+SINK_POOL: dict = {}  # sink id -> {"ws", "name", "output", "audio"}
+SINK_IDS: dict = {}  # sink ws -> sink id
+BOX_OF: dict = {}  # sink id -> the box player ws of that program
+BOX_SINK: dict = {}  # box player ws -> sink id
+ACTIVE_SINK: dict = {"id": None}
+SWITCH_LOCK = asyncio.Lock()
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
 SUMMARY_KEYS = ("id", "kind", "title", "artist", "album", "folder", "root", "duration", "lossless",
@@ -801,11 +813,28 @@ async def to_players(s, msg):
 def sink_state(kind):
     # route: the TV's Sound output is atv-audio (its last route message; false once the TV is gone)
     route = bool((SINK_RELAY.get(kind, {}).get("route") or {}).get("sink"))
+    sinks = sinks_list()
     if SINKS.get(kind) is None:
-        return {"connected": False, "name": None, "output": None, "route": route, "audio": None}
+        return {"connected": False, "name": None, "output": None, "route": route, "audio": None, "sinks": sinks}
     info = SINK_INFO.get(kind) or {}
-    return {"connected": True, "name": info.get("name"), "output": info.get("output"), "route": route,
-            "audio": SINK_AUDIO.get(kind)}
+    out, audio = info.get("output"), SINK_AUDIO.get(kind)
+    if ABTEST["running"]:  # blind test: nothing may tell which output plays
+        out = dict(out, name="Blind test", codec=None) if out else out
+        audio = None
+    return {"connected": True, "name": info.get("name"), "output": out, "route": route, "audio": audio,
+            "sinks": sinks}
+
+
+def sinks_list():
+    """Every connected atv-audio program: [{id, name, codec, ready, active}] (hidden during a blind test)."""
+    if ABTEST["running"]:
+        return []
+    out = []
+    for sid, p in sorted(SINK_POOL.items()):
+        o = p.get("output") or {}
+        out.append({"id": sid, "name": o.get("name") or sid, "codec": o.get("codec"), "ready": bool(o.get("ready")),
+                    "active": sid == ACTIVE_SINK["id"]})
+    return out
 
 
 def clean_audio_info(data):
@@ -948,14 +977,49 @@ def pong(data):
     return {"type": "pong", "n": data.get("n"), "t": time.monotonic()}
 
 
-async def sink_connected(s, ws):
-    old = SINKS.get(s.kind)
+async def sink_connected(s, ws, sid="atv-audio"):
+    """A sink program connected: the active one (the chosen id, or the first while none is chosen) takes over
+    SINKS["tv"]; any other waits in standby. The same id again = that program restarted: the old ws is dropped."""
+    prev = SINK_POOL.get(sid)
+    SINK_POOL[sid] = {"ws": ws, "name": None, "output": None, "audio": None}
+    SINK_IDS[ws] = sid
+    if prev is not None and prev["ws"] is not ws:
+        log.info("sink %s replaced by a new connection", sid)
+        SINK_IDS.pop(prev["ws"], None)
+        asyncio.create_task(prev["ws"].close(message=b"replaced"))
+    active, chosen = ACTIVE_SINK["id"], SETTINGS.data.get("active_sink")
+    if active is None or active == sid:
+        await sink_activate(s, sid)
+    else:
+        bws = BOX_OF.get(sid)
+        if bws is not None:
+            PLAYERS.pop(bws, None)
+        await send(ws, {"type": "standby", "on": True})
+        log.info("sink %s in standby (active: %s)", sid, active)
+        if sid == chosen and not ABTEST["running"]:
+            asyncio.create_task(switch_sink(sid))  # the chosen one is back (e.g. after a restart): it takes over
+        await broadcast_state(s)
+        await broadcast_state(SESSIONS["box"])
+
+
+async def sink_activate(s, sid):
+    """Make the connected sink `sid` THE sink (SINKS["tv"]) and replay what it needs, as on a fresh connect."""
+    ws = SINK_POOL[sid]["ws"]
+    ACTIVE_SINK["id"] = sid
     SINKS[s.kind] = ws
-    SINK_INFO.pop(s.kind, None)
+    p = SINK_POOL[sid]
+    if p.get("output") is not None or p.get("name") is not None:
+        SINK_INFO[s.kind] = {"name": p.get("name"), "output": p.get("output")}
+    else:
+        SINK_INFO.pop(s.kind, None)
+    if p.get("audio") is not None:
+        SINK_AUDIO[s.kind] = p["audio"]
+    else:
+        SINK_AUDIO.pop(s.kind, None)
     SINK_LOGGED.pop(s.kind, None)
-    if old is not None:
-        log.info("sink (%s) replaced by a new connection", s.kind)
-        asyncio.create_task(old.close(message=b"replaced"))
+    box_ws = BOX_OF.get(sid)
+    if box_ws is not None and box_ws not in PLAYERS:
+        await box_player_join(box_ws)
     await send(ws, {"type": "state", "state": s.to_dict()})
     if s.current and file_exists(s.current):
         await send(ws, load_message(s, s.want_play, s.position))
@@ -969,11 +1033,22 @@ async def sink_connected(s, ws):
 
 async def sink_message(s, ws, data):
     kind = data.get("type")
-    if SINKS.get(s.kind) is not ws and kind != "ping":  # a replaced sink's late messages
-        return
+    sid = SINK_IDS.get(ws)
     if kind == "ping":
         await send(ws, pong(data))
-    elif kind == "sink":
+        return
+    if sid is not None and kind == "sink":
+        SINK_POOL[sid].update(name=str(data.get("name") or "")[:120] or None, output=clean_output(data.get("output")))
+        SINK_WAKE.set()
+    elif sid is not None and kind == "audio_info":
+        SINK_POOL[sid]["audio"] = clean_audio_info(data)
+    if SINKS.get(s.kind) is not ws:  # a standby sink (or a replaced one): only its status counts, and its log
+        if kind == "log" and sid is not None:
+            log.info("sink[%s standby]: %s", sid, str(data.get("message"))[:1500])
+        elif kind in ("sink", "audio_info"):
+            await broadcast_state(SESSIONS["box"])
+        return
+    if kind == "sink":
         SINK_INFO[s.kind] = {"name": str(data.get("name") or "")[:120] or None, "output": clean_output(data.get("output"))}
         out = SINK_INFO[s.kind]["output"]
         if out and out["ready"] and "volume" in out:  # a reconnecting sink gets the last volume again
@@ -1005,6 +1080,278 @@ async def relay_to_sink(s, data):
     sink = SINKS.get(s.kind)
     if sink is not None:
         await send(sink, data)
+
+
+# ---------------------------------------------------------------- several atv-audio programs: switch + blind test
+SINK_WAKE = asyncio.Event()  # set on every sink status message (switch_sink waits for headphones free / taken)
+SWITCH_FREE_WAIT = 8.0  # s at most for the old program to free the headphones
+SWITCH_TAKE_WAIT = 12.0  # s at most for the new one to have them
+
+
+def clean_sink_id(v):
+    return re.sub(r"[^A-Za-z0-9_.-]", "", str(v or ""))[:40] or "atv-audio"
+
+
+async def wait_sink(sid, ready, timeout):
+    """Until program `sid` reports its output ready (True) / not ready (False); False on timeout or when it is gone."""
+    end = time.monotonic() + timeout
+    while True:
+        p = SINK_POOL.get(sid)
+        if p is None:
+            return False
+        if bool((p.get("output") or {}).get("ready")) == ready:
+            return True
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        SINK_WAKE.clear()
+        try:
+            await asyncio.wait_for(SINK_WAKE.wait(), min(left, 0.5))
+        except asyncio.TimeoutError:
+            pass
+
+
+async def box_player_join(ws):
+    """The active program's box player becomes THE box player: state, sound and the current item (resumes if the
+    box was playing)."""
+    box = SESSIONS["box"]
+    PLAYERS[ws] = "box"
+    await send(ws, {"type": "state", "state": box.to_dict()})
+    if box.current and await ensure_current_file(box):
+        await send(ws, box_sound.message(box.sound, box.current))
+        play = box.want_play and not ABTEST["running"] and not tv_owns_output()
+        await send(ws, load_message(box, play, box.position))
+
+
+async def switch_sink(new_sid, gap=None, persist=True):
+    """Move atv-audio's output to program `new_sid`: the old one goes to standby and frees the headphones FIRST
+    (headphones with two-device multipoint have room for only one of them next to a phone), then the new one takes them and
+    gets the current state. gap: the switch takes exactly this long (blind test: timing must not tell). Returns
+    the real duration (s) or None when `new_sid` is not connected."""
+    async with SWITCH_LOCK:
+        t0 = time.monotonic()
+        if new_sid not in SINK_POOL:
+            return None
+        if persist and SETTINGS.data.get("active_sink") != new_sid:
+            SETTINGS.data["active_sink"] = new_sid
+            SETTINGS.save()
+        tv, box = SESSIONS["tv"], SESSIONS["box"]
+        old_sid, old_ws = ACTIVE_SINK["id"], SINKS.get("tv")
+        if old_sid != new_sid or old_ws is None:
+            log.info("atv-audio: switching %s -> %s", old_sid, new_sid)
+            box_pos = live_position(box)
+            if old_ws is not None and old_sid != new_sid:
+                bws = BOX_OF.get(old_sid)
+                if bws is not None:
+                    PLAYERS.pop(bws, None)
+                SINKS.pop("tv", None)
+                SINK_INFO.pop("tv", None)
+                SINK_AUDIO.pop("tv", None)
+                PREFETCHED.pop("tv", None)
+                await send(old_ws, {"type": "standby", "on": True})
+                if not await wait_sink(old_sid, False, SWITCH_FREE_WAIT):
+                    log.warning("atv-audio: %s did not free the headphones within %d s", old_sid, SWITCH_FREE_WAIT)
+            box.position, box.position_at = box_pos, time.time()
+            ACTIVE_SINK["id"] = new_sid
+            await send(SINK_POOL[new_sid]["ws"], {"type": "standby", "on": False})
+            if not await wait_sink(new_sid, True, SWITCH_TAKE_WAIT):
+                log.warning("atv-audio: %s has no headphones after %d s", new_sid, SWITCH_TAKE_WAIT)
+            if new_sid in SINK_POOL:
+                await sink_activate(tv, new_sid)
+            await broadcast_state(box)
+        took = time.monotonic() - t0
+        if gap is not None:
+            if took > gap:
+                log.warning("blind test: switch took %.1f s, longer than the fixed %.1f s", took, gap)
+            await asyncio.sleep(max(0.0, gap - took))
+        log.info("atv-audio: %s active (switch %.1f s)", new_sid, took)
+        return took
+
+
+# Blind A/B test (web remote, atv-audio queue): his own list of excerpts; each trial plays one excerpt through
+# A and B (the two programs in random order, same fixed switch time before each), he votes A / B / same.
+ABTEST: dict = {"running": False, "phase": None, "trial": 0, "trials": [], "result": None, "error": None}
+ABTEST_GAP = float(os.environ.get("ATV_ABTEST_GAP") or 10)
+AB: dict = {"task": None, "status": None, "status_evt": asyncio.Event(), "evt": asyncio.Event(), "vote": None,
+            "replay": None}
+
+
+def abtest_status(ws, data):
+    if BOX_SINK.get(ws) == ACTIVE_SINK["id"]:
+        AB["status"] = data
+        AB["status_evt"].set()
+
+
+def sink_label(sid):
+    o = (SINK_POOL.get(sid) or {}).get("output") or {}
+    codec = {"aptx_hd": "aptX HD", "aptx_adaptive": "aptX Adaptive", "aptx": "aptX", "sbc": "SBC", "ldac": "LDAC"}.get(
+        o.get("codec") or "", o.get("codec") or "")
+    return f"{o.get('name') or sid}{' · ' + codec if codec else ''} ({sid})"
+
+
+def binomial_p(k, n):
+    """Two-sided exact binomial test against 50 %: chance of a split at least this uneven by guessing."""
+    if n == 0:
+        return 1.0
+    k = max(k, n - k)
+    tail = sum(math.comb(n, i) for i in range(k, n + 1)) / 2 ** n
+    return min(1.0, 2 * tail if k * 2 != n else 1.0)
+
+
+def abtest_result(trials, labels):
+    rows, wins = [], {}
+    for t in trials:
+        v = t.get("vote")
+        better = t["a"] if v == "a" else t["b"] if v == "b" else None
+        if better:
+            wins[better] = wins.get(better, 0) + 1
+        rows.append({"title": t["title"], "start": t["start"], "a": labels[t["a"]], "b": labels[t["b"]],
+                     "vote": v, "better": labels[better] if better else None})
+    n = sum(wins.values())
+    top = max(wins, key=wins.get) if wins else None
+    return {"rows": rows, "wins": {labels[k]: v for k, v in wins.items()},
+            "same": sum(1 for t in trials if t.get("vote") == "same"), "decided": n,
+            "p": round(binomial_p(wins.get(top, 0), n), 4) if n else None, "labels": [labels[k] for k in labels]}
+
+
+def abtest_public():
+    t, trials = ABTEST, ABTEST["trials"]
+    cur = trials[t["trial"]] if t["running"] and t["trial"] < len(trials) else None
+    return {"running": t["running"], "phase": t["phase"], "trial": t["trial"] + 1 if cur else None,
+            "total": len(trials), "title": cur["title"] if cur else None, "start": cur["start"] if cur else None,
+            "length": cur["length"] if cur else None, "voted": sum(1 for x in trials if x.get("vote")),
+            "result": t["result"], "error": t["error"], "programs": len(SINK_POOL), "gap": ABTEST_GAP}
+
+
+async def abtest_excerpt(t, which):
+    sid = t[which]
+    ABTEST["phase"] = f"switch_{which}"
+    await switch_sink(sid, gap=ABTEST_GAP, persist=False)
+    ws = BOX_OF.get(sid)
+    item = LIB.get(t["id"])
+    if ws is None or item is None:
+        raise RuntimeError(f"atv-audio {'program' if ws is None else 'item'} gone")
+    if tv_owns_output():
+        raise RuntimeError("the Apple TV took atv-audio")
+    await send(ws, box_sound.message(SESSIONS["box"].sound, item))
+    AB["status"] = None
+    AB["status_evt"].clear()
+    await send(ws, {"type": "load", "item": full(item), "position": t["start"], "autoplay": True, "present": False})
+    ABTEST["phase"] = f"play_{which}"
+    end = time.monotonic() + 15
+    while not (AB["status"] and AB["status"].get("item") == item["id"] and AB["status"].get("playing")):
+        left = end - time.monotonic()
+        if left <= 0:
+            raise RuntimeError(f"{which.upper()} did not start playing")
+        AB["status_evt"].clear()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(AB["status_evt"].wait(), min(left, 0.5))
+    await asyncio.sleep(t["length"])
+    await send(ws, {"type": "control", "action": "pause"})
+
+
+async def abtest_run(trials, labels, before):
+    box = SESSIONS["box"]
+    try:
+        if box.want_play or box.playing:
+            box.want_play = box.playing = False
+            await to_players(box, {"type": "control", "action": "pause"})
+        await broadcast_all()
+        for i, t in enumerate(trials):
+            ABTEST["trial"] = i
+            await abtest_excerpt(t, "a")
+            await abtest_excerpt(t, "b")
+            while True:
+                ABTEST["phase"] = "vote"
+                AB["evt"].clear()
+                await AB["evt"].wait()
+                if AB["replay"]:
+                    which, AB["replay"] = AB["replay"], None
+                    await abtest_excerpt(t, which)
+                    continue
+                if AB["vote"]:
+                    t["vote"], AB["vote"] = AB["vote"], None
+                    break
+        ABTEST["result"] = abtest_result(trials, labels)
+        name = DATA / f"abtest-{datetime.datetime.now():%Y%m%d-%H%M%S}.json"
+        with open(name, "w") as f:
+            json.dump({"trials": trials, "labels": labels, "result": ABTEST["result"], "gap": ABTEST_GAP}, f, indent=1)
+        log.info("blind test done: %s (saved %s)", ABTEST["result"]["wins"], name.name)
+    except asyncio.CancelledError:
+        ABTEST["error"] = "stopped"
+        if any(t.get("vote") for t in trials):
+            ABTEST["result"] = abtest_result([t for t in trials if t.get("vote")], labels)
+    except Exception as e:
+        ABTEST["error"] = str(e) or repr(e)
+        log.warning("blind test: %s", ABTEST["error"])
+    finally:
+        ABTEST["phase"] = "finishing"
+        ws = BOX_OF.get(ACTIVE_SINK["id"])
+        if ws is not None:
+            await send(ws, {"type": "control", "action": "pause"})
+        if before and before in SINK_POOL and before != ACTIVE_SINK["id"]:
+            with contextlib.suppress(Exception):
+                await switch_sink(before, persist=False)  # back to the chosen program before the test counts as over
+        ABTEST["running"], ABTEST["phase"] = False, "done"
+        ws = BOX_OF.get(ACTIVE_SINK["id"])
+        if ws is not None:
+            await box_player_join(ws)  # the box queue as it was (paused)
+        await broadcast_all()
+
+
+async def api_abtest(request):
+    if request.method == "GET":
+        return web.json_response(abtest_public())
+    need_admin(request)
+    body = await _json_body(request)
+    op = body.get("op")
+    if op == "start":
+        if ABTEST["running"]:
+            raise web.HTTPConflict(text="a blind test is running")
+        ids = sorted(SINK_POOL)
+        if len(ids) != 2:
+            raise web.HTTPConflict(text=f"a blind test needs exactly two atv-audio programs connected ({len(ids)} now)")
+        if tv_owns_output():
+            raise web.HTTPConflict(text="the Apple TV plays through atv-audio")
+        try:
+            length = max(5.0, min(120.0, float(body.get("length") or 30)))
+            per = max(1, min(4, int(body.get("per_song") or 2)))
+            items = [(int(x["id"]), max(0.0, float(x.get("start") or 0))) for x in (body.get("items") or [])][:20]
+        except (TypeError, ValueError, KeyError):
+            raise web.HTTPBadRequest(text="items: [{id, start}], length, per_song")
+        items = [(i, st) for i, st in items if i in LIB]
+        if not items:
+            raise web.HTTPBadRequest(text="no songs in the test list")
+        trials = [{"id": i, "title": LIB[i].get("title") or str(i), "start": st, "length": length}
+                  for i, st in items for _ in range(per)]
+        if body.get("shuffle"):
+            random.shuffle(trials)
+        for t in trials:
+            t["a"], t["b"] = random.sample(ids, 2)
+        labels = {sid: sink_label(sid) for sid in ids}
+        ABTEST.update(running=True, phase="starting", trial=0, trials=trials, result=None, error=None)
+        AB.update(vote=None, replay=None)
+        log.info("blind test: %d trials (%d songs x %d), %s vs %s", len(trials), len(items), per, *ids)
+        AB["task"] = asyncio.create_task(abtest_run(trials, labels, ACTIVE_SINK["id"]))
+    elif op == "vote":
+        if not ABTEST["running"] or ABTEST["phase"] != "vote" or body.get("choice") not in ("a", "b", "same"):
+            raise web.HTTPConflict(text="no vote now")
+        AB["vote"] = body["choice"]
+        AB["evt"].set()
+    elif op == "replay":
+        if not ABTEST["running"] or ABTEST["phase"] != "vote" or body.get("which") not in ("a", "b"):
+            raise web.HTTPConflict(text="no replay now")
+        AB["replay"] = body["which"]
+        AB["evt"].set()
+    elif op == "stop":
+        if AB["task"] and not AB["task"].done():
+            AB["task"].cancel()
+    elif op == "clear":
+        if not ABTEST["running"]:
+            ABTEST.update(trials=[], result=None, error=None, phase=None)
+    else:
+        raise web.HTTPBadRequest(text="unknown op")
+    return web.json_response(abtest_public())
 
 
 # ---------------------------------------------------------------- main audio track copies (for the sink)
@@ -1616,21 +1963,31 @@ async def ws_handler(request):
     role = q.get("role") if q.get("role") in ("player", "sink") else "remote"
     ws = web.WebSocketResponse(heartbeat=45)
     await ws.prepare(request)
+    sid = clean_sink_id(q.get("id") if role == "sink" else q.get("sink"))
+    standby_box = False
     if role == "sink":
         kind = "tv"  # only the TV session has a sink
     elif role == "player":
         kind = q.get("kind") if q.get("kind") in KINDS else "tv"  # apps before 0.11 send no kind: the TV
-        PLAYERS[ws] = kind
+        if kind == "box" and q.get("sink"):
+            old = BOX_OF.get(sid)
+            BOX_OF[sid], BOX_SINK[ws] = ws, sid
+            if old is not None and old is not ws:
+                BOX_SINK.pop(old, None)
+            active = ACTIVE_SINK["id"] or SETTINGS.data.get("active_sink")
+            standby_box = active not in (None, sid) or ABTEST["running"]
+        if not standby_box:
+            PLAYERS[ws] = kind
     else:
         kind = q.get("session") if q.get("session") in KINDS else "tv"
         REMOTES[ws] = kind
     s = SESSIONS[kind]
     log.info("%s (%s) connected from %s", role, kind, request.remote)
     if role == "sink":
-        await sink_connected(s, ws)
+        await sink_connected(s, ws, sid)
     else:
         await send(ws, {"type": "state", "state": s.to_dict()})
-    if role == "player":
+    if role == "player" and not standby_box:
         if s.current and await ensure_current_file(s):
             if s.kind == "box":
                 await send(ws, box_sound.message(s.sound, s.current))
@@ -1654,17 +2011,35 @@ async def ws_handler(request):
             if role == "sink":
                 await sink_message(s, ws, data)
                 continue
+            if role == "player" and s.kind == "box" and (ws not in PLAYERS or ABTEST["running"]):
+                # a standby program's box player, or any box player during a blind test (the test drives it)
+                if ABTEST["running"] and data.get("type") == "status":
+                    abtest_status(ws, data)
+                elif data.get("type") == "log":
+                    log.info("player[box %s]: %s", BOX_SINK.get(ws, "?"), str(data.get("message"))[:1500])
+                elif data.get("type") == "ping":
+                    await send(ws, pong(data))
+                continue
             await on_message(s, data, role, ws)
     finally:
         log.info("%s (%s) disconnected", role, s.kind)
         if role == "sink":
-            if SINKS.get(s.kind) is ws:  # not when a newer sink replaced this one
+            sid = SINK_IDS.pop(ws, None)
+            if sid is not None and (SINK_POOL.get(sid) or {}).get("ws") is ws:
+                SINK_POOL.pop(sid, None)
+            if SINKS.get(s.kind) is ws:  # not when a newer sink replaced this one (ACTIVE_SINK keeps the choice)
                 SINKS.pop(s.kind, None)
                 SINK_INFO.pop(s.kind, None)
                 SINK_AUDIO.pop(s.kind, None)
                 PREFETCHED.pop(s.kind, None)
-                await broadcast_state(s)
+            await broadcast_state(s)
+            await broadcast_state(SESSIONS["box"])
         elif role == "player":
+            bsid = BOX_SINK.pop(ws, None)
+            if bsid is not None and BOX_OF.get(bsid) is ws:
+                BOX_OF.pop(bsid, None)
+            if ws not in PLAYERS:  # a standby program's box player: it never counted
+                return ws
             PLAYERS.pop(ws, None)
             if not s.players:
                 s.playing = False
@@ -2833,6 +3208,17 @@ async def api_atv_audio(request):
     need_admin(request)
     body = await _json_body(request)
     op = body.get("op")
+    if op == "set_sink":
+        sid = clean_sink_id(body.get("sink"))
+        if ABTEST["running"]:
+            raise web.HTTPConflict(text="a blind test is running")
+        if sid not in SINK_POOL:
+            raise web.HTTPBadRequest(text="that atv-audio is not connected")
+        log.info("atv-audio: switch to %s (web remote)", sid)
+        asyncio.create_task(switch_sink(sid))
+        return web.json_response({"ok": True})
+    if ABTEST["running"]:
+        raise web.HTTPConflict(text="a blind test is running")
     if op not in ("refresh", "set_output", "scan", "pair", "connect", "disconnect", "forget"):
         raise web.HTTPBadRequest(text="unknown op")
     sink = SINKS.get("tv")
@@ -2952,6 +3338,8 @@ def make_app():
     app.router.add_get("/api/backup", api_backup_get)
     app.router.add_post("/api/backup", api_backup_restore)
     app.router.add_post("/api/atv-audio", api_atv_audio)
+    app.router.add_get("/api/abtest", api_abtest)
+    app.router.add_post("/api/abtest", api_abtest)
     app.router.add_get("/api/loudness", api_loudness)
     app.router.add_get("/api/audio_copies", api_audio_copies)
     app.router.add_post("/api/audio_copies", api_audio_copies)

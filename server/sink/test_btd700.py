@@ -390,5 +390,28 @@ class WaitUntilTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await A.wait_until(lambda: False, 0.05, step=0.01))
 
 
+class ConfigIdTest(unittest.TestCase):
+    def test_id_and_volume_mode(self):
+        c = A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_ID": "atv-audio-bt", "ATV_AUDIO_VOLUME": "mpv"})
+        self.assertTrue(c.ws_url.endswith("role=sink&session=tv&id=atv-audio-bt"))
+        self.assertTrue(c.box_ws_url.endswith("role=player&kind=box&sink=atv-audio-bt"))
+        self.assertEqual(c.volume_mode, "mpv")
+        d = A.Config({"ATV_AUDIO_SERVER": "http://x", "ATV_AUDIO_NAME": "my box!"})
+        self.assertEqual((d.id, d.volume_mode), ("mybox", "output"))
+
+
+class StandbyRouteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_router_passes_standby_and_never_to_the_sink(self):
+        import test_sync as T
+        sink, clock, _ = T.make_sink()
+        router = A.Router(sink)
+        got = []
+        router.on_standby = got.append
+        await router.from_tv({"type": "standby", "on": True})
+        await router.from_tv({"type": "standby", "on": False})
+        self.assertEqual(got, [True, False])
+        self.assertIsNone(sink.item)
+
+
 if __name__ == "__main__":
     unittest.main()
