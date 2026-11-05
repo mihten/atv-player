@@ -12,8 +12,10 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 import unicodedata
+from pathlib import Path
 
 import mutagen
 
@@ -223,6 +225,62 @@ def folder_art(dirpath):
             if ext in IMAGE_EXT and stem == preferred:
                 return os.path.join(dirpath, name)
     return None
+
+
+STILL_CODECS = {"mjpeg", "png", "bmp", "gif", "webp", "tiff"}
+
+
+def _picture_rank(name):
+    """Lower = better: Matroska's cover names first (cover > cover_land > small_cover), then any cover-like name."""
+    stem = os.path.splitext((name or "").lower())[0]
+    order = ("cover", "cover_land", "small_cover", "small_cover_land")
+    if stem in order:
+        return order.index(stem)
+    if any(w in stem for w in ("cover", "front", "poster", "folder", "thumb")):
+        return 5
+    return 6
+
+
+def video_pictures(path):
+    """Pictures stored INSIDE a video file, best first: [(kind, stream index, name)]. Kinds:
+    'attachment' (Matroska attachment with an image mimetype that ffmpeg does not expose as a picture stream),
+    'picture' (attached picture: Matroska image attachments as ffmpeg exposes them, MP4/MOV cover atoms),
+    'still' (a second, still-image video track such as an Apple Music V_MJPEG cover track). Reads headers only."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", path],
+                         capture_output=True, text=True, timeout=60)
+    streams = json.loads(out.stdout or "{}").get("streams") or []
+    found = []
+    for s in streams:
+        tags = {k.lower(): v for k, v in (s.get("tags") or {}).items()}
+        disp = s.get("disposition") or {}
+        name = tags.get("filename") or tags.get("comment") or tags.get("title") or ""
+        area = (s.get("width") or 0) * (s.get("height") or 0)
+        if s.get("codec_type") == "attachment" and (tags.get("mimetype") or "").lower().startswith("image/"):
+            found.append((_picture_rank(name), 0, -area, "attachment", s["index"], name))
+        elif s.get("codec_type") == "video" and disp.get("attached_pic"):
+            # MP4 cover atoms carry the comment "Cover (front)" / "Cover (back)"
+            rank = _picture_rank(name) if "back" not in name.lower() else 7
+            found.append((rank, 0, -area, "picture", s["index"], name))
+        elif s.get("codec_type") == "video" and s.get("codec_name") in STILL_CODECS:
+            found.append((8, 1, -area, "still", s["index"], name))
+    return [(kind, index, name) for *_, kind, index, name in sorted(found)]
+
+
+def video_picture_bytes(path, kind, index):
+    """Bytes of one picture from video_pictures(); no decoding (a stream copy of one packet / an attachment dump)."""
+    if kind == "attachment":
+        with tempfile.TemporaryDirectory() as tmp:
+            dst = os.path.join(tmp, "pic")
+            # ffmpeg dumps the attachment while opening the input and then complains about the missing output
+            subprocess.run(["ffmpeg", "-v", "quiet", "-y", f"-dump_attachment:{index}", dst, "-i", path],
+                           capture_output=True, timeout=60)
+            try:
+                return Path(dst).read_bytes() or None
+            except OSError:
+                return None
+    res = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-map", f"0:{index}", "-frames:v", "1", "-c", "copy",
+                          "-f", "image2pipe", "pipe:1"], capture_output=True, timeout=60)
+    return res.stdout or None
 
 
 def frame_rate(s):

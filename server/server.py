@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.20.1"
+VERSION = "0.20.2"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -1526,7 +1526,8 @@ async def copy_worker():
                 if not main_copy_fresh(it):
                     started = time.time()
                     try:
-                        ok = await loop.run_in_executor(None, make_main_copy, it, main_copy_path(item_id))
+                        async with FFMPEG_JOBS:
+                            ok = await loop.run_in_executor(None, make_main_copy, it, main_copy_path(item_id))
                     except Exception as e:  # noqa: BLE001 - the worker must keep running (and the job must end)
                         log.warning("main audio copy of %s: %s", item_id, e)
                         ok = False
@@ -2395,6 +2396,11 @@ AUDIO_LOCKS: dict[int, asyncio.Lock] = {}
 # cover the picture until the next keyframe after its picture track comes back mid-stream (else it is blocky).
 KEYFRAMES: dict[int, tuple[float, list]] = {}
 KEYFRAME_SEM = asyncio.Semaphore(1)  # one ffprobe at a time on the small CT
+# Heavy ffmpeg/ffprobe jobs (audio copies, keyframe index, thumbnails) share ATV_FFMPEG_JOBS slots (default 2), and
+# thumbnails take at most ONE of them, so a song start never waits behind a page full of thumbnails. 2026-11-05:
+# unlimited thumbnail frame grabs (4K decode, ~450 MB each) ran the 2 GB server VM out of memory twice.
+FFMPEG_JOBS = asyncio.Semaphore(max(1, int(os.environ.get("ATV_FFMPEG_JOBS") or 2)))
+ART_SEM = asyncio.Semaphore(1)
 
 
 def video_keyframes(path):
@@ -2598,7 +2604,8 @@ async def media_best(it):
         async with MAIN_LOCKS.setdefault(src_id, asyncio.Lock()):  # shared with copy_worker: built once
             if not main_copy_fresh(src):
                 started = time.time()
-                ok = await asyncio.get_running_loop().run_in_executor(None, make_main_copy, src, out)
+                async with FFMPEG_JOBS:
+                    ok = await asyncio.get_running_loop().run_in_executor(None, make_main_copy, src, out)
                 if not ok:
                     COPY_FAILED[src_id] = src["mtime"]
                     raise web.HTTPServiceUnavailable(text="audio copy failed")
@@ -2645,12 +2652,33 @@ async def media(request):
         if not fresh():
             async with AUDIO_LOCKS.setdefault(it["id"], asyncio.Lock()):  # concurrent requests: copy once
                 if not fresh():
-                    await asyncio.get_running_loop().run_in_executor(None, make_audio_only, it, out)
+                    async with FFMPEG_JOBS:
+                        await asyncio.get_running_loop().run_in_executor(None, make_audio_only, it, out)
         if fresh():
             return web.FileResponse(out, chunk_size=512 * 1024, headers={"Content-Type": "audio/x-matroska"})
         # copy failed: fall through and serve the original file
     ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
     return web.FileResponse(path, chunk_size=512 * 1024, headers={"Content-Type": ctype})
+
+
+def video_art(path):
+    """The best picture stored inside a video file (see scanner.video_pictures), or None. A picture Pillow cannot read
+    is skipped, so the next one (or the frame grab) is used."""
+    from PIL import Image
+    try:
+        pictures = scanner.video_pictures(path)
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
+        log.warning("art: cannot list pictures in %s: %s", path, e)
+        return None
+    for kind, index, name in pictures:
+        try:
+            data = scanner.video_picture_bytes(path, kind, index)
+            if data:
+                Image.open(BytesIO(data)).verify()
+                return data
+        except Exception as e:  # noqa: BLE001 - a broken picture must not break the thumbnail
+            log.info("art: picture %s (%s %s) in %s unusable: %s", index, kind, name, path, e)
+    return None
 
 
 def make_art(it, out):
@@ -2665,13 +2693,18 @@ def make_art(it, out):
             if fa:
                 data = Path(fa).read_bytes()
     else:
-        t = min(30.0, (it.get("duration") or 0) * 0.25)
-        res = subprocess.run(
-            ["ffmpeg", "-v", "error", "-ss", f"{t:.1f}", "-i", path, "-frames:v", "1",
-             "-vf", "scale=800:-2", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
-            capture_output=True, timeout=120,
-        )
-        data = res.stdout or None
+        data = video_art(path)
+        if data is None:
+            # No picture inside the file: one frame at 25 % (max 30 s). -noaccurate_seek decodes only the keyframe
+            # there instead of every frame up to t; -threads 2 keeps a 4K decode's frame buffers small.
+            t = min(30.0, (it.get("duration") or 0) * 0.25)
+            res = subprocess.run(
+                ["nice", "-n", "10", "ffmpeg", "-v", "error", "-threads", "2", "-noaccurate_seek", "-ss", f"{t:.1f}",
+                 "-i", path, "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=800:-2", "-f", "image2", "-c:v", "mjpeg",
+                 "pipe:1"],
+                capture_output=True, timeout=120,
+            )
+            data = res.stdout or None
     if not data:
         out.with_suffix(".none").touch()
         return False
@@ -2683,11 +2716,26 @@ def make_art(it, out):
     return True
 
 
+# Thumbnail cache file names carry a version: v2 (2026-11-05) prefers the pictures stored inside video files over a
+# frame grab, so every older thumbnail (an unversioned <id>.jpg / <id>.none) is made again once.
+ART_TAG = "v2"
+
+
+def art_path(item_id):
+    return CACHE / "art" / f"{item_id}.{ART_TAG}.jpg"
+
+
+def drop_old_art():
+    for f in (CACHE / "art").iterdir():
+        if f.is_file() and f".{ART_TAG}." not in f.name:
+            f.unlink(missing_ok=True)
+
+
 async def art(request):
     it = LIB.get(int(request.match_info["id"]))
     if not it:
         raise web.HTTPNotFound()
-    out = CACHE / "art" / f"{it['id']}.jpg"
+    out = art_path(it["id"])
     none_marker = out.with_suffix(".none")
     fresh = lambda p: p.exists() and p.stat().st_mtime >= it["mtime"]  # noqa: E731
     lock = ART_LOCKS.setdefault(it["id"], asyncio.Lock())
@@ -2695,7 +2743,8 @@ async def art(request):
         if fresh(none_marker):
             raise web.HTTPNotFound()
         if not fresh(out):
-            ok = await asyncio.get_running_loop().run_in_executor(None, make_art, it, out)
+            async with ART_SEM, FFMPEG_JOBS:
+                ok = await asyncio.get_running_loop().run_in_executor(None, make_art, it, out)
             if not ok:
                 raise web.HTTPNotFound()
     return web.FileResponse(out, headers={"Cache-Control": "max-age=86400"})
@@ -2772,7 +2821,8 @@ async def api_keyframes(request):
                 else:
                     started = time.time()
                     try:
-                        times = await asyncio.get_running_loop().run_in_executor(None, video_keyframes, path)
+                        async with FFMPEG_JOBS:
+                            times = await asyncio.get_running_loop().run_in_executor(None, video_keyframes, path)
                     except (subprocess.SubprocessError, OSError) as e:
                         log.warning("keyframes %s: %s", it["id"], e)
                         raise web.HTTPServiceUnavailable(text="keyframe index failed")
@@ -3492,6 +3542,7 @@ async def on_cleanup(app):
 async def on_startup(app):
     DATA.mkdir(parents=True, exist_ok=True)
     (CACHE / "art").mkdir(parents=True, exist_ok=True)
+    drop_old_art()
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     for f in AUDIO_DIR.glob("*.tmp.mka"):  # partial copies of a server that was stopped mid-copy
         f.unlink(missing_ok=True)
