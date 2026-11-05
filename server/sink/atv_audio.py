@@ -24,6 +24,8 @@ Environment (see env.example):
                     the server keeps one active, the others in standby (headphones handed over on a switch)
   ATV_AUDIO_VOLUME  output (default: PipeWire / Pulse set the output's own volume = Bluetooth absolute volume) or
                     mpv (the slider is mpv's volume, the output is pinned at 100 %: same behaviour as a dongle)
+  ATV_AUDIO_RATE    fixed output sample rate, e.g. 48000 (mpv resamples everything to it; off by default). Use it for
+                    a USB dongle passed into a VM: 44.1 kHz streams crackled there, 48 kHz did not
 
 Run: python3 atv_audio.py
 """
@@ -80,6 +82,10 @@ class Config:
         self.state_dir = env.get("ATV_AUDIO_STATE") or env.get("STATE_DIRECTORY") or ""
         self.id = re.sub(r"[^A-Za-z0-9_.-]", "", env.get("ATV_AUDIO_ID") or self.name)[:40] or "atv-audio"
         self.volume_mode = "mpv" if (env.get("ATV_AUDIO_VOLUME") or "").lower() == "mpv" else "output"
+        # ATV_AUDIO_RATE: fixed output sample rate (e.g. 48000). A USB dongle behind a VM's emulated USB port
+        # crackled on 44.1 kHz files only (44.1 frames per 1 ms USB frame do not divide evenly); 48 kHz is clean.
+        rate = (env.get("ATV_AUDIO_RATE") or "").strip()
+        self.rate = int(rate) if rate.isdigit() and 8000 <= int(rate) <= 192000 else 0
 
     @property
     def ws_url(self):
@@ -120,7 +126,8 @@ def mpv_args(cfg, sock):
             "--no-input-terminal", "--quiet", "--msg-level=all=warn", "--ytdl=no", "--gapless-audio=weak",
             "--hr-seek=yes", "--cache=yes", "--cache-secs=60", "--demuxer-readahead-secs=30",
             "--demuxer-max-bytes=256MiB", "--demuxer-max-back-bytes=32MiB", "--network-timeout=15",
-            f"--audio-client-name={cfg.name}"] + output_args(cfg.output)
+            f"--audio-client-name={cfg.name}"] + output_args(cfg.output) + \
+        ([f"--audio-samplerate={cfg.rate}"] if getattr(cfg, "rate", 0) else [])
 
 
 # ---------------------------------------------------------------- mpv JSON IPC
