@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.20.0"
+VERSION = "0.20.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -265,7 +265,7 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
 STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
 KINDS = ("tv", "phone", "box")
 # "box": the atv-audio program plays this queue by itself (player role kind=box), the web remote is its only UI.
-KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "atv-audio"}
+KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "Web Player"}
 SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items",
               "prefer_videos", "swapped", "pinned", "dropped", "noted", "sound")
 

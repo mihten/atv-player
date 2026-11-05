@@ -100,7 +100,7 @@ async def main(tmp):
             items = await H.library(http)
             ids = [items[f"0{n} Song{n}"]["id"] for n in range(1, 5)]
             st = await H.state(http, "box")
-            check(st["session"] == "box" and st["session_name"] == "atv-audio", "session box named atv-audio")
+            check(st["session"] == "box" and st["session_name"] == "Web Player", "session box named Web Player")
             check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box"], "sessions list has the box")
             check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 22, "box state: sound + presets")
             check(st["sound_curves"]["a:momentum4"][0] == 4.0 and len(st["sound_curves"]) == 20,

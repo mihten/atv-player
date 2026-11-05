@@ -253,7 +253,11 @@ textarea.set-in { min-height: 96px; resize: vertical; font-family: ui-monospace,
 .set-dot.bad { background: #ff8a8a; }
 .set-dot.wait { background: #f5c26b; }
 .set-g2 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; }
+.set-g2 > div { display: grid; gap: 8px; align-content: start; }  /* label + field spaced like the full-width rows */
 .set-lbl { font-size: 12px; color: var(--ink3); margin: 2px 2px -4px; }
+select.set-in { appearance: none; -webkit-appearance: none; padding-right: 34px; cursor: pointer;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23aaa' stroke-width='2.4' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>") right 12px center / 13px no-repeat, rgba(0,0,0,.28); }
+select.set-in option { background: #222; color: #fff; }
 .set-s.set-bad { color: #ff8a8a; white-space: normal; }
 /* server disk almost full: one quiet line in the status bar, as long as it lasts */
 .dwarn { color: #f5c26b; font-weight: 600; }
@@ -537,7 +541,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
   <header class="top">
     <div class="brand"><svg class="disc-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor"/><circle cx="12" cy="12" r="3.6" fill="#000"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/></svg><h1>ATV Player</h1></div>
     <div class="topacts">
-      <select id="out" class="pill" title="Which queue this page controls: the Apple TV's, the iPhone's or atv-audio's own"></select>
+      <select id="out" class="pill" title="Which queue this page controls: the Apple TV's, the iPhone's or the Web Player's"></select>
       <button id="lookBtn" class="ib" title="Settings"></button>
     </div>
   </header>
@@ -572,7 +576,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <span class="vn" id="volNum"></span>
     </div>
     <div class="bconn" id="bconn" hidden><span id="bconnText"></span><button class="pill" id="bconnBtn"></button></div>
-    <div class="snd" id="snd" hidden title="Sound of atv-audio's own queue (the Apple TV keeps its own settings)">
+    <div class="snd" id="snd" hidden title="Sound of the Web Player (the Apple TV keeps its own settings)">
       <span>EQ</span><div class="sctl"><select class="pill" id="sndPreset" aria-label="Equalizer"></select><button class="pill" id="sndEdit" hidden>Edit</button></div>
       <span>Boost</span><div class="sctl"><button class="ib" id="sndDown" aria-label="Boost down">−</button><span class="num" id="sndBoost">+0 dB</span><button class="ib" id="sndUp" aria-label="Boost up">+</button></div>
       <span>Loudness</span><div class="sctl"><button class="tog" id="sndLoud" role="switch" aria-label="Loudness" title="Raises quiet recordings. Never turns anything down."></button></div>
@@ -1016,12 +1020,12 @@ function codecLabel(c) {
 
 /** atv-audio's status line: running or not, and its output (headphones, codec). */
 function boxStatus(s) {
-  if (!s.players) return "atv-audio not running";
+  if (!s.players) return "Web Player not running";
   const k = s.sink || {}, o = k.output;
-  if (k.in_use_by_tv) return "atv-audio · in use by the Apple TV";
-  if (!o) return "atv-audio · no sound output";
-  if (!o.ready) return `atv-audio · ${o.name || "output"} not connected`;
-  return `atv-audio · ${o.name}${o.codec ? ` · ${codecLabel(o.codec)}` : ""}`;
+  if (k.in_use_by_tv) return "Web Player · sound in use by the Apple TV";
+  if (!o) return "Web Player · no sound output";
+  if (!o.ready) return `Web Player · ${o.name || "output"} not connected`;
+  return `Web Player · ${o.name}${o.codec ? ` · ${codecLabel(o.codec)}` : ""}`;
 }
 
 /** Selector: Auto + one entry per app (▶ = playing). Auto shows which one it currently follows. atv-audio's own
@@ -1757,7 +1761,7 @@ async function abSheet() {
     if (a === "back") { clearInterval(abPoll); abPoll = null; return audioSheet(); }
     if (a === "add") {
       let s; try { s = await (await fetch("/api/state?session=box")).json(); } catch { return; }
-      if (!s.current) return toast("Play a song in the atv-audio queue first");
+      if (!s.current) return toast("Play a song in the Web Player first");
       const pos = s.position + (s.playing ? Date.now() / 1000 - s.position_at : 0);
       l.push({ id: s.current.id, title: `${s.current.artist ? s.current.artist + " – " : ""}${s.current.title}`, start: Math.max(0, Math.floor(pos)) });
       abSave(l); toast("Added from " + fmt(pos)); last = null; return draw();
@@ -1783,7 +1787,7 @@ function abSetup(t) {
   const l = abList(), o = abOpts();
   const rows = l.map((x, i) => `<div class="set-row"><div class="set-main"><div class="set-t">${esc(x.title)}</div><div class="set-s">excerpt from</div></div>` +
     `<input class="set-in abt-pos" data-i="${i}" value="${fmt(x.start)}" aria-label="Start"><button class="ib" data-ab="rm" data-i="${i}" title="Remove">${ic("trash")}</button></div>`).join("");
-  return `<div class="set-hint">Play a song in the atv-audio queue, pause where the excerpt should start, then "Add current song" (the start can be edited). Both outputs play the same excerpt in random order (A and B); you never see which is which until the end. The headphones move between them by themselves.</div>` +
+  return `<div class="set-hint">Play a song in the Web Player, pause where the excerpt should start, then "Add current song" (the start can be edited). Both outputs play the same excerpt in random order (A and B); you never see which is which until the end. The headphones move between them by themselves.</div>` +
     sec("Songs") + (rows || `<div class="set-hint">No songs yet.</div>`) +
     `<div class="set-btns"><button class="pill" data-ab="add">${ic("plus")} Add current song</button></div>` +
     sec("Trials") + `<div class="abt-opts"><label for="abLen">Excerpt (seconds)</label><input class="set-in" id="abLen" inputmode="numeric" value="${o.length}">` +
