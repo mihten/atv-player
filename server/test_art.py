@@ -165,6 +165,8 @@ class Req:
 
 
 async def concurrency():
+    global ORIG_MAKE_ART
+    ORIG_MAKE_ART = server.make_art
     server.make_art = tracked("art")
     server.make_audio_only = tracked("copy")
     server.LIB.clear()
@@ -196,6 +198,50 @@ check(running["max_art"] == 1, f"thumbnails never run in parallel (max {running[
 check(running["max_all"] <= 2, f"heavy jobs never exceed ATV_FFMPEG_JOBS=2 (max {running['max_all']})")
 check(running["max_all"] == 2, "an audio copy runs NEXT TO a thumbnail (2 slots used)")
 check(elapsed < 8 * 0.15 + 1.0, f"all 11 jobs finished ({elapsed:.1f} s)")
+
+# 5. HTTP caching of /art: clients must revalidate (no-cache + validators), so a cover embedded later shows at once
+#    and an unchanged one costs a 304. Real make_art, aiohttp test server.
+from aiohttp import web as aioweb  # noqa: E402
+from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
+
+server.make_art = ORIG_MAKE_ART
+for f in server.CACHE.joinpath("art").glob("*"):
+    f.unlink()
+
+
+async def http_cache():
+    vid = LIBDIR / "http.mkv"
+    subprocess.run(["mkvmerge", "-q", "-o", str(vid), "--attachment-name", "cover.jpg", "--attachment-mime-type",
+                    "image/jpeg", "--attach-file", str(RED), str(base_video("http"))], check=True, capture_output=True)
+    server.LIB.clear()
+    server.LIB[500] = {"id": 500, "kind": "video", "root": "v", "relpath": vid.name, "duration": 2.0,
+                       "mtime": vid.stat().st_mtime}
+    app = aioweb.Application()
+    app.router.add_get("/art/{id}", server.art)
+    async with TestClient(TestServer(app)) as c:
+        r1 = await c.get("/art/500")
+        b1 = await r1.read()
+        cc = r1.headers.get("Cache-Control", "")
+        check(r1.status == 200 and colour(b1) == "red", f"http: first fetch 200 red ({r1.status}, {colour(b1)})")
+        check("no-cache" in cc and "max-age" not in cc, f"http: Cache-Control asks to revalidate ({cc!r})")
+        etag, lm = r1.headers.get("ETag"), r1.headers.get("Last-Modified")
+        check(bool(etag) and bool(lm), f"http: validators present (ETag {etag}, Last-Modified {lm})")
+        r2 = await c.get("/art/500", headers={"If-None-Match": etag})
+        check(r2.status == 304, f"http: unchanged cover revalidates to 304 ({r2.status})")
+        r3 = await c.get("/art/500", headers={"If-Modified-Since": lm})
+        check(r3.status == 304, f"http: If-Modified-Since also 304 ({r3.status})")
+        # the file gets a new cover (as when covers are embedded later): new mtime -> new thumbnail, not 304
+        time.sleep(1.1)
+        subprocess.run(["mkvpropedit", "-q", str(vid), "--replace-attachment", f"name:cover.jpg:{GREEN}"],
+                       check=True, capture_output=True)
+        server.LIB[500]["mtime"] = vid.stat().st_mtime
+        r4 = await c.get("/art/500", headers={"If-None-Match": etag, "If-Modified-Since": lm})
+        b4 = await r4.read()
+        check(r4.status == 200 and colour(b4) == "green",
+              f"http: changed cover -> 200 with the NEW picture ({r4.status}, {colour(b4) if b4 else 'empty'})")
+
+
+asyncio.run(http_cache())
 
 print("ALL PASS" if not failed else f"{failed} FAILED")
 sys.exit(1 if failed else 0)

@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.20.2"
+VERSION = "0.20.3"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -2747,7 +2747,9 @@ async def art(request):
                 ok = await asyncio.get_running_loop().run_in_executor(None, make_art, it, out)
             if not ok:
                 raise web.HTTPNotFound()
-    return web.FileResponse(out, headers={"Cache-Control": "max-age=86400"})
+    # no-cache = clients keep a copy but revalidate it: a changed picture (cover embedded later, new file) shows at once,
+    # an unchanged one costs a 304 (FileResponse answers If-None-Match / If-Modified-Since from the cached file).
+    return web.FileResponse(out, headers={"Cache-Control": "no-cache"})
 
 
 SCAN_LOCK = asyncio.Lock()
