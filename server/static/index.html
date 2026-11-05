@@ -704,11 +704,15 @@ function followArt(c) {
   const img = new Image();
   img.onload = () => { let p = null; try { p = extract(img); } catch {} storePalette(id, p || fromHue(hueFor(id))); };
   img.onerror = () => storePalette(id, fromHue(hueFor(id)));
-  img.src = `/art/${id}`;
+  img.src = artUrl(id);
 }
 /** Thumbnail background for an item without art (Shared/CurrentArtwork.swift ItemThumb). */
+/** Thumbnail URL. ART_V changes the address when thumbnails change on the server (v2 = covers stored in the file,
+ * 2026-11-05), so a browser drops pictures it saved under the old one-day cache rule. The server ignores the query. */
+const ART_V = 2;
+const artUrl = (id) => `/art/${id}?v=${ART_V}`;
 const thumbBg = (id) => { const c = withB(fromHue(hueFor(id)).vibrant, .62, .55); return `linear-gradient(135deg, ${rgb(c, .9)}, ${rgb(c, .35)})`; };
-const thumb = (it, extra = "") => `<span class="th" style="--th:${thumbBg(it.id)}">${it.kind === "video" ? ic("film") : ic("note")}${it.art ? `<img loading="lazy" src="/art/${it.id}" alt="" onerror="this.remove()">` : ""}${extra}</span>`;
+const thumb = (it, extra = "") => `<span class="th" style="--th:${thumbBg(it.id)}">${it.kind === "video" ? ic("film") : ic("note")}${it.art ? `<img loading="lazy" src="${artUrl(it.id)}" alt="" onerror="this.remove()">` : ""}${extra}</span>`;
 const eqHtml = '<span class="eq"><i></i><i></i><i></i><i></i></span>';
 
 /* ── Look (per browser, like Settings → Theme in the apps) ── */
@@ -807,8 +811,8 @@ function drawNowPlaying(c) {
   const img = $("art");
   img.classList.remove("in");
   $("artPh").innerHTML = c ? `${ic(c.kind === "video" ? "film" : "note")}<div class="pt">${esc(c.title)}${c.artist ? `<span class="pa">${esc(c.artist)}</span>` : ""}</div>` : ic("note");
-  if (c && c.art) { img.onload = () => { if (artId === id) img.classList.add("in"); }; img.src = `/art/${id}`; } else img.removeAttribute("src");
-  $("recLabel").style.backgroundImage = c && c.art ? `url(/art/${id})` : "";
+  if (c && c.art) { img.onload = () => { if (artId === id) img.classList.add("in"); }; img.src = artUrl(id); } else img.removeAttribute("src");
+  $("recLabel").style.backgroundImage = c && c.art ? `url(${artUrl(id)})` : "";
   // the record slides out of the sleeve a moment after a new item starts (Vinyl)
   const stage = $("stage"); stage.classList.remove("out"); if (c) setTimeout(() => { if (artId === id) stage.classList.add("out"); }, 450);
   $("title").textContent = c ? c.title : "Nothing playing";
@@ -842,7 +846,7 @@ function versionsSheet() {
   if (vs.length < 2) return;
   openSheet(`<div class="st">${esc(c.title)}</div><div class="list">` + vs.map((v) => {
     const it = byId.get(v.id) || { id: v.id, kind: v.kind, art: v.kind === "video" };
-    const art = it.art ? `<img loading="lazy" src="/art/${v.id}" alt="" onerror="this.remove()">` : "";
+    const art = it.art ? `<img loading="lazy" src="${artUrl(v.id)}" alt="" onerror="this.remove()">` : "";
     return `<button class="opt" data-v="${v.id}"><span class="vth" style="--th:${thumbBg(v.id)}">${ic(v.kind === "video" ? "film" : "note")}${art}</span>` +
       `<span class="grow"><span class="t">${esc(v.label)}</span>${v.duration ? `<span class="s" style="display:block">${fmt(v.duration)}</span>` : ""}</span>` +
       `${v.id === c.id ? ic("check") : ""}</button>`;
@@ -1186,7 +1190,7 @@ function render() {
     `selectable` (Videos tab): in select mode the ＋ is a checkbox and a click ticks the tile instead. */
 const videoTile = (i, selectable) => {
   const s = selectable && selMode, on = s && pickedItem(i);
-  return `<div class="vt${isCur(i.id) ? " cur" : ""}${on ? " picked" : ""}" data-act="${s ? "selItem" : "video"}" data-id="${i.id}"><div class="va" style="--th:${thumbBg(i.id)}">${ic("film")}${i.art ? `<img loading="lazy" src="/art/${i.id}" alt="" onerror="this.remove()">` : ""}` +
+  return `<div class="vt${isCur(i.id) ? " cur" : ""}${on ? " picked" : ""}" data-act="${s ? "selItem" : "video"}" data-id="${i.id}"><div class="va" style="--th:${thumbBg(i.id)}">${ic("film")}${i.art ? `<img loading="lazy" src="${artUrl(i.id)}" alt="" onerror="this.remove()">` : ""}` +
     (s ? ck(on, `data-act="selItem" data-id="${i.id}"`) : `<button class="ib lead" data-act="addOne" data-id="${i.id}" title="Add to playlist">${ic("plus")}</button>`) + `</div>` +
     `<div class="t">${esc(i.title)}</div><div class="s">${esc(i.artist || "")}</div></div>`;
 };
