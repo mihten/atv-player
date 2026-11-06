@@ -138,7 +138,12 @@ struct RemoteImage<Placeholder: View>: View {
     var body: some View {
         ZStack {
             if let image {
-                Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
+                // Fill the slot the caller gives, never grow it: a cover with another shape (a portrait picture
+                // in a 16:9 tile) would otherwise make this view larger than its frame and spill over its neighbours.
+                Color.clear
+                    .overlay { Image(uiImage: image).resizable().scaledToFill() }
+                    .clipped()
+                    .transition(.opacity)
             } else {
                 placeholder()
             }

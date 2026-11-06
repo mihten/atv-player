@@ -10,7 +10,11 @@ struct CurrentArtwork: View {
     var body: some View {
         ZStack {
             if let image = (artwork.itemID == item.id ? artwork.image : nil) ?? artwork.cachedImage(item.id) {
-                Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
+                // Same rule as RemoteImage: fill the given frame, never grow it (portrait covers spilled out).
+                Color.clear
+                    .overlay { Image(uiImage: image).resizable().scaledToFill() }
+                    .clipped()
+                    .transition(.opacity)
             } else {
                 ArtPlaceholder(item: item,
                                palette: artwork.itemID == item.id ? artwork.palette
