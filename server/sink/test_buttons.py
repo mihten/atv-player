@@ -22,6 +22,17 @@ service.method = lambda *a, **k: (lambda f: f)
 service.signal = lambda *a, **k: (lambda f: f)
 dbus.service, dbus.mainloop, mainloop.glib = service, mainloop, glibmod
 dbus.PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
+
+
+class _DBusException(Exception):
+    def get_dbus_name(self):
+        return "org.bluez.Error.Failed"
+
+    def get_dbus_message(self):
+        return str(self)
+
+
+dbus.DBusException = _DBusException
 sys.modules.update({"dbus": dbus, "dbus.service": service, "dbus.mainloop": mainloop, "dbus.mainloop.glib": glibmod})
 
 import atv_buttons as B  # noqa: E402
@@ -194,6 +205,115 @@ class SinkSeekRelayTest(unittest.IsolatedAsyncioTestCase):
         await router.from_tv({"type": "load", "item": {"id": 5, "kind": "video"}, "position": 0, "autoplay": True})
         b.on_seek(-10.0)
         self.assertEqual(sent[-1]["session"], "tv")
+
+
+
+DEV = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+
+
+def bluez(connected=True, blocked=False, uuids=(B.A2DP_SINK,), transport=False, other_transport=False):
+    objs = {DEV: {"org.bluez.Device1": {"Connected": connected, "Blocked": blocked, "UUIDs": list(uuids)}}}
+    if transport:
+        objs[DEV + "/fd0"] = {"org.bluez.MediaTransport1": {}}
+    if other_transport:
+        objs["/org/bluez/hci0/dev_AA_BB_CC_DD_EE_F0/fd1"] = {"org.bluez.MediaTransport1": {}}
+    return objs
+
+
+class A2dpWatchTest(unittest.TestCase):
+    """Headphones connected without an A2DP transport for 10 s -> ConnectProfile(A2DP Sink) once."""
+
+    def setUp(self):
+        self.objs = bluez()
+        self.timers = []          # (ms, fn)
+        self.calls = []           # (uuid, reply, error)
+        test = self
+
+        class Dev:
+            def ConnectProfile(self, uuid, reply_handler, error_handler, timeout):
+                test.calls.append((uuid, reply_handler, error_handler))
+
+        class Bus:
+            def get_object(self, name, path):
+                test.assertEqual(path, DEV)
+                return object()
+
+        dbus.Interface = lambda obj, iface: Dev()
+        self.w = B.A2dpWatch(Bus(), lambda ms, fn: self.timers.append((ms, fn)), lambda: self.objs)
+
+    def run_timers(self):
+        timers, self.timers = self.timers, []
+        out = []
+        for ms, fn in timers:
+            self.assertEqual(ms, 10000)
+            out += outputs(fn)
+        return out
+
+    def test_missing_a2dp(self):
+        self.assertTrue(B.missing_a2dp(DEV, bluez()))
+        self.assertTrue(B.missing_a2dp(DEV, bluez(other_transport=True)))   # another device's transport
+        self.assertFalse(B.missing_a2dp(DEV, bluez(transport=True)))
+        self.assertFalse(B.missing_a2dp(DEV, bluez(connected=False)))
+        self.assertFalse(B.missing_a2dp(DEV, bluez(blocked=True)))         # standby program: refused on purpose
+        self.assertFalse(B.missing_a2dp(DEV, bluez(uuids=("0000110e-0000-1000-8000-00805f9b34fb",))))
+        self.assertFalse(B.missing_a2dp("/org/bluez/hci0/dev_00", bluez()))
+
+    def test_asks_once_and_reports_success(self):
+        self.w.connected(DEV)
+        self.assertEqual(self.calls, [])                       # nothing before 10 s
+        out = self.run_timers()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0], B.A2DP_SINK)
+        self.assertIn("without A2DP", out[0]["log"])
+        self.calls[0][1]()                                     # ConnectProfile returned
+        self.objs = bluez(transport=True)
+        out = self.run_timers()
+        self.assertEqual(out, [{"log": "a2dp watchdog: dev_AA_BB_CC_DD_EE_FF A2DP is up"}])
+        self.assertEqual(len(self.calls), 1)                   # no second attempt
+
+    def test_still_missing_is_logged_not_retried(self):
+        self.w.connected(DEV)
+        self.run_timers()
+        self.calls[0][1]()
+        out = self.run_timers()
+        self.assertIn("still without A2DP", out[0]["log"])
+        self.assertEqual(self.timers, [])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_failure_is_logged(self):
+        self.w.connected(DEV)
+        self.run_timers()
+        out = outputs(lambda: self.calls[0][2](_DBusException("Host is down")))
+        self.assertIn("ConnectProfile failed: org.bluez.Error.Failed Host is down", out[0]["log"])
+        self.assertEqual(self.timers, [])
+
+    def test_transport_present_does_nothing(self):
+        self.objs = bluez(transport=True)
+        self.w.connected(DEV)
+        self.assertEqual(self.run_timers(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_disconnect_cancels(self):
+        self.w.connected(DEV)
+        self.w.disconnected(DEV)
+        self.assertEqual(self.run_timers(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_reconnect_only_newest_check_acts(self):
+        self.w.connected(DEV)
+        self.w.disconnected(DEV)
+        self.w.connected(DEV)
+        self.run_timers()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_start_checks_already_connected(self):
+        self.w.start()
+        self.run_timers()
+        self.assertEqual(len(self.calls), 1)
+        self.objs = bluez(connected=False)
+        self.calls.clear()
+        self.w.start()
+        self.assertEqual(self.timers, [])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,9 @@ It also manages the headphones for the web remote (Settings -> atv-audio): list 
 
 A Play within PLAY_GUARD s after a headphone (re)connects is dropped here (headphones that are switched on while
 worn send Play by themselves: no automatic start). Needs python3-dbus and GLib (libglib-2.0); no PyGObject.
+
+A2DP watchdog (A2dpWatch): headphones that stay connected A2DP_WAIT s without an A2DP transport (ACL + AVRCP only:
+buttons work, no sound) get one Device1.ConnectProfile(A2DP Sink) per connection; the outcome is logged.
 Exit code 3 = python3-dbus missing (atv_audio.py then stops trying).
 """
 import ctypes
@@ -53,6 +56,8 @@ PAIR_WINDOW = 60.0   # s the agent accepts a pairing after the web remote asked 
 SCAN_SECONDS = 25
 # Audio Sink, A2DP, Headset, Handsfree: headphones / speakers
 AUDIO_UUIDS = ("0000110b", "0000110d", "00001108", "0000111e")
+A2DP_SINK = "0000110b-0000-1000-8000-00805f9b34fb"
+A2DP_WAIT = 10.0   # s after a connect without an A2DP transport before asking for the A2DP profile (once)
 
 
 def out(msg):
@@ -239,6 +244,76 @@ def device_view(dev, scanning):
         return None
     return {"address": str(dev.get("Address") or ""), "name": str(dev.get("Alias") or dev.get("Name") or ""),
             "paired": paired, "connected": bool(dev.get("Connected")), "audio": audio}
+
+
+def missing_a2dp(path, objs):
+    """True when the device at `path` is connected (not blocked), offers A2DP Sink and has no A2DP transport.
+
+    Headphones sometimes reconnect with ACL + AVRCP only: buttons work, but there is no sound (PipeWire shows no
+    Bluetooth sink). A transport object (MediaTransport1, path <device>/fdN or <device>/sepN/fdN) exists as soon as an
+    A2DP stream is configured, also while idle."""
+    dev = (objs.get(path) or {}).get("org.bluez.Device1")
+    if not dev or not bool(dev.get("Connected")) or bool(dev.get("Blocked")):
+        return False
+    if A2DP_SINK not in [str(u).lower() for u in dev.get("UUIDs", [])]:
+        return False
+    prefix = str(path) + "/"
+    return not any(str(p).startswith(prefix) and "org.bluez.MediaTransport1" in ifaces for p, ifaces in objs.items())
+
+
+class A2dpWatch:
+    """Headphones connected without A2DP for A2DP_WAIT s -> Device1.ConnectProfile(A2DP Sink), once per connection.
+
+    (What `bluetoothctl connect <addr> 0000110b-...` did by hand on 2026-11-05/06.) The result is only logged: no
+    retry loop, a failed attempt waits for the next connect."""
+
+    def __init__(self, bus, later, objects):
+        self.bus = bus
+        self.later = later       # later(ms, fn)
+        self.objects = objects   # () -> GetManagedObjects()
+        self.gen = {}            # device path -> connection number (a check scheduled for an older one is dropped)
+
+    def connected(self, path):
+        path = str(path)
+        gen = self.gen[path] = self.gen.get(path, 0) + 1
+        self.later(int(A2DP_WAIT * 1000), lambda: self.check(path, gen))
+
+    def disconnected(self, path):
+        path = str(path)
+        self.gen[path] = self.gen.get(path, 0) + 1
+
+    def start(self):
+        """Helper (re)started while headphones are already connected: check those too."""
+        for path, ifaces in self.objects().items():
+            d = ifaces.get("org.bluez.Device1")
+            if d is not None and bool(d.get("Connected")):
+                self.connected(path)
+
+    def check(self, path, gen):
+        if self.gen.get(path) != gen:
+            return
+        if not missing_a2dp(path, self.objects()):
+            return
+        name = path.rsplit("/", 1)[-1]
+        note(f"a2dp watchdog: {name} connected {A2DP_WAIT:.0f} s without A2DP (no sound): asking for the A2DP profile")
+        dev = dbus.Interface(self.bus.get_object("org.bluez", path), "org.bluez.Device1")
+
+        def ok():
+            self.later(int(A2DP_WAIT * 1000), lambda: self.verify(path, gen))
+
+        def failed(e):
+            what = f"{e.get_dbus_name()} {e.get_dbus_message()}" if isinstance(e, dbus.DBusException) else repr(e)
+            note(f"a2dp watchdog: {name} ConnectProfile failed: {what}")
+        dev.ConnectProfile(A2DP_SINK, reply_handler=ok, error_handler=failed, timeout=30)
+
+    def verify(self, path, gen):
+        if self.gen.get(path) != gen:
+            return
+        name = path.rsplit("/", 1)[-1]
+        if missing_a2dp(path, self.objects()):
+            note(f"a2dp watchdog: {name} still without A2DP after ConnectProfile")
+        else:
+            note(f"a2dp watchdog: {name} A2DP is up")
 
 
 class Agent(dbus.service.Object):
@@ -513,6 +588,7 @@ def main():
             HP[0].emit()
 
     HP = []  # the Headphones manager, once the main loop helpers exist
+    WD = []  # the A2DP watchdog, idem
 
     def props_changed(iface, changed, invalidated, path=None):
         if iface in ("org.bluez.Device1", "org.bluez.Adapter1") and HP:
@@ -521,8 +597,12 @@ def main():
             if bool(changed["Connected"]):
                 player.connected_at = time.monotonic()
                 note(f"headphones connected ({str(path).rsplit('/', 1)[-1]})")
+                if WD:
+                    WD[0].connected(path)
             else:
                 note(f"headphones disconnected ({str(path).rsplit('/', 1)[-1]})")
+                if WD:
+                    WD[0].disconnected(path)
 
     bus.watch_name_owner("org.bluez", bluez_owner)
     bus.add_signal_receiver(interfaces_added, dbus_interface="org.freedesktop.DBus.ObjectManager",
@@ -625,6 +705,11 @@ def main():
     HP.append(Headphones(bus, later))
     HP[0].setup_agent()
     HP[0].emit(force=True)
+    WD.append(A2dpWatch(bus, later, HP[0].objects))
+    try:
+        WD[0].start()
+    except dbus.DBusException as e:
+        note(f"a2dp watchdog: {e.get_dbus_name()}")
     glib.g_main_loop_run(loop)
 
 
