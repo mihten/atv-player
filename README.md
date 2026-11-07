@@ -55,6 +55,21 @@ and Control Center:
   they show the queue's current state, also after a change in the app or the web remote, and change it.
 - **Love**: hearts the current item (the same ♥ as in the player and the web remote).
 
+## Sound profiles
+
+Equalizer (preset and custom curve), Boost and Loudness are kept per output; volume is not part of a profile.
+
+- **iPhone**: every Bluetooth device has its own profile (recognised by the device, named after it), and CarPlay has
+  one (it wins over the car's Bluetooth name when the car uses CarPlay). The speaker, wired headphones and AirPlay
+  share the **iPhone** profile. A device used for the first time starts with the iPhone profile's settings.
+  Settings → Sound shows the profile in use; changes there apply to it. Other saved profiles are listed below
+  and can be deleted with a swipe.
+- **Apple TV**: two profiles, **Apple TV** (Sound output = Apple TV) and **atv-audio** (Sound output = atv-audio).
+  Settings → Sound and the quick panel change the one in use.
+
+The switch happens by itself when the output changes, also during playback (new values on the running player, no
+pause). The server log shows `sound profile: <old> -> <new>`.
+
 ## Offline (iPhone downloads)
 
 For trips without the home server, the iPhone app downloads lists for offline listening:

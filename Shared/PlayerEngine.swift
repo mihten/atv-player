@@ -214,6 +214,16 @@ final class PlayerEngine: NSObject, ObservableObject {
         log("\(message); \(envNote)")
     }
 
+    /// Sound profile for the output in use (SoundProfiles): on a switch the new profile's Equalizer, Boost and
+    /// Loudness go to the running player like a Settings change (a rebuild only between processed and unprocessed).
+    func updateSoundProfile(_ why: String) {
+        guard let target = SoundProfiles.currentTarget() else { return }
+        let from = SoundProfiles.activeName
+        guard SoundProfiles.activate(target) else { return }
+        log("sound profile: \(from) -> \(target.name) [\(why)]: \(SoundSettings.summary)")
+        applySettings()
+    }
+
     /// First connection of this launch: tell the server log how the previous run ended.
     func reportLaunch() {
         log("\(launchNote); \(envNote)")
@@ -233,6 +243,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         launchNote = "app started; previous run ended in the \(UserDefaults.standard.string(forKey: Self.lastStateKey) ?? "unknown state")"
         UserDefaults.standard.set("foreground", forKey: Self.lastStateKey)
         SoundSettings.migrate()
+        if let target = SoundProfiles.currentTarget() { SoundProfiles.activate(target) }  // before the player reads the values
         let options = PlayerSettings.vlcOptions() + SoundSettings.limiterOptions()
         vlcOptions = options
         appliedSound = SoundSettings.configKey
@@ -584,6 +595,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         // ⏯ / Play acknowledges the atv-audio notice and then plays normally (without sound if the sink is still
         // missing); a first Play while it is missing shows the notice instead.
         if !acknowledgeNotice("play"), sinkHoldsPlay() { return }
+        #else
+        updateSoundProfile("play")  // a route change while the app was suspended may not have been delivered
         #endif
         logRequest("play", source)
         wantPlaying = true
@@ -636,7 +649,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         default: state = "background"
         }
         let route = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: "+")
-        return "app \(state), output \(route.isEmpty ? "none" : route), free memory \(os_proc_available_memory() / 1_048_576) MB"
+        return "app \(state), output \(route.isEmpty ? "none" : route), sound profile \(SoundProfiles.activeName), free memory \(os_proc_available_memory() / 1_048_576) MB"
     }
 
     /// What VLC currently has: picture, tracks. Logged with the 6 s progress check of every item.
@@ -1488,6 +1501,7 @@ extension PlayerEngine {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.vlcLogWindow("route change, reason \(reason.map { String($0.rawValue) } ?? "?") (1 new device, 2 device gone, 3 category, 4 override, 6 wake, 7 no route, 8 config)")
+                self.updateSoundProfile("route change")
                 guard reason == .oldDeviceUnavailable, self.wantPlaying else { return }
                 self.pause(source: "headphones removed")
             }
@@ -1762,6 +1776,7 @@ extension PlayerEngine {
     /// Settings → Sound output: applies at once. During playback it pauses with a notice that stays until Play
     /// (going to atv-audio mid-song: VLC muted, the sink opens the current item at the TV's position).
     func soundOutputChanged() {
+        defer { updateSoundProfile("sound output") }  // Apple TV and atv-audio keep their own Equalizer / Boost / Loudness
         guard sinkChosen != sinkActive else { return }
         let playing = wantPlaying && current != nil
         if playing { pause(source: "settings: sound output") }

@@ -11,6 +11,7 @@ struct SoundSettingsView: View {
     @AppStorage(SoundSettings.boostKey) private var boost = 0
     @AppStorage(AtvAudio.outputKey) private var soundOutput = AtvAudio.tvOutput
     @AppStorage(AtvAudio.lipSyncKey) private var lipSync = AtvAudio.defaultLipSync
+    @AppStorage(SoundProfiles.activeNameKey) private var profileName = SoundProfiles.defaultName
 
     /// atv-audio can only be chosen while a sink is connected; a stored choice stays (and is shown) without one.
     private var outputOptions: [(label: String, value: String)] {
@@ -48,7 +49,7 @@ struct SoundSettingsView: View {
                     }
                 }
             } header: {
-                Text("Equalizer")
+                Text("Equalizer · \(profileName) profile")
             }
             Section {
                 ChoiceRow("Boost", selection: $boost,
@@ -78,9 +79,10 @@ struct SoundSettingsView: View {
             } header: {
                 Text("Sound output")
             } footer: {
-                Text(soundOutput == AtvAudio.sinkOutput
+                Text((soundOutput == AtvAudio.sinkOutput
                      ? "atv-audio plays the sound, the Apple TV shows the picture and stays silent (also while atv-audio is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early."
                      : "atv-audio: a separate box plays the sound (e.g. aptX headphones), the Apple TV shows the picture. It can be chosen while it is connected.")
+                     + " Equalizer, Boost and Loudness are kept separately for Apple TV and atv-audio.")
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }
         }
