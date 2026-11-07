@@ -348,9 +348,17 @@ struct PhoneSoundSettingsView: View {
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(SoundSettings.boostKey) private var boost = 0
+    @AppStorage(SoundProfiles.activeNameKey) private var profileName = SoundProfiles.defaultName
+    @State private var savedProfiles: [SoundProfiles.Saved] = []
 
     var body: some View {
         Form {
+            Section {
+                LabeledContent("Sound profile", value: profileName)
+            } footer: {
+                Text("Equalizer, Boost and Loudness below belong to the output playing now. Every Bluetooth device and CarPlay keep their own (CarPlay wins over the car's Bluetooth); the speaker, wired headphones and AirPlay share the iPhone profile. A new device starts with the iPhone settings.")
+            }
+            .themedRow()
             Section {
                 Picker("Equalizer", selection: $eqPreset) {
                     Text("Off").tag("off")
@@ -376,10 +384,26 @@ struct PhoneSoundSettingsView: View {
                 Text(SoundSettings.loudnessNote)
             }
             .themedRow()
+            if !savedProfiles.isEmpty {
+                Section {
+                    ForEach(savedProfiles) { Text($0.name) }
+                        .onDelete { offsets in
+                            for index in offsets { SoundProfiles.forget(savedProfiles[index].key) }
+                            savedProfiles = SoundProfiles.saved
+                        }
+                } header: {
+                    Text("Other saved profiles")
+                } footer: {
+                    Text("Swipe to delete: that output starts again from the iPhone settings.")
+                }
+                .themedRow()
+            }
         }
         .phoneThemed()
         .navigationTitle("Sound")
         .withMiniPlayer()
+        .onAppear { savedProfiles = SoundProfiles.saved }
+        .onChange(of: profileName) { savedProfiles = SoundProfiles.saved }
         .onChange(of: "\(eqPreset)|\(loudness)|\(boost)") {
             engine.applySettings()
         }
