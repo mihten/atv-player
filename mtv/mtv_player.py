@@ -28,8 +28,9 @@ Environment:
   MTV_IR_ADDRESS     the remote's NEC address (default 0xE386: LG Magic Remote, set-top box profile "Vip")
   MTV_IR_KEYS        JSON command -> key name map replacing the default (see ir.py), e.g. {"0x0e": "ok"}
 
-Remote keys (ir.py names): OK = play / pause, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
-Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held). Each key shows a short text on the screen.
+Remote keys (ir.py names), menu closed: OK = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
+Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
+move, CH+ / CH- page, OK / Right select, Left back, Red close. The menu's first row is Play / Pause.
 
 Run: python3 mtv_player.py
 """
@@ -52,8 +53,9 @@ for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
         break
 from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
 import ir  # noqa: E402
+import menu as menu_mod  # noqa: E402
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -142,6 +144,30 @@ class Player:
         self.applied = None          # sound message the running filters were built from / changed to
         self.af_text = None          # last chain written to mpv's 'af' property
         self.last_status, self.status_key = -1e9, None
+        self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
+        self.http = None             # aiohttp session for the menu's lists (set while connected)
+        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state)
+
+    async def fetch(self, path):
+        if self.http is None:
+            raise RuntimeError("not connected")
+        import aiohttp
+        async with self.http.get(self.cfg.server + path, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            r.raise_for_status()
+            return await r.json()
+
+    async def draw_menu(self):
+        """The menu on the screen (osd-overlay 1), or nothing when it is closed."""
+        if not self.mpv:
+            return
+        try:
+            if self.menu.open:
+                await self.mpv.command("osd-overlay", 1, "ass-events", self.menu.render(), menu_mod.RES_X,
+                                       menu_mod.RES_Y, 10)
+            else:
+                await self.mpv.command("osd-overlay", 1, "none", "")
+        except MpvError as e:
+            log(f"menu draw: {e}")
 
     # -- outgoing
     def send(self, msg):
@@ -163,6 +189,8 @@ class Player:
             self.applied = self.sound
         if self.item:
             await self._load(self.pos)
+        if self.menu.open:
+            await self.draw_menu()
 
     def detach(self):
         self.mpv = None
@@ -276,6 +304,11 @@ class Player:
         elif t == "sound":
             self.sound = msg
             await self.apply_sound()
+        elif t == "state" and isinstance(msg.get("state"), dict):
+            self.state = msg["state"]
+            if self.menu.open and len(self.menu.pages) == 1:
+                self.menu.refresh_root()
+                await self.draw_menu()
 
     async def on_control(self, msg):
         action, mpv = msg.get("action"), self.mpv
@@ -363,19 +396,24 @@ async def osd(player, text, ms=1500):
 
 
 async def on_key(player, name, held):
-    """A remote key: a server command (the server owns the queue; it sends the control back to this player)."""
+    """A remote key: the menu's while it is open; else a server command (the server owns the queue and sends the
+    control back to this player)."""
+    if player.menu.open:
+        if await player.menu.key(name):
+            await player.draw_menu()
+        if not held:
+            player.log(f"menu key {name}")
+        return
+    if name == "ok":
+        await player.menu.show()
+        await player.draw_menu()
+        player.log("menu opened")
+        return
     if not player._send:
         await osd(player, "Not connected to the server")
         return
     it = player.item
-    if name == "ok":
-        if not it:
-            await osd(player, "Nothing to play")
-            return
-        playing = player.want_play
-        player.send({"type": "cmd", "cmd": "toggle"})
-        await osd(player, "Pause" if playing else "Play")
-    elif name in ("ch_up", "ch_down"):
+    if name in ("ch_up", "ch_down"):
         player.send({"type": "cmd", "cmd": "next" if name == "ch_up" else "prev"})
         await osd(player, "Next" if name == "ch_up" else "Previous")
     elif name in SEEK_KEYS:
@@ -501,6 +539,7 @@ async def run_server(cfg, player, stop):
                     backoff = 1.0
                     queue = asyncio.Queue()
                     player._send = queue.put_nowait
+                    player.http = http
                     player.log(f"mtv-player {VERSION} up (mode {cfg.mode}, interpolation "
                                f"{'on' if cfg.interpolation else 'off'}, audio {cfg.audio_device})")
 
@@ -518,6 +557,7 @@ async def run_server(cfg, player, stop):
                     finally:
                         wtask.cancel()
                         player._send = None
+                        player.http = None
             except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
                 log(f"server: {e!r}")
             if stop.is_set():
