@@ -24,6 +24,12 @@ Environment:
   MTV_VOLUME         mpv volume 0-100 (default 100: the TV / soundbar sets the level)
   MTV_MPV            mpv binary (default mpv)
   MTV_MPV_ARGS       extra mpv options, shell-quoted (e.g. tone mapping)
+  MTV_IR_DEVICE      raw LIRC receiver for the remote (default /dev/lirc0; "off" = no remote)
+  MTV_IR_ADDRESS     the remote's NEC address (default 0xE386: LG Magic Remote, set-top box profile "Vip")
+  MTV_IR_KEYS        JSON command -> key name map replacing the default (see ir.py), e.g. {"0x0e": "ok"}
+
+Remote keys (ir.py names): OK = play / pause, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
+Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held). Each key shows a short text on the screen.
 
 Run: python3 mtv_player.py
 """
@@ -45,8 +51,9 @@ for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
         sys.path.insert(0, os.path.abspath(_d))
         break
 from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
+import ir  # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -79,6 +86,13 @@ class Config:
             self.volume = 100
         self.mpv = env.get("MTV_MPV") or "mpv"
         self.extra = shlex.split(env.get("MTV_MPV_ARGS") or "")
+        dev = env.get("MTV_IR_DEVICE")
+        self.ir_device = "" if (dev or "").lower() in ("off", "0", "no", "none") else (dev or "/dev/lirc0")
+        try:
+            self.ir_address = int(env.get("MTV_IR_ADDRESS") or "0", 0) or ir.DEFAULT_ADDRESS
+        except ValueError:
+            self.ir_address = ir.DEFAULT_ADDRESS
+        self.ir_keys = ir.parse_keys(env.get("MTV_IR_KEYS"))
 
     @property
     def ws_url(self):
@@ -333,6 +347,90 @@ class Player:
                    "duration": dur})
 
 
+SEEK_KEYS = {"right": 10.0, "left": -10.0, "up": 60.0, "down": -60.0}
+
+
+def clock(sec):
+    sec = max(0, int(sec))
+    h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+async def osd(player, text, ms=1500):
+    if player.mpv:
+        with contextlib.suppress(MpvError):
+            await player.mpv.command("show-text", text, ms)
+
+
+async def on_key(player, name, held):
+    """A remote key: a server command (the server owns the queue; it sends the control back to this player)."""
+    if not player._send:
+        await osd(player, "Not connected to the server")
+        return
+    it = player.item
+    if name == "ok":
+        if not it:
+            await osd(player, "Nothing to play")
+            return
+        playing = player.want_play
+        player.send({"type": "cmd", "cmd": "toggle"})
+        await osd(player, "Pause" if playing else "Play")
+    elif name in ("ch_up", "ch_down"):
+        player.send({"type": "cmd", "cmd": "next" if name == "ch_up" else "prev"})
+        await osd(player, "Next" if name == "ch_up" else "Previous")
+    elif name in SEEK_KEYS:
+        if not it:
+            return
+        dur = (player.mpv.props.get("duration") if player.mpv and player.file_loaded else None) or it.get("duration") or 0
+        target = max(0.0, player.pos + SEEK_KEYS[name])
+        if dur:
+            target = min(target, max(0.0, dur - 2))
+        player.pos = target  # held keys add up before the server's seek comes back
+        player.send({"type": "cmd", "cmd": "seek", "position": round(target, 3)})
+        step = SEEK_KEYS[name]
+        await osd(player, f"{'+' if step > 0 else '-'}{abs(step):.0f} s   {clock(target)} / {clock(dur)}")
+    else:
+        log(f"key {name}: not assigned")
+        return
+    if not held:
+        player.log(f"key {name}")
+
+
+async def run_ir(cfg, player, stop):
+    """Reads the remote from a raw LIRC receiver while the program runs."""
+    if not cfg.ir_device:
+        return
+    fd = ir.open_device(cfg.ir_device)
+    if fd is None:
+        log(f"remote: cannot open {cfg.ir_device}, no remote")
+        return
+    loop = asyncio.get_running_loop()
+    mode2 = ir.Mode2()
+    keys = ir.Keys(lambda name, held: asyncio.ensure_future(on_key(player, name, held)),
+                   address=cfg.ir_address, keys=cfg.ir_keys,
+                   on_unknown=lambda a, c: log(f"remote: unknown key address 0x{a:x} command 0x{c:02x}"))
+
+    def readable():
+        try:
+            data = os.read(fd, 4096)
+        except BlockingIOError:
+            return
+        except OSError as e:
+            log(f"remote: {e}")
+            loop.remove_reader(fd)
+            return
+        for frame in mode2.feed(data):
+            keys.frame(frame)
+
+    loop.add_reader(fd, readable)
+    log(f"remote: reading {cfg.ir_device} (NEC address 0x{cfg.ir_address:x})")
+    try:
+        await stop.wait()
+    finally:
+        loop.remove_reader(fd)
+        os.close(fd)
+
+
 class MpvObserver(MpvIpc):
     OBSERVE = MpvIpc.OBSERVE + ("time-pos",)
 
@@ -449,7 +547,7 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     tasks = [asyncio.create_task(c) for c in (run_mpv(cfg, player, stop), run_server(cfg, player, stop),
-                                              run_ticks(player, stop))]
+                                              run_ticks(player, stop), run_ir(cfg, player, stop))]
     await stop.wait()  # SIGTERM / SIGINT: the server loop sits in a ws read, so cancel instead of waiting for it
     for t in tasks:
         t.cancel()
