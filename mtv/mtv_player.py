@@ -63,7 +63,7 @@ import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 import remotes as remotes_mod  # noqa: E402
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -215,7 +215,7 @@ class Player:
     async def remote_command(self, msg):
         if not self.cfg.can_learn:
             return
-        err = await self.remotes.command(msg.get("op"), msg.get("name"))
+        err = await self.remotes.command(msg.get("op"), msg.get("name"), msg.get("function"), msg.get("text"))
         if err:
             self.remotes.text = err
             self.log(f"remotes: {err}")

@@ -138,6 +138,17 @@ async def main():
     await m.key("ok")
     await m.key("blue")
     check(not m.open, "Blue closes from any depth")
+    await m.show()
+    m.page.sel = 2
+    await m.key("ok")
+    depth = len(m.pages)
+    await m.key("left")
+    check(m.open and len(m.pages) == depth - 1, "Left still goes back one page (Back did not change it)")
+    await m.key("ok")
+    await m.key("back")
+    check(not m.open, "Back closes from any depth")
+    await m.show()
+    check("Menu / Back close" in m.render(), "the hint names Menu / Back")
 
     # ---- For you: start_id; empty list; music videos
     await m.show()

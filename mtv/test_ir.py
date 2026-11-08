@@ -298,6 +298,9 @@ def evdev():
     got.clear()
     k.feed(ev(2, 1) + ev(2, 0) + ev(11, 1) + ev(11, 0))
     check([g[0] for g in got] == ["1", "0"], "digits 1 and 0")
+    got.clear()
+    k.feed(ev(1, 1) + ev(1, 0) + ev(14, 1) + ev(14, 0))
+    check([g[0] for g in got] == ["back", "back"], "Esc / Backspace = back (the Back function)")
     check(ir.EVENT.size == 24, "struct input_event is 24 bytes (64-bit)")
 
 

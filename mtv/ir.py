@@ -200,7 +200,7 @@ EVDEV_KEYS = {
     59: "red", 60: "green", 61: "yellow", 62: "blue",                        # F1 .. F4
     11: "0", 2: "1", 3: "2", 4: "3", 5: "4", 6: "5", 7: "6", 8: "7", 9: "8", 10: "9",
     164: "ok", 207: "ok",                                                   # Play/Pause media keys
-    1: "red", 14: "red",                                                    # Esc / Backspace close like Red
+    1: "back", 14: "back",                                                  # Esc / Backspace: Back (closes the menu)
 }
 
 

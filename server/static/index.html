@@ -1681,7 +1681,7 @@ async function audioSheet() {
   const draw = async () => {
     if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-audio-sheet]")) { clearInterval(audioPoll); audioPoll = null; return; }
     let s, m; try { s = await (await fetch("/api/state?session=box")).json(); m = await (await fetch("/api/state?session=mtv")).json(); } catch { return; }
-    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks, m.players, m.output]);
+    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks, m.players, m.output, rmtOpen]);
     if (key === lastKey) return;
     lastKey = key;
     const outs = (a.outputs || []).map((o) => `<option value="${esc(o.key)}"${o.default ? " selected" : ""}>${esc(o.name)}${o.codec ? ` (${esc(codecLabel(o.codec))})` : ""}</option>`).join("");
@@ -1721,6 +1721,14 @@ async function audioSheet() {
     const b = e.target.closest("[data-a]"); if (!b) return;
     if (b.dataset.a === "back") { clearInterval(audioPoll); audioPoll = null; return settingsMenu(); }
     if (b.dataset.a === "abtest") { clearInterval(audioPoll); audioPoll = null; return abSheet(); }
+    if (b.dataset.a === "r-open") { rmtOpen = rmtOpen === b.dataset.name ? null : b.dataset.name; return draw(); }  // a profile's buttons
+    if (b.dataset.a === "r-label") {   // name the button of one function of a saved remote profile
+      const cur = b.dataset.cur || "", t = prompt(`Name of the button for “${b.dataset.fn}” on ${b.dataset.name} (empty = no name):`, cur);
+      if (t === null || t.trim() === cur) return;
+      b.disabled = true;
+      return sapi("POST", "/api/mtv-remote", { op: "label", name: b.dataset.name, function: b.dataset.fn, text: t.trim() }, audioSheet)
+        .catch(() => {}).then(() => setTimeout(draw, 300));
+    }
     if (b.dataset.a.startsWith("r-")) {   // TV Player remote profiles
       const op = b.dataset.a.slice(2), name = b.dataset.name, noName = ["cancel", "skip", "keep", "discard"].includes(op);
       if (op === "delete" && !confirm(`Delete the remote “${name}”?`)) return;
@@ -1738,27 +1746,43 @@ async function audioSheet() {
 }
 
 /** TV Player -> Remote: the profiles of the TV box's remote receiver (a Flirc): switch, delete, learn a new one. The TV shows
-    the steps of a learn; this page shows the progress and can stop it. */
+    the steps of a learn; this page shows the progress and can stop it. Tapping a profile opens its buttons: which of the
+    player's functions have a button, and a name for each (kept by the player under that profile). */
+let rmtOpen = null;
 function remoteSection(m) {
   const r = m.output && m.output.remote;
   if (!m.players || !r || !r.can) return "";
   const p = r.progress || {}, busy = p.state !== "idle";
   const act = Array.isArray(r.active) ? r.active : r.active ? [r.active] : [];
+  const fns = r.functions || [], det = r.details || {};
+  const buttons = (n) => {   // the function list of one profile: button set or not, its name, Name…
+    const d = det[n] || { set: [], names: {} };
+    return fns.map((f) => {
+      const has = (d.set || []).includes(f), nm = (d.names || {})[f] || "";
+      return `<div class="set-row" style="margin-left:18px;padding:6px 12px"><span class="set-dot${has ? " on" : ""}"></span>` +
+        `<div class="set-main"><div class="set-t">${esc(f)}</div><div class="set-s">${has ? (nm ? `Button: ${esc(nm)}` : "Button set") : "Not set"}</div></div>` +
+        (has ? `<button class="pill" data-a="r-label" data-name="${esc(n)}" data-fn="${esc(f)}" data-cur="${esc(nm)}">Name…</button>` : "") + `</div>`;
+    }).join("");
+  };
+  if (rmtOpen && !(r.profiles || []).includes(rmtOpen)) rmtOpen = null;
   const rows = (r.profiles || []).map((n) => {
-    const on = act.includes(n), dis = busy ? " disabled" : "";
+    const on = act.includes(n), dis = busy ? " disabled" : "", open = rmtOpen === n;
+    const d = det[n], cnt = d && fns.length ? ` · ${(d.set || []).length} of ${fns.length} buttons` : "";
     return `<div class="set-row"><span class="set-dot${on ? " on" : ""}"></span>` +
-      `<div class="set-main"><div class="set-t">${esc(n)}</div><div class="set-s">${on ? "In use" : "Saved"}</div></div>` +
+      `<div class="set-main" data-a="r-open" data-name="${esc(n)}" style="cursor:pointer" title="Show the buttons">` +
+      `<div class="set-t">${esc(n)} <span class="set-s">${open ? "▾" : "▸"}</span></div><div class="set-s">${on ? "In use" : "Saved"}${cnt}</div></div>` +
       (on ? `<button class="pill" data-a="r-remove" data-name="${esc(n)}"${busy || act.length < 2 ? " disabled" : ""}>Off</button>`
           : `<button class="pill" data-a="r-add" data-name="${esc(n)}"${dis}>Add</button>` +
             `<button class="pill" data-a="r-use" data-name="${esc(n)}"${dis}>Only</button>` +
-            `<button class="ib" data-a="r-delete" data-name="${esc(n)}" title="Delete"${dis}>${ic("trash")}</button>`) + `</div>`;
+            `<button class="ib" data-a="r-delete" data-name="${esc(n)}" title="Delete"${dis}>${ic("trash")}</button>`) + `</div>` +
+      (open && fns.length ? buttons(n) : "");
   }).join("");
   const fn = (n) => (p.lit || []).includes(n) ? `<span style="color:#80d080">✓ ${esc(n)}</span>` : `<span class="set-s">· ${esc(n)}</span>`;
   const row = (title, buttons) => `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">${title}</div></div>${buttons}</div>`;
   const hint = (t) => `<div class="set-hint">${t}</div>`;
   const status = p.state === "testing"
     ? row(`Testing “${esc(p.name)}” ${p.phase === "test2" ? "2/2" : "1/2"}`, `<button class="pill" data-a="r-cancel">Cancel</button>`) +
-      hint(p.phase === "test2" ? "On the TV: press buttons you did NOT assign (colours, digits…). Nothing should happen. Then press your Menu button."
+      hint(p.phase === "test2" ? `On the TV: press buttons you did NOT assign (colours, digits…). Nothing should happen. Then press your ${esc(p.end || "Menu")} button.`
         : "On the TV: press each button you assigned, once.") +
       hint((p.expected || []).map(fn).join(" &nbsp; ")) +
       ((p.strays || []).length ? `<div class="set-hint" style="color:#f08080">Fired without being assigned: ${(p.strays || []).map(esc).join(", ")}</div>` : "")
@@ -1769,13 +1793,13 @@ function remoteSection(m) {
       `<div class="set-btns"><button class="pill primary" data-a="r-discard">Discard</button><button class="pill" data-a="r-keep">Keep anyway</button><span class="grow"></span></div>`
     : p.state === "learning"
     ? row(`Learning “${esc(p.name)}” ${esc(String(p.index + 1))}/${esc(String(p.total))}`,
-        (p.optional ? `<button class="pill" data-a="r-skip">Skip</button>` : "") + `<button class="pill" data-a="r-cancel">Cancel</button>`) +
-      hint(`On the TV: press the button you want for “${esc(p.label)}”${p.note ? ` · ${esc(p.note)}` : ""}`)
+        (p.optional ? `<button class="pill" data-a="r-skip">Not set</button>` : "") + `<button class="pill" data-a="r-cancel">Cancel</button>`) +
+      hint(`On the TV: press the button you want for “${esc(p.label)}”${p.optional ? " (or your Play / Pause button to leave it not set)" : ""}${p.note ? ` · ${esc(p.note)}` : ""}`)
     : p.state === "switching" ? `<div class="set-hint">Switching to “${esc(p.name)}”…</div>`
     : p.text ? `<div class="set-hint">${esc(p.text)}</div>` : "";
   return sec("Remote") + (rows || `<div class="set-hint">No remote saved yet.</div>`) + status +
     `<div class="set-btns"><button class="pill primary" data-a="r-learn"${busy ? " disabled" : ""}>Learn a new remote…</button><span class="grow"></span></div>` +
-    `<div class="set-hint">Several remotes can be in use at once: Add puts a saved one next to the ones already in use, Off takes one out, Only switches to that one alone. A new remote joins the ones in use. To learn one, set the TV's universal control to its device first (for example Set-top box); the TV then names each function (Play / Pause, Menu, arrows, Next, Previous) and you press whichever button you want for it, once, aimed at the receiver. Next and Previous can be skipped. A test follows. The buttons in use now are put back if you stop.</div>`;
+    `<div class="set-hint">Several remotes can be in use at once: Add puts a saved one next to the ones already in use, Off takes one out, Only switches to that one alone. A new remote joins the ones in use. To learn one, set the TV's universal control to its device first (for example Set-top box); the TV then names each function (Play / Pause, Menu, arrows, Next, Previous, Back) and you press whichever button you want for it, once, aimed at the receiver. Play / Pause comes first; after that, pressing your Play / Pause button again (or Not set here) leaves a function without a button. A test follows. The buttons in use now are put back if you stop. Tap a remote to see its buttons and name them.</div>`;
 }
 
 /** Headphones on the player card: atv-audio's own queue, or the Apple TV while its sound goes to atv-audio. */

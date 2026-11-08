@@ -190,6 +190,29 @@ async def main(tmp):
                   and pr["strays"] == ["Down x2", "green"] and len(pr["expected"]) == 12 and len(pr["expected"][1]) == 16
                   and len(pr["problems"]) == 4 and len(pr["problems"][0]) == 160 and "junk" not in pr,
                   f"testing progress typed and bounded ({pr['state']}, {len(pr['expected'])} expected)")
+            check(pr.get("end") == "", "testing progress: no end key given -> empty")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "progress": {
+                "state": "testing", "name": "T", "phase": "test2", "end": "Play / Pause" + "x" * 40}}})
+            await H.drain(mtv)
+            pr = (await H.state(http, "mtv"))["output"]["remote"]["progress"]
+            check(pr["end"] == ("Play / Pause" + "x" * 40)[:16], f"the key that ends step 2 is passed on, bounded ({pr['end']})")
+            # the overview: the player's functions, per profile the ones with a button and the names typed for them
+            fns = ["Play / Pause", "Menu", "Up", "Down", "Left", "Right", "Next", "Previous", "Back"]
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {
+                "can": True, "profiles": ["TotalTV", "STB Vip"], "active": ["TotalTV"], "functions": fns + ["f" * 40] * 20,
+                "details": {"TotalTV": {"set": ["Play / Pause", "Up", "Nope"], "names": {"Play / Pause": "OK" + "y" * 50, "Nope": "x", "Up": ""}},
+                            "STB Vip": "junk", "Ghost": {"set": ["Up"], "names": {}}}}})
+            await H.drain(mtv)
+            rem = (await H.state(http, "mtv"))["output"]["remote"]
+            check(rem["functions"][:9] == fns and len(rem["functions"]) == 16 and len(rem["functions"][9]) == 16, "functions typed and bounded")
+            check(rem["details"]["TotalTV"] == {"set": ["Play / Pause", "Up"], "names": {"Play / Pause": ("OK" + "y" * 50)[:30]}},
+                  f"details: only known functions, names bounded, empty names dropped ({rem['details']['TotalTV']})")
+            check(rem["details"]["STB Vip"] == {"set": [], "names": {}} and "Ghost" not in rem["details"],
+                  "details: broken entry -> empty, a profile not in the list is dropped")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "profiles": ["A"]}})
+            await H.drain(mtv)
+            rem = (await H.state(http, "mtv"))["output"]["remote"]
+            check(rem["functions"] == [] and rem["details"] == {"A": {"set": [], "names": {}}}, "an older player without details: empty overview")
             await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "progress": {
                 "state": "review", "name": "T", "phase": "bogus", "problems": ["no answer from Up"]}}})
             await H.drain(mtv)
@@ -213,14 +236,21 @@ async def main(tmp):
             for body in ({"op": "learn", "name": "Cambridge"}, {"op": "use", "name": "Vip STB"}, {"op": "add", "name": "TotalTV"},
                          {"op": "remove", "name": "TotalTV"},
                          {"op": "delete", "name": "Old"}, {"op": "cancel"}, {"op": "skip"}, {"op": "keep"},
-                         {"op": "discard"}):
+                         {"op": "discard"}, {"op": "label", "name": "TotalTV", "function": "Play / Pause", "text": "OK"},
+                         {"op": "label", "name": "TotalTV", "function": "Menu", "text": ""},
+                         {"op": "label", "name": "TotalTV", "function": "Up", "text": "u" * 100}):
                 async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
                     check(r.status == 200, f"POST /api/mtv-remote {body['op']} -> {r.status}")
                 got, _ = await until(mtv, "remote")
-                want = {"type": "remote", "op": body["op"], **({"name": body["name"]} if "name" in body else {})}
+                want = {"type": "remote", "op": body["op"], **({"name": body["name"]} if "name" in body else {}),
+                        **({"function": body["function"], "text": body["text"][:60]} if body["op"] == "label" else {})}
                 check(got == want, f"mtv player gets {want} ({got})")
             for body, what in (({"op": "format", "name": "x"}, "unknown op"), ({"op": "learn"}, "learn without a name"), ({"op": "add"}, "add without a name"),
-                               ({"op": "use", "name": "x" * 80}, "name too long"), ({"op": "use", "name": 5}, "name not text")):
+                               ({"op": "use", "name": "x" * 80}, "name too long"), ({"op": "use", "name": 5}, "name not text"),
+                               ({"op": "label", "name": "A", "text": "x"}, "label without a function"),
+                               ({"op": "label", "name": "A", "function": "Up", "text": 5}, "label text not text"),
+                               ({"op": "label", "name": "A", "function": "Up", "text": "x" * 300}, "label text too long"),
+                               ({"op": "label", "function": "Up", "text": "x"}, "label without a profile")):
                 async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
                     check(r.status == 400, f"{what} -> 400 ({r.status})")
             got, _ = await until(mtv, "remote", 0.6)

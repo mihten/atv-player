@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.24.0"
+VERSION = "0.25.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -986,7 +986,8 @@ def clean_mtv_output(data):
 
 def clean_mtv_remote(r):
     """The player's remote profiles: {can, profiles [names], active [names in use together], progress {state, name, text, index, total, label,
-    note}}, bounded and typed, or None."""
+    note}, functions [the player's functions], details {profile: {set [functions with a button], names {function: button name}}}},
+    bounded and typed, or None."""
     if not isinstance(r, dict):
         return None
 
@@ -1007,11 +1008,21 @@ def clean_mtv_remote(r):
             return [t(x, m) for x in (v if isinstance(v, list) else [])[:n]]
         out_prog.update(phase=prog.get("phase") if prog.get("phase") in ("test1", "test2", "review") else "",
                         expected=lst(prog.get("expected"), 12, 16), lit=lst(prog.get("lit"), 12, 16),
-                        strays=lst(prog.get("strays"), 12, 24), problems=lst(prog.get("problems"), 4, 160))
+                        strays=lst(prog.get("strays"), 12, 24), problems=lst(prog.get("problems"), 4, 160),
+                        end=t(prog.get("end"), 16))
     profiles = [t(n, 30) for n in (r.get("profiles") if isinstance(r.get("profiles"), list) else [])[:40]]
     act = r.get("active") if isinstance(r.get("active"), list) else [r.get("active")] if r.get("active") else []
+    # the player's functions, and per profile which have a button + the names typed for them (Settings overview)
+    functions = [t(f, 16) for f in (r.get("functions") if isinstance(r.get("functions"), list) else [])[:16] if f]
+    details = {}
+    raw = r.get("details") if isinstance(r.get("details"), dict) else {}
+    for name in profiles:
+        d = raw.get(name) if isinstance(raw.get(name), dict) else {}
+        have = [f for f in (d.get("set") if isinstance(d.get("set"), list) else []) if f in functions]
+        names = d.get("names") if isinstance(d.get("names"), dict) else {}
+        details[name] = {"set": have, "names": {f: t(v, 30) for f, v in names.items() if f in functions and v}}
     return {"can": bool(r.get("can")), "profiles": profiles, "active": [t(n, 30) for n in act[:40] if n],
-            "progress": out_prog}
+            "progress": out_prog, "functions": functions, "details": details}
 
 
 def mtv_output(s):
@@ -3565,12 +3576,12 @@ async def api_atv_audio(request):
 
 
 
-MTV_REMOTE_OPS = ("learn", "use", "add", "remove", "delete", "cancel", "skip", "keep", "discard")
+MTV_REMOTE_OPS = ("learn", "use", "add", "remove", "delete", "cancel", "skip", "keep", "discard", "label")
 MTV_REMOTE_NO_NAME = ("cancel", "skip", "keep", "discard")
 
 
 async def api_mtv_remote(request):
-    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, use only one / add / remove one of several in use together, delete, cancel, skip an optional function, keep / discard after a failed test).
+    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, use only one / add / remove one of several in use together, delete, cancel, skip a function, keep / discard after a failed test, name a function's button).
     The player answers through its `output` message (state.output.remote)."""
     need_admin(request)
     body = await _json_body(request)
@@ -3580,11 +3591,17 @@ async def api_mtv_remote(request):
     name = body.get("name")
     if op not in MTV_REMOTE_NO_NAME and not (isinstance(name, str) and 0 < len(name.strip()) <= 60):
         raise web.HTTPBadRequest(text="a profile name is needed")
+    extra = {}
+    if op == "label":   # a button name for one function of a saved profile ("" removes it)
+        fn, text = body.get("function"), body.get("text", "")
+        if not (isinstance(fn, str) and 0 < len(fn) <= 20) or not isinstance(text, str) or len(text) > 200:
+            raise web.HTTPBadRequest(text="a function and a text are needed")
+        extra = {"function": fn, "text": text[:60]}
     s = SESSIONS["mtv"]
     if not s.players:
         raise web.HTTPServiceUnavailable(text="the TV Player is not running")
-    log.info("tv remote: %s %s (web remote)", op, name or "")
-    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op not in MTV_REMOTE_NO_NAME else {})})
+    log.info("tv remote: %s %s%s (web remote)", op, name or "", f" {extra['function']}" if extra else "")
+    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op not in MTV_REMOTE_NO_NAME else {}), **extra})
     return web.json_response({"ok": True})
 
 

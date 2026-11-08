@@ -20,8 +20,9 @@ import time
 
 RES_X, RES_Y = 1920, 1080
 # What the player needs, not what a remote has: (flirc key name, function, hint, optional). Whatever button the user
-# presses for a function, the Flirc sends the key named here and ir.EVDEV_KEYS turns it into the player's key. Optional
-# functions can be skipped from the phone (a small remote has no spare buttons).
+# presses for a function, the Flirc sends the key named here and ir.EVDEV_KEYS turns it into the player's key. Play / Pause
+# comes first and is the only one that must be learned: every later function is skipped ("not set") by pressing the
+# Play / Pause button again, or by Skip on the phone (a small remote has no spare buttons). `optional` = shown as optional.
 KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("F4", "Menu", "opens and closes the menu", False),
         ("up", "Up", "menu up; forward 1 minute", False),
@@ -29,7 +30,10 @@ KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("left", "Left", "menu back; back 10 seconds", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
         ("pageup", "Next", "next video; page down in the menu", True),
-        ("pagedown", "Previous", "previous video; page up in the menu", True)]
+        ("pagedown", "Previous", "previous video; page up in the menu", True),
+        ("escape", "Back", "closes the menu", True)]
+FUNCTIONS = [k[1] for k in KEYS]
+LABEL_MAX = 30            # characters of a button name typed on the phone
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,29}$")
 TIMEOUT = 40.0            # s to wait for one press
 MAX_REJECTS = 5           # presses refused ("already used") before giving up
@@ -55,9 +59,10 @@ MAX_PARTIAL = 8
 FCFG_MAGIC = b"\xef\xbe\xad\xde"
 FCFG_HEAD, FCFG_ROW = 28, 16
 # The player's key name each learned function arrives as (ir.EVDEV_KEYS: Enter -> ok, F4 -> blue, PgUp -> ch_up ...)
-HID = {"return": 0x28, "F4": 0x3d, "up": 0x52, "down": 0x51, "left": 0x50, "right": 0x4f, "pageup": 0x4b, "pagedown": 0x4e}
+HID = {"return": 0x28, "F4": 0x3d, "up": 0x52, "down": 0x51, "left": 0x50, "right": 0x4f, "pageup": 0x4b, "pagedown": 0x4e,
+       "escape": 0x29}
 PLAYER_KEY = {"return": "ok", "F4": "blue", "up": "up", "down": "down", "left": "left", "right": "right",
-              "pageup": "ch_up", "pagedown": "ch_down"}
+              "pageup": "ch_up", "pagedown": "ch_down", "escape": "back"}
 TEST_IDLE = 60.0          # s without any key before a test step gives up
 REVIEW_FOR = 120.0        # s the phone has to choose Keep / Discard after a failed test (then: discard)
 WARN = "&H4080F0&"        # orange (BGR)
@@ -74,6 +79,12 @@ def clean_name(name):
     """The profile name, or None when it is not allowed (it becomes a file name)."""
     name = " ".join(str(name or "").split())
     return name if NAME_RE.match(name) else None
+
+
+def clean_label(text):
+    """A button name typed on the phone: printable, single spaces, at most LABEL_MAX characters ('' = no name)."""
+    text = "".join(c for c in str(text or "") if c.isprintable())
+    return " ".join(text.split())[:LABEL_MAX].strip()
 
 
 def read_fcfg(path):
@@ -98,6 +109,12 @@ def row_name(row):
         if HID.get(flirc) == hid:
             return label
     return f"key 0x{hid:02x}"
+
+
+def table_functions(rows):
+    """The functions (KEYS order) that have a real button in a table's rows (a stored repeat frame does not count)."""
+    hids = {r[FCFG_ROW - 1] for r in rows if row_hash(r) not in NOT_A_BUTTON}
+    return [label for flirc, label, _h, _o in KEYS if HID[flirc] in hids]
 
 
 def merge_tables(tables):
@@ -153,10 +170,55 @@ class Remotes:
         self._menu_pressed = False
         self._want = None            # (op, names) of a running switch
         self._before = []            # profiles in use before a learn
+        self.skipped = []            # KEYS indexes left "not set" in this learn
+        self.ok_row = self.ok_hash = None   # the Play / Pause row, out of the receiver while the other functions are learned
 
     # -- profiles on disk
     def _path(self, name):
         return os.path.join(self.dir, name + ".fcfg")
+
+    def _labels_path(self, name):
+        return os.path.join(self.dir, name + ".labels.json")
+
+    def labels(self, name):
+        """{function: button name} typed on the phone for a profile."""
+        try:
+            with open(self._labels_path(name)) as f:
+                val = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return {k: v for k, v in val.items() if k in FUNCTIONS and isinstance(v, str) and v} if isinstance(val, dict) else {}
+
+    def details(self):
+        """Per profile: the functions that have a button, and the names given to them (web remote overview)."""
+        out = {}
+        for n in self.profiles():
+            try:
+                _h, rows = read_fcfg(self._path(n))
+                have = table_functions(rows)
+            except (OSError, ValueError):
+                have = []
+            out[n] = {"set": have, "names": self.labels(n)}
+        return out
+
+    def set_label(self, name, function, text):
+        """Name the button of one function of a saved profile ('' removes the name). Returns an error text or None."""
+        if name not in self.profiles():
+            return "no such profile"
+        if function not in FUNCTIONS:
+            return "unknown function"
+        labels = self.labels(name)
+        text = clean_label(text)
+        if text:
+            labels[function] = text
+        else:
+            labels.pop(function, None)
+        tmp = self._labels_path(name) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(labels, f)
+        os.replace(tmp, self._labels_path(name))
+        self.log(f"remotes: {name}: {function} button " + (f"named {text!r}" if text else "name removed"))
+        return None
 
     def profiles(self):
         try:
@@ -241,11 +303,13 @@ class Remotes:
         prog = {"state": state, "name": self.name if state != "idle" else "", "text": self.text}
         if state == "learning":
             fn = KEYS[min(self.index, len(KEYS) - 1)]
-            prog.update(index=self.index, total=len(KEYS), label=fn[1], optional=fn[3], note=self.note)
+            prog.update(index=self.index, total=len(KEYS), label=fn[1], optional=self.index > 0, note=self.note)
         elif state in ("testing", "review"):
             prog.update(phase=self.phase, expected=[KEYS[i][1] for i in self.learned],
-                        lit=[l for l, n in self.hits.items() if n], strays=self._stray_list(), problems=list(self.problems))
-        return {"profiles": self.profiles(), "active": self.active_names, "progress": prog}
+                        lit=[l for l, n in self.hits.items() if n], strays=self._stray_list(), problems=list(self.problems),
+                        end=self._end_key()[1])
+        return {"profiles": self.profiles(), "active": self.active_names, "progress": prog,
+                "functions": FUNCTIONS, "details": self.details()}
 
     # -- the flirc_util program
     async def _util(self, *args, timeout=15.0):
@@ -307,11 +371,16 @@ class Remotes:
         return "old buttons restored" if ok else "RESTORE FAILED - the receiver needs a profile from the web remote"
 
     # -- web remote commands (return an error text at once, or None when started)
-    async def command(self, op, name=None):
+    async def command(self, op, name=None, function=None, text=None):
         if op == "cancel":
             return await self.cancel()
         if op == "skip":
             return await self.skip()
+        if op == "label":    # only a file next to the profile: allowed while something else runs
+            err = self.set_label(clean_name(name), function, text)
+            if err is None:
+                await self.changed()
+            return err
         if op in ("keep", "discard"):
             if self.phase != "review":
                 return "nothing to decide"
@@ -329,6 +398,7 @@ class Remotes:
             self.mode, self.name, self.index, self.note, self.cancelled = "learn", clean, 0, "", False
             self.stage, self.restored, self.ok, self.text = "run", None, False, ""
             self.learned, self.phase, self.hits, self.strays, self.problems, self.decision = [], None, {}, {}, [], None
+            self.skipped, self.ok_row, self.ok_hash = [], None, None
             self._before = self.active_names
             self._mark(True)
             self.task = asyncio.ensure_future(self._learn())
@@ -354,6 +424,8 @@ class Remotes:
                 return "that profile is in use - turn it off first"
             with contextlib.suppress(OSError):
                 os.unlink(self._path(clean))
+            with contextlib.suppress(OSError):
+                os.unlink(self._labels_path(clean))
             self.text = f"{clean} deleted"
             self.log(f"remotes: {self.text}")
         else:
@@ -362,8 +434,8 @@ class Remotes:
         return None
 
     async def skip(self):
-        """Leave out the function being asked for (only the optional ones: Next / Previous)."""
-        if not self.busy or self.mode != "learn" or self.index >= len(KEYS) or not KEYS[self.index][3]:
+        """Leave out the function being asked for ("not set"); every function after Play / Pause can be skipped."""
+        if not self.busy or self.mode != "learn" or self.phase is not None or not 0 < self.index < len(KEYS):
             return "this function cannot be skipped"
         self.skip_flag = True
         if self.proc:
@@ -462,6 +534,67 @@ class Remotes:
             self.note = ""
             await self.changed()
 
+    def _skip_current(self, why):
+        """The function being asked for stays "not set"."""
+        label = KEYS[self.index][1]
+        self.skipped.append(self.index)
+        self.log(f"remotes: {label} not set ({why})")
+        self.note = f"{label} not set"
+        self.index += 1
+
+    async def _park_ok(self, row):
+        """Take the Play / Pause row out of the receiver (kept in memory) while the other functions are learned: the
+        receiver only says "button exists" for a known button, never which one, so with the row out a Play / Pause press
+        is recorded like any button and its signal (hash) tells the player "leave this function out". True when done."""
+        if not row:
+            return False
+        base = os.path.join(self.dir, ".learn")
+        with contextlib.suppress(OSError):
+            os.unlink(base + ".fcfg")
+        rc, _ = await self._util("saveconfig", base)
+        try:
+            _h, rows = read_fcfg(base + ".fcfg")
+        except (OSError, ValueError):
+            return False
+        mine = [r for r in rows if row_hash(r) == row[1]]
+        if rc != 0 or not mine:
+            return False
+        rc, _ = await self._util("delete_index", str(row[0]), timeout=15)
+        got = await self._table_hashes()
+        if rc != 0 or got is None or row[1] in got:
+            return False
+        self.ok_row, self.ok_hash = mine[0], row[1]
+        return True
+
+    async def _unpark_ok(self):
+        """Put the Play / Pause row back in front of what was learned (before the test). True when the receiver holds
+        exactly the expected buttons (or nothing was parked)."""
+        if self.ok_row is None:
+            return True
+        base = os.path.join(self.dir, ".learn")
+        with contextlib.suppress(OSError):
+            os.unlink(base + ".fcfg")
+        rc, _ = await self._util("saveconfig", base)
+        try:
+            head, rows = read_fcfg(base + ".fcfg")
+        except (OSError, ValueError):
+            return False
+        if rc != 0:
+            return False
+        rows = [self.ok_row] + [r for r in rows if row_hash(r) != self.ok_hash]
+        hdr = bytearray(head)
+        struct.pack_into("<I", hdr, 8, len(rows))
+        path = base + "-full.fcfg"
+        with open(path, "wb") as f:
+            f.write(bytes(hdr) + b"".join(rows))
+        if not await self._load(path):
+            return False
+        got = await self._table_hashes()
+        if got is not None and got != sorted(row_hash(r) for r in rows):
+            return False
+        self.ok_row = None   # back in the receiver: a restore from here on uses the files only
+        return True
+
     async def _learn(self):
         try:
             if not await self._keep_current():
@@ -478,14 +611,12 @@ class Remotes:
                     return await self._finish(False, "Stopped, " + await self._restore())
                 if self.skip_flag:          # "Skip" arrived before the receiver was listening
                     self.skip_flag = False
-                    self.log(f"remotes: {label} skipped")
-                    self.index += 1
+                    self._skip_current("Skip on the phone")
                     continue
                 rc, out = await self._util("record", key, timeout=self.timeout)
                 if self.skip_flag:          # "Skip" on the phone killed the wait
                     self.skip_flag = False
-                    self.log(f"remotes: {label} skipped")
-                    self.index += 1
+                    self._skip_current("Skip on the phone")
                     rejects = 0
                     continue
                 if rc is None:
@@ -493,6 +624,13 @@ class Remotes:
                     return await self._finish(False, why + ", " + await self._restore())
                 if "recorded button" in out:
                     row = await self._stored(key)
+                    if row and self.ok_hash and row[1] == self.ok_hash:
+                        # the Play / Pause button again = leave this function out (its row is out of the receiver, so the
+                        # press was recorded like a new button; take that row out again)
+                        await self._util("delete_index", str(row[0]), timeout=15)
+                        self._skip_current("Play / Pause pressed")
+                        rejects = 0
+                        continue
                     if row and row[1] in NOT_A_BUTTON:
                         partial += 1   # only the repeat part was caught: take it out and listen again
                         await self._util("delete_index", str(row[0]), timeout=15)
@@ -505,6 +643,8 @@ class Remotes:
                     self.log(f"remotes: {label} stored" + (f" (hash {row[1]})" if row else ""))
                     self.note = f"{label} stored"
                     self.learned.append(self.index)
+                    if self.index == 0 and not await self._park_ok(row):
+                        self.log("remotes: could not take Play / Pause out while learning - pressing it will not skip")
                     self.index += 1
                     learned += 1
                     rejects = 0
@@ -522,6 +662,8 @@ class Remotes:
                     else "Not stored - press the button again"
                 if rejects >= MAX_REJECTS:
                     return await self._finish(False, "Too many refused presses - stopped, " + await self._restore())
+            if not await self._unpark_ok():
+                return await self._finish(False, "Could not put Play / Pause back - stopped, " + await self._restore())
             self.problems = await self._verify()
             if self.cancelled:
                 return await self._finish(False, "Stopped, " + await self._restore())
@@ -536,8 +678,8 @@ class Remotes:
             rc, _ = await self._util("saveconfig", os.path.join(self.dir, self.name))
             if rc != 0 or not os.path.isfile(self._path(self.name)):
                 return await self._finish(False, "Learned, but could not save the profile, " + await self._restore())
-            skipped = len(KEYS) - learned
-            text = (f"{self.name}: {learned} functions learned" + (f", {skipped} skipped" if skipped else "")
+            skipped = len(self.skipped)
+            text = (f"{self.name}: {learned} functions learned" + (f", {skipped} not set" if skipped else "")
                     + (" - kept although the test found problems" if kept_with_problems else ", test passed"))
             before = [n for n in self._before if n != self.name]
             if before:   # the new remote joins the ones in use: one combined table
@@ -568,6 +710,10 @@ class Remotes:
     def _stray_list(self):
         return [f"{k} x{v}" if v > 1 else k for k, v in self.strays.items()]
 
+    def _end_key(self):
+        """(player key, function) that ends test step 2: Menu, or Play / Pause when Menu was left out."""
+        return (PLAYER_KEY["F4"], "Menu") if 1 in self.learned else (PLAYER_KEY["return"], "Play / Pause")
+
     async def _wait_key(self, idle):
         """True when a key (or a stop) arrived within `idle` s, False on silence."""
         try:
@@ -584,7 +730,6 @@ class Remotes:
         fns = list(self.learned)
         expected = [KEYS[i][1] for i in fns]
         self.hits, self.strays, self.stage = {l: 0 for l in expected}, {}, "test"
-        menu_key = PLAYER_KEY["F4"]
         self.phase = "test1"
         await self.changed()
         self._wake.clear()
@@ -652,11 +797,12 @@ class Remotes:
             return True
         if self.stage == "test" and self.phase in ("test1", "test2"):
             label = self._label_of(name)
+            end_key, end_label = self._end_key()
             if self.phase == "test1" and label in self.hits:
                 self.hits[label] += 1
-            elif self.phase == "test2" and name == PLAYER_KEY["F4"] and "Menu" in self.hits:
-                self._menu_pressed = True          # the Menu button ends step 2
-                self.hits["Menu"] += 1
+            elif self.phase == "test2" and name == end_key and end_label in self.hits:
+                self._menu_pressed = True          # the Menu button (Play / Pause when Menu is not set) ends step 2
+                self.hits[end_label] += 1
             else:
                 self.strays[label] = self.strays.get(label, 0) + 1
             self._wake.set()
@@ -680,13 +826,17 @@ class Remotes:
             text(mid, 340, "Press the button you want for", 56, GREY, an=8)
             text(mid, 440, label, 170, WHITE, an=8, bold=True)
             text(mid, 650, hint, 40, GREY, an=8)
-            text(mid, 740, self.note or ("once, on the remote" + ("  (or Skip on the phone)" if optional else "")), 44,
-                 GREEN if "stored" in self.note else GREY, an=8)
+            how = "once, on the remote" if self.index == 0 else \
+                "once, on the remote  ·  your Play / Pause button = not set"
+            text(mid, 740, self.note or how, 44, GREEN if "stored" in self.note else GREY, an=8)
             parts = []
             for n, (_k, lab, _h, _o) in enumerate(KEYS):
+                if n in self.skipped:
+                    parts.append(f"{{\\1c{DIM}\\s1}}{esc(lab)}{{\\s0}}")   # struck through: not set
+                    continue
                 col = GREEN if n < self.index else (BLUE if n == self.index else DIM)
                 parts.append(f"{{\\1c{col}}}{esc(lab)}")
-            ev.append(f"{{\\an8\\pos({mid},900)\\fs40\\bord0\\shad0\\b0}}" + "  ".join(parts))
+            ev.append(f"{{\\an8\\pos({mid},900)\\fs38\\bord0\\shad0\\b0}}" + "  ".join(parts))
             text(mid, 990, f"No press for {int(self.timeout)} s, or Cancel on the phone, stops and restores the old buttons",
                  32, DIM, an=8)
         elif self.stage == "test":
@@ -718,7 +868,7 @@ class Remotes:
                 for k, line in enumerate(self._stray_list()[:6]):
                     text(col, 536 + k * 52, line, 44, WARN, an=7)
             if self.phase == "test2":
-                text(mid, 990, "When done, press your Menu button.", 36, GREY, an=8)
+                text(mid, 990, f"When done, press your {self._end_key()[1]} button.", 36, GREY, an=8)
             elif self.phase == "review":
                 text(mid, 990, "Choose on the phone: Keep or Discard (Discard puts the old buttons back)", 34, GREY, an=8)
             else:

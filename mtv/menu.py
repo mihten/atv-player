@@ -3,7 +3,7 @@
 Pure model + renderer: Menu holds a stack of pages, key() moves / selects, render() returns ASS events. Lists come
 from the server's HTTP API through an async `fetch(path)`; commands go back through `send(msg)` (the player's
 WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left back
-one page, Blue or Red closes.
+one page, Blue (Menu), Back or Red closes.
 """
 RES_X, RES_Y = 1920, 1080
 X0, Y0, X1, Y1 = 80, 70, 1160, 1010      # panel
@@ -195,7 +195,7 @@ class Menu:
         page = self.page
         if page is None:
             return False
-        if name in ("red", "blue"):  # Blue opens and closes, Red closes
+        if name in ("red", "blue", "back"):  # Blue (the Menu function) opens and closes, Back and Red close
             self.close()
             return True
         if name == "left":
@@ -259,6 +259,6 @@ class Menu:
             text(X0 + 40, y + 6, label, 36, WHITE if row.act else GREY)
             if sub:
                 text(X1 - 40, y + 10, sub, 28, GREY if i != page.sel else WHITE, an=9)
-        hint = "OK select   ◀ back   Blue / Red close" if len(self.pages) > 1 else "OK select   Blue / Red close"
+        hint = "OK select   ◀ previous page   Menu / Back close" if len(self.pages) > 1 else "OK select   Menu / Back close"
         text(X0 + 40, Y1 - 46, hint, 26, DIM)
         return "\n".join(ev)
