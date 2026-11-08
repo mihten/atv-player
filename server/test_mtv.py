@@ -170,6 +170,41 @@ async def main(tmp):
             check(v2 is not None and v2["percent"] == 33, "box remote volume still reaches the sink")
             await boxremote.close()
 
+            # ---- remote profiles of the player's Flirc: reported in the output, commands from the web remote reach the player
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {
+                "can": True, "profiles": ["Vip STB", "Other"] + ["x"] * 60, "active": "Vip STB", "junk": 1,
+                "progress": {"state": "learning", "name": "Other", "index": 7, "total": 21, "label": "RED",
+                             "note": "n" * 300, "text": "t" * 500}}})
+            await H.drain(mtv)
+            rem = (await H.state(http, "mtv"))["output"].get("remote")
+            check(rem and rem["can"] and rem["active"] == "Vip STB" and rem["profiles"][:2] == ["Vip STB", "Other"]
+                  and len(rem["profiles"]) == 40, f"output.remote typed, profile list bounded ({rem and rem['profiles'][:3]})")
+            check(rem["progress"] == {"state": "learning", "name": "Other", "text": "t" * 160, "index": 7, "total": 21,
+                                      "label": "RED", "note": "n" * 80}, "progress typed and bounded")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"progress": {"state": "x"}}})
+            await H.drain(mtv)
+            rem = (await H.state(http, "mtv"))["output"]["remote"]
+            check(rem["progress"]["state"] == "idle" and rem["profiles"] == [] and rem["active"] is None and not rem["can"],
+                  "unknown progress state -> idle, empty lists")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100})
+            await H.drain(mtv)
+            check("remote" not in (await H.state(http, "mtv"))["output"], "a player without a learnable receiver reports no remote")
+            await H.drain(mtv)
+            for body in ({"op": "learn", "name": "Cambridge"}, {"op": "use", "name": "Vip STB"},
+                         {"op": "delete", "name": "Old"}, {"op": "cancel"}):
+                async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
+                    check(r.status == 200, f"POST /api/mtv-remote {body['op']} -> {r.status}")
+                got, _ = await until(mtv, "remote")
+                want = {"type": "remote", "op": body["op"], **({"name": body["name"]} if "name" in body else {})}
+                check(got == want, f"mtv player gets {want} ({got})")
+            for body, what in (({"op": "format", "name": "x"}, "unknown op"), ({"op": "learn"}, "learn without a name"),
+                               ({"op": "use", "name": "x" * 80}, "name too long"), ({"op": "use", "name": 5}, "name not text")):
+                async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
+                    check(r.status == 400, f"{what} -> 400 ({r.status})")
+            got, _ = await until(mtv, "remote", 0.6)
+            check(got is None, "refused requests reach no player")
+            check(not [m for m in await H.drain(sink) if m.get("type") == "remote"], "remote commands never reach the atv-audio sink")
+
             # ---- backup carries mtv_sound; restore applies it (and an old backup without it changes nothing)
             async with http.get(f"{H.BASE}/api/backup") as r:
                 backup = await r.json()

@@ -31,8 +31,8 @@ Environment:
   MTV_KEYS_DEVICE    keyboard-style receiver (Flirc) as a path or glob, e.g. /dev/input/by-id/*flirc*event-kbd; grabbed,
                      key events: Enter=OK, arrows, PgUp/PgDn=CH+/CH-, F1-F4=red/green/yellow/blue, 0-9 (see ir.EVDEV_KEYS)
   MTV_IR_DEBUG       1: log every decoded IR frame with its time (press, repeat, other remotes) to the journal
-  MTV_FLIRC_UTIL     flirc_util binary (default: PATH or /usr/local/bin); with MTV_KEYS_DEVICE it adds the menu row
-                     "Learn remote" (learn.py: the TV names each button, you press it; old buttons saved and restored)
+  MTV_FLIRC_UTIL     flirc_util binary (default: PATH or /usr/local/bin); with MTV_KEYS_DEVICE the web remote
+                     (Settings > Audio > TV Player > Remote) can learn, switch and delete remote profiles (remotes.py)
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
 Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
@@ -61,9 +61,9 @@ for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
 from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
-import learn as learn_mod  # noqa: E402
+import remotes as remotes_mod  # noqa: E402
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -167,13 +167,9 @@ class Player:
         self.load_volume()
         self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
         self.http = None             # aiohttp session for the menu's lists (set while connected)
-        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state,
-                                  learn=self.start_learn if cfg.can_learn else None)
-        self.learn = learn_mod.Learn(cfg.flirc_util, os.path.join(cfg.state_dir or tempfile.gettempdir(), "flirc"),
-                                     self.draw_menu, self.log)
-
-    async def start_learn(self):
-        await self.learn.open()
+        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state)
+        self.remotes = remotes_mod.Remotes(cfg.flirc_util, cfg.state_dir or tempfile.gettempdir(), self.remotes_changed,
+                                           self.log)
 
     # -- volume: mpv's own (software) volume; the TV / soundbar volume is separate
     def _volume_file(self):
@@ -203,9 +199,26 @@ class Player:
             os.replace(tmp, path)
 
     def report_output(self):
-        """Screen, sound device and volume to the server (web remote: volume bar, Settings -> Audio)."""
-        self.send({"type": "output", "name": "TV Player", "screen": self.screen, "device": self.cfg.audio_device,
-                   "volume": self.volume, "muted": self.muted, "version": VERSION})
+        """Screen, sound device, volume and remote profiles to the server (web remote: volume bar, Settings -> Audio)."""
+        msg = {"type": "output", "name": "TV Player", "screen": self.screen, "device": self.cfg.audio_device,
+               "volume": self.volume, "muted": self.muted, "version": VERSION}
+        if self.cfg.can_learn:  # a receiver whose buttons can be learned (Flirc + flirc_util)
+            msg["remote"] = dict(self.remotes.summary(), can=True)
+        self.send(msg)
+
+    async def remotes_changed(self):
+        """A remote action moved on: the TV screen and the web remote follow."""
+        await self.draw_menu()
+        self.report_output()
+
+    async def remote_command(self, msg):
+        if not self.cfg.can_learn:
+            return
+        err = await self.remotes.command(msg.get("op"), msg.get("name"))
+        if err:
+            self.remotes.text = err
+            self.log(f"remotes: {err}")
+            self.report_output()
 
     async def read_screen(self):
         mpv = self.mpv
@@ -239,9 +252,9 @@ class Player:
         if not self.mpv:
             return
         try:
-            if self.learn.active:
-                await self.mpv.command("osd-overlay", 1, "ass-events", self.learn.render(), learn_mod.RES_X,
-                                       learn_mod.RES_Y, 10)
+            if self.remotes.active_screen:
+                await self.mpv.command("osd-overlay", 1, "ass-events", self.remotes.render(), remotes_mod.RES_X,
+                                       remotes_mod.RES_Y, 10)
             elif self.menu.open:
                 await self.mpv.command("osd-overlay", 1, "ass-events", self.menu.render(), menu_mod.RES_X,
                                        menu_mod.RES_Y, 10)
@@ -387,6 +400,8 @@ class Player:
         elif t == "sound":
             self.sound = msg
             await self.apply_sound()
+        elif t == "remote":
+            await self.remote_command(msg)
         elif t == "volume":
             try:
                 await self.set_volume(float(msg.get("percent")), msg.get("muted"))
@@ -486,8 +501,8 @@ async def osd(player, text, ms=1500):
 async def on_key(player, name, held):
     """A remote key: the menu's while it is open; else a server command (the server owns the queue and sends the
     control back to this player)."""
-    if player.learn.active:   # learning the remote: the Flirc takes the presses; other receivers' keys do not count
-        if await player.learn.key(name):
+    if player.remotes.active_screen:   # learning a remote: the Flirc takes the presses; other keys do not count
+        if await player.remotes.key(name):
             await player.draw_menu()
         return
     if player.menu.open:
@@ -737,6 +752,8 @@ async def main():
         log("MTV_SERVER is not set")
         return 2
     player = Player(cfg)
+    if cfg.can_learn:
+        await player.remotes.recover()
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -745,6 +762,7 @@ async def main():
                                               run_ticks(player, stop), run_ir(cfg, player, stop),
                                               run_evdev(cfg, player, stop))]
     await stop.wait()  # SIGTERM / SIGINT: the server loop sits in a ws read, so cancel instead of waiting for it
+    await player.remotes.shutdown()  # a learn in progress is stopped and undone first
     for t in tasks:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)  # run_mpv's finally terminates mpv

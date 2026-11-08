@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.21.1"
+VERSION = "0.22.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -976,8 +976,35 @@ def clean_mtv_output(data):
         volume = max(0, min(100, int(round(float(data.get("volume"))))))
     except (TypeError, ValueError, AttributeError, OverflowError):
         volume = None
-    return {"name": s(data.get("name"), 60), "screen": s(data.get("screen"), 60), "device": s(data.get("device"), 120),
-            "volume": volume, "muted": bool(data.get("muted")), "version": s(data.get("version"), 20)}
+    out = {"name": s(data.get("name"), 60), "screen": s(data.get("screen"), 60), "device": s(data.get("device"), 120),
+           "volume": volume, "muted": bool(data.get("muted")), "version": s(data.get("version"), 20)}
+    remote = clean_mtv_remote(data.get("remote"))
+    if remote is not None:  # only a player whose receiver can learn buttons (Flirc) reports it
+        out["remote"] = remote
+    return out
+
+
+def clean_mtv_remote(r):
+    """The player's remote profiles: {can, profiles [names], active, progress {state, name, text, index, total, label,
+    note}}, bounded and typed, or None."""
+    if not isinstance(r, dict):
+        return None
+
+    def t(v, n):
+        return str(v)[:n] if v is not None else ""
+    prog = r.get("progress") if isinstance(r.get("progress"), dict) else {}
+    state = prog.get("state") if prog.get("state") in ("idle", "learning", "switching") else "idle"
+    out_prog = {"state": state, "name": t(prog.get("name"), 30), "text": t(prog.get("text"), 160)}
+    if state == "learning":
+        for k in ("index", "total"):
+            try:
+                out_prog[k] = max(0, min(99, int(prog.get(k))))
+            except (TypeError, ValueError):
+                out_prog[k] = 0
+        out_prog.update(label=t(prog.get("label"), 12), note=t(prog.get("note"), 80))
+    profiles = [t(n, 30) for n in (r.get("profiles") if isinstance(r.get("profiles"), list) else [])[:40]]
+    return {"can": bool(r.get("can")), "profiles": profiles, "active": t(r.get("active"), 30) or None,
+            "progress": out_prog}
 
 
 def mtv_output(s):
@@ -3531,6 +3558,28 @@ async def api_atv_audio(request):
 
 
 
+MTV_REMOTE_OPS = ("learn", "use", "delete", "cancel")
+
+
+async def api_mtv_remote(request):
+    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, switch, delete, cancel).
+    The player answers through its `output` message (state.output.remote)."""
+    need_admin(request)
+    body = await _json_body(request)
+    op = body.get("op")
+    if op not in MTV_REMOTE_OPS:
+        raise web.HTTPBadRequest(text="unknown op")
+    name = body.get("name")
+    if op != "cancel" and not (isinstance(name, str) and 0 < len(name.strip()) <= 60):
+        raise web.HTTPBadRequest(text="a profile name is needed")
+    s = SESSIONS["mtv"]
+    if not s.players:
+        raise web.HTTPServiceUnavailable(text="the TV Player is not running")
+    log.info("tv remote: %s %s (web remote)", op, name or "")
+    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op != "cancel" else {})})
+    return web.json_response({"ok": True})
+
+
 def advertised_ip():
     """Address the apps should use: ATV_ADVERTISE_IP, else the source address of the default route
     (UDP connect sends no packet)."""
@@ -3641,6 +3690,7 @@ def make_app():
     app.router.add_get("/api/backup", api_backup_get)
     app.router.add_post("/api/backup", api_backup_restore)
     app.router.add_post("/api/atv-audio", api_atv_audio)
+    app.router.add_post("/api/mtv-remote", api_mtv_remote)
     app.router.add_get("/api/abtest", api_abtest)
     app.router.add_post("/api/abtest", api_abtest)
     app.router.add_get("/api/loudness", api_loudness)

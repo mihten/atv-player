@@ -10,7 +10,7 @@ ExecStart=/usr/bin/python3 /opt/mtv/mtv_player.py
 StateDirectory=mtv-player
 Restart=always
 RestartSec=3
-TimeoutStopSec=15
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
