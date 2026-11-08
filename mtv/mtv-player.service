@@ -1,0 +1,15 @@
+[Unit]
+Description=mtv-player (TV player on the HDMI output)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+# root: DRM master on the card (no seat / logind in a container)
+EnvironmentFile=/etc/mtv-player/env
+ExecStart=/usr/bin/python3 /opt/mtv/mtv_player.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

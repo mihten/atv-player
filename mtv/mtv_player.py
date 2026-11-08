@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""mtv-player: a video player for a TV screen, played straight from a Linux box's HDMI output.
+
+Joins the media server as the player of session "mtv" (/ws?role=player&kind=mtv) and plays that queue in mpv on the
+DRM/KMS output (no desktop, no compositor): video with VAAPI decoding, sound over HDMI. The screen stays in ONE mode
+(MTV_DRM_MODE, e.g. 3840x2160@60) for everything; mpv retimes video to it (display-resample) and blends frames of
+24/25/50 fps material (interpolation), so the TV never switches modes. The server owns the queue; this program
+speaks the player protocol: load / control / sound in, status / ended / error / log out. Sound settings (equalizer,
+gain, limiter) come from the server like for the atv-audio box player and use the same filter chain.
+
+mpv keeps running when nothing plays (idle, black screen), so the box's text console never shows on the TV.
+
+Requirements: Python 3.9+, aiohttp, mpv 0.38+ with the drm gpu context; the sink's atv_audio.py (shared code) next
+to this file or in ../server/sink.
+
+Environment:
+  MTV_SERVER         server base URL, e.g. http://atv-media.local:8080 (required)
+  MTV_AUDIO_DEVICE   mpv audio device (default alsa/hdmi: check `mpv --audio-device=help`)
+  MTV_DRM_CONNECTOR  DRM connector name as `mpv --drm-connector=help` lists it, e.g. DP-1 (default: mpv picks the
+                     first connected one; mpv 0.40 rejected the "0.DP-1" form its mode list prints)
+  MTV_DRM_MODE       DRM mode index or WxH@Hz (default 0 = the screen's first mode; list: mpv --drm-mode=help)
+  MTV_INTERPOLATION  1 (default) / 0: blend frames when the video rate is not the screen rate
+  MTV_HWDEC          mpv hwdec (default vaapi)
+  MTV_VOLUME         mpv volume 0-100 (default 100: the TV / soundbar sets the level)
+  MTV_MPV            mpv binary (default mpv)
+  MTV_MPV_ARGS       extra mpv options, shell-quoted (e.g. tone mapping)
+
+Run: python3 mtv_player.py
+"""
+import asyncio
+import contextlib
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
+    if os.path.isfile(os.path.join(_d, "atv_audio.py")):
+        sys.path.insert(0, os.path.abspath(_d))
+        break
+from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
+
+VERSION = "0.1.0"
+STATUS_EVERY = 1.0       # s between status messages while something is loaded
+TICK = 0.25
+RECONNECT_MAX = 30.0
+# Cheap HDR -> SDR: the default peak detection + tone mapping drops ~15 frames/s of 4K60 HLG on a Gen 9.5 iGPU.
+DEFAULT_TONE = ["--hdr-compute-peak=no", "--tone-mapping=clip", "--gamut-mapping-mode=clip", "--dither=no"]
+
+
+def log(msg):
+    print(f"mtv-player: {msg}", file=sys.stderr, flush=True)
+
+
+def flag(value, default=True):
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() not in ("0", "no", "off", "false")
+
+
+class Config:
+    def __init__(self, env=None):
+        env = os.environ if env is None else env
+        self.server = (env.get("MTV_SERVER") or "").rstrip("/")
+        self.audio_device = env.get("MTV_AUDIO_DEVICE") or "alsa/hdmi"
+        self.connector = env.get("MTV_DRM_CONNECTOR") or ""
+        self.mode = env.get("MTV_DRM_MODE") or "0"
+        self.interpolation = flag(env.get("MTV_INTERPOLATION"))
+        self.hwdec = env.get("MTV_HWDEC") or "vaapi"
+        try:
+            self.volume = max(0, min(100, int(env.get("MTV_VOLUME") or 100)))
+        except ValueError:
+            self.volume = 100
+        self.mpv = env.get("MTV_MPV") or "mpv"
+        self.extra = shlex.split(env.get("MTV_MPV_ARGS") or "")
+
+    @property
+    def ws_url(self):
+        return re.sub(r"^http", "ws", self.server) + "/ws?role=player&kind=mtv"
+
+    def media_url(self, item_id):
+        return f"{self.server}/media/{item_id}"
+
+
+def mpv_args(cfg, sock):
+    """mpv for the TV: DRM output in one fixed mode, VAAPI, HDMI sound, idle black screen between items.
+    keep-open=yes: at the end of a file mpv stays on its last frame (eof-reached) instead of closing it, so the end
+    is reported once and the next load replaces it without a flash of the console. keep-open-pause=no: mpv does not
+    pause itself there (its own pause raced with the next load's unpause: the next item stayed paused)."""
+    args = [cfg.mpv, "--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--keep-open-pause=no",
+            "--vo=gpu-next", "--gpu-context=drm", f"--drm-mode={cfg.mode}", f"--hwdec={cfg.hwdec}",
+            "--video-sync=display-resample", "--ao=alsa", f"--audio-device={cfg.audio_device}",
+            f"--volume={cfg.volume}", "--volume-max=100", "--audio-display=embedded-first", "--sid=no",
+            "--hr-seek=yes", "--cache=yes", "--cache-secs=60", "--demuxer-readahead-secs=30",
+            "--demuxer-max-bytes=512MiB", "--demuxer-max-back-bytes=64MiB", "--network-timeout=15",
+            "--ytdl=no", "--no-input-terminal", "--input-default-bindings=no", "--osd-level=1",
+            "--quiet", "--msg-level=all=warn", "--background-color=#000000", f"--input-ipc-server={sock}"]
+    if cfg.connector:
+        args.append(f"--drm-connector={cfg.connector}")
+    if cfg.interpolation:
+        args += ["--interpolation", "--tscale=oversample"]
+    return args + DEFAULT_TONE + cfg.extra
+
+
+class Player:
+    """The player of session "mtv". Gets server messages (handle) and mpv events (on_mpv_event); tick() reports
+    status / ended / error. Holds no queue: every item comes from a server `load`."""
+
+    def __init__(self, cfg, send=None, mono=time.monotonic):
+        self.cfg = cfg
+        self._send = send
+        self.mono = mono
+        self.mpv = None
+        self.item = None
+        self.want_play = False
+        self.pos = 0.0
+        self.loads = 0               # +1 per load from the server
+        self.entry = None            # mpv playlist entry id of the current load (None: unknown / nothing loaded)
+        self.file_loaded = False
+        self.failed_for = self.ended_for = None
+        self.sound = None            # last sound message
+        self.applied = None          # sound message the running filters were built from / changed to
+        self.af_text = None          # last chain written to mpv's 'af' property
+        self.last_status, self.status_key = -1e9, None
+
+    # -- outgoing
+    def send(self, msg):
+        if self._send:
+            with contextlib.suppress(Exception):
+                self._send(msg)
+
+    def log(self, message):
+        log(message)
+        self.send({"type": "log", "message": f"mtv: {message}"})
+
+    # -- mpv
+    async def attach(self, mpv):
+        """A (re)started mpv: replay the current item paused or playing as it was."""
+        self.mpv = mpv
+        self.af_text = self.applied = None
+        if self.sound is not None:
+            await self._set_af(sound_chain(self.sound))
+            self.applied = self.sound
+        if self.item:
+            await self._load(self.pos)
+
+    def detach(self):
+        self.mpv = None
+        self.file_loaded = False
+        self.entry = None
+
+    def on_mpv_event(self, ev):
+        name = ev.get("event")
+        if name == "file-loaded":
+            asyncio.ensure_future(self._on_file_loaded(ev.get("playlist_entry_id")))
+        elif name == "end-file" and ev.get("reason") == "error":
+            if self.item and (ev.get("playlist_entry_id") in (None, self.entry)):
+                self.log(f"cannot play {self.item.get('id')}: {ev.get('file_error') or 'error'}")
+                self._fail()
+
+    def _fail(self):
+        if self.item and self.failed_for != self.loads:
+            self.failed_for = self.loads
+            self.file_loaded = False
+            self.send({"type": "error", "item": self.item.get("id"), "message": "mtv-player could not play it"})
+
+    async def _on_file_loaded(self, entry):
+        mpv, it = self.mpv, self.item
+        if not mpv or not it or (entry is not None and self.entry is not None and entry != self.entry):
+            return  # an older file's event
+        tracks = await mpv.get_property("track-list", []) or []
+        audio = [t for t in tracks if t.get("type") == "audio"]
+        aid = int(it.get("audio_ord") or 0) + 1 if len(audio) > 1 else 1
+        if aid > len(audio):
+            aid = 1
+        cur = next((t.get("id") for t in audio if t.get("selected")), None)
+        if audio and cur != aid:
+            with contextlib.suppress(MpvError):
+                await mpv.set_property("aid", aid)
+        if self.item is not it or self.mpv is not mpv:
+            return
+        if mpv.props.get("pause") is not None and mpv.props.get("pause") == self.want_play:  # belt and braces
+            with contextlib.suppress(MpvError):
+                await mpv.set_property("pause", not self.want_play)
+        self.file_loaded = True
+        video = next((t for t in tracks if t.get("type") == "video" and not t.get("albumart")), None)
+        what = f"{video.get('codec')} {video.get('demux-w')}x{video.get('demux-h')}" if video else "audio only"
+        self.log(f"opened {it.get('id')} ({what}, {'playing' if self.want_play else 'paused'}), audio track "
+                 f"{aid}/{len(audio)}, sound {gain_text(self.sound)}")
+        self.report(force=True)
+
+    async def _set_af(self, chain):
+        await self.mpv.set_property("af", chain)
+        self.af_text = chain
+
+    async def apply_sound(self):
+        """Live on a playing file (af-command on the labelled filters: no gap); else the 'af' property, which the
+        next file builds its chain from."""
+        mpv = self.mpv
+        if not mpv or self.sound is None:
+            return
+        live = self.file_loaded
+        cmds = sound_commands(self.applied, self.sound) if live else None
+        try:
+            if cmds is None:
+                chain = sound_chain(self.sound)
+                if chain != self.af_text or live:
+                    await self._set_af(chain)
+            else:
+                for c in cmds:
+                    await mpv.command("af-command", *c)
+            self.applied = self.sound
+            self.log(f"sound {gain_text(self.sound)} ({'live' if cmds is not None else 'chain set'})")
+        except MpvError as e:
+            self.log(f"sound: {e}, rebuilding the filter chain")
+            with contextlib.suppress(MpvError):
+                await self._set_af(sound_chain(self.sound))
+                self.applied = self.sound
+
+    async def _load(self, position):
+        mpv, it = self.mpv, self.item
+        self.file_loaded = False
+        self.entry = None
+        if not mpv or not it:
+            return
+        try:
+            if self.sound is not None and sound_chain(self.sound) != self.af_text:
+                await self._set_af(sound_chain(self.sound))
+                self.applied = self.sound
+            # start / pause as per-file options of this load (mpv 0.38+: flags, index, options): nothing global to race
+            opts = f"start={max(0.0, position):.3f},pause={'no' if self.want_play else 'yes'}"
+            reply = await mpv.command("loadfile", self.cfg.media_url(it["id"]), "replace", -1, opts)
+        except MpvError as e:
+            self.log(f"load {it.get('id')} failed: {e}")
+            self._fail()
+            return
+        self.entry = reply.get("playlist_entry_id") if isinstance(reply, dict) else None
+        mpv.props["eof-reached"] = False
+
+    # -- server messages
+    async def handle(self, msg):
+        t = msg.get("type")
+        if t == "load":
+            self.item = msg.get("item")
+            self.pos = float(msg.get("position") or 0)
+            self.want_play = bool(msg.get("autoplay")) and bool(self.item)
+            self.loads += 1
+            if self.item:
+                await self._load(self.pos)
+            elif self.mpv:
+                with contextlib.suppress(MpvError):
+                    await self.mpv.command("stop")
+            self.report(force=True)
+        elif t == "control":
+            await self.on_control(msg)
+        elif t == "sound":
+            self.sound = msg
+            await self.apply_sound()
+
+    async def on_control(self, msg):
+        action, mpv = msg.get("action"), self.mpv
+        if action == "toggle":
+            action = "pause" if self.want_play else "play"
+        try:
+            if action == "play" and self.item:
+                self.want_play = True
+                if mpv and mpv.props.get("eof-reached"):  # Play on an ended item: from the start
+                    self.ended_for = None
+                    await mpv.command("seek", 0, "absolute")
+                if mpv:
+                    await mpv.set_property("pause", False)
+            elif action == "pause":
+                self.want_play = False
+                if mpv:
+                    await mpv.set_property("pause", True)
+            elif action == "stop":
+                self.want_play = False
+                self.item = None
+                if mpv:
+                    await mpv.command("stop")
+            elif action == "seek" and self.item:
+                self.pos = max(0.0, float(msg.get("position") or 0))
+                self.ended_for = None
+                if mpv and self.file_loaded:
+                    await mpv.command("seek", self.pos, "absolute")
+                elif mpv:
+                    await self._load(self.pos)
+        except MpvError as e:
+            self.log(f"{action}: {e}")
+        self.report(force=True)
+
+    # -- periodic
+    async def tick(self):
+        mpv, it = self.mpv, self.item
+        if not it:
+            return
+        if mpv and self.file_loaded:
+            p = mpv.props.get("time-pos")
+            if p is None:
+                p = await mpv.get_property("time-pos")
+            if isinstance(p, (int, float)):
+                self.pos = max(0.0, float(p))
+            if mpv.props.get("eof-reached") and self.ended_for != self.loads:
+                self.ended_for = self.loads
+                self.want_play = False
+                self.send({"type": "ended", "item": it.get("id")})
+        self.report()
+
+    def playing(self):
+        mpv = self.mpv
+        return bool(self.item and self.want_play and mpv and self.file_loaded and mpv.props.get("pause") is False
+                    and not mpv.props.get("eof-reached"))
+
+    def report(self, force=False):
+        it = self.item
+        if not it:
+            return
+        mpv = self.mpv
+        dur = (mpv.props.get("duration") if mpv and self.file_loaded else None) or it.get("duration") or 0
+        playing = self.playing()
+        key = (it.get("id"), playing, self.loads)
+        now = self.mono()
+        if not force and key == self.status_key and now - self.last_status < STATUS_EVERY:
+            return
+        self.status_key, self.last_status = key, now
+        self.send({"type": "status", "item": it.get("id"), "playing": playing, "position": round(self.pos, 3),
+                   "duration": dur})
+
+
+class MpvObserver(MpvIpc):
+    OBSERVE = MpvIpc.OBSERVE + ("time-pos",)
+
+
+async def run_mpv(cfg, player, stop):
+    """Runs mpv, attaches it to the player, restarts it when it dies (backoff 1 ... 30 s)."""
+    backoff = 1.0
+    sock_dir = tempfile.mkdtemp(prefix="mtv-")
+    sock = os.path.join(sock_dir, "mpv.sock")
+    try:
+        await _mpv_loop(cfg, player, stop, sock)
+    finally:  # also on cancel (SIGTERM)
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+async def _mpv_loop(cfg, player, stop, sock):
+    backoff = 1.0
+    while not stop.is_set():
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(sock)
+        started = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(*mpv_args(cfg, sock))
+        ipc = MpvObserver(on_event=player.on_mpv_event)
+        try:
+            for _ in range(100):
+                if os.path.exists(sock) or proc.returncode is not None:
+                    break
+                await asyncio.sleep(0.1)
+            await ipc.connect(sock)
+            for _ in range(30):  # the IPC socket can be up before the window is
+                if await ipc.get_property("current-vo") or proc.returncode is not None:
+                    break
+                await asyncio.sleep(0.1)
+            if not await ipc.get_property("current-vo"):  # no screen (connector / mode / DRM busy): sound only
+                raise MpvError("no picture output (check the connector, the mode and that nothing else holds DRM)")
+            log(f"mpv {proc.pid} up on {await ipc.get_property('current-vo')}")
+            await player.attach(ipc)
+            done, _ = await asyncio.wait([asyncio.ensure_future(proc.wait()), asyncio.ensure_future(stop.wait())],
+                                         return_when=asyncio.FIRST_COMPLETED)
+        except (OSError, MpvError) as e:
+            log(f"mpv: {e!r}")
+        finally:
+            player.detach()
+            await ipc.close()
+            if proc.returncode is None:
+                proc.terminate()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), 5)
+                if proc.returncode is None:
+                    proc.kill()
+        if stop.is_set():
+            break
+        if time.monotonic() - started > 60:
+            backoff = 1.0
+        log(f"mpv exited ({proc.returncode}), restarting in {backoff:.0f} s")
+        await asyncio.sleep(backoff)
+        backoff = min(RECONNECT_MAX, backoff * 2)
+
+
+async def run_server(cfg, player, stop):
+    import aiohttp
+    backoff = 1.0
+    async with aiohttp.ClientSession() as http:
+        while not stop.is_set():
+            try:
+                async with http.ws_connect(cfg.ws_url, heartbeat=30) as ws:
+                    log(f"connected to {cfg.server}")
+                    backoff = 1.0
+                    queue = asyncio.Queue()
+                    player._send = queue.put_nowait
+                    player.log(f"mtv-player {VERSION} up (mode {cfg.mode}, interpolation "
+                               f"{'on' if cfg.interpolation else 'off'}, audio {cfg.audio_device})")
+
+                    async def writer():
+                        while True:
+                            await ws.send_json(await queue.get())
+
+                    wtask = asyncio.create_task(writer())
+                    try:
+                        async for msg in ws:
+                            if msg.type != aiohttp.WSMsgType.TEXT:
+                                continue
+                            with contextlib.suppress(ValueError):
+                                await player.handle(json.loads(msg.data))
+                    finally:
+                        wtask.cancel()
+                        player._send = None
+            except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+                log(f"server: {e!r}")
+            if stop.is_set():
+                break
+            log(f"disconnected, retrying in {backoff:.0f} s")
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), backoff)
+            backoff = min(RECONNECT_MAX, backoff * 2)
+
+
+async def run_ticks(player, stop):
+    while not stop.is_set():
+        with contextlib.suppress(MpvError):
+            await player.tick()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), TICK)
+
+
+async def main():
+    cfg = Config()
+    if not cfg.server:
+        log("MTV_SERVER is not set")
+        return 2
+    player = Player(cfg)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    tasks = [asyncio.create_task(c) for c in (run_mpv(cfg, player, stop), run_server(cfg, player, stop),
+                                              run_ticks(player, stop))]
+    await stop.wait()  # SIGTERM / SIGINT: the server loop sits in a ws read, so cancel instead of waiting for it
+    for t in tasks:
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)  # run_mpv's finally terminates mpv
+    log("stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
