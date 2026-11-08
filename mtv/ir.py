@@ -17,6 +17,8 @@ second tap): it is decided HOLD_CONFIRM later (2+ repeats = held, else a second 
 same key within BURST_GAP of a hold's last signal are its release burst and ignored. Taps at any other spacing act
 at once.
 """
+import fcntl
+import glob
 import json
 import os
 import struct
@@ -186,6 +188,70 @@ class Keys:
         self.last, self.holding, self.pending = name, False, None
         self.last_at = self.frame_at = self.down_at = self.acted_at = now
         self.on_key(name, False)
+
+
+# ---- keyboard-style receivers (Flirc: learned IR buttons arrive as ordinary key events, no timing quirks)
+EV_KEY = 1
+EVENT = struct.Struct("llHHi")           # struct input_event on 64-bit Linux: timeval, type, code, value
+EVIOCGRAB = 0x40044590
+EVDEV_KEYS = {
+    28: "ok", 96: "ok", 103: "up", 108: "down", 105: "left", 106: "right",   # Enter / keypad Enter, arrows
+    104: "ch_up", 109: "ch_down",                                           # Page Up / Page Down
+    59: "red", 60: "green", 61: "yellow", 62: "blue",                        # F1 .. F4
+    11: "0", 2: "1", 3: "2", 4: "3", 5: "4", 6: "5", 7: "6", 8: "7", 9: "8", 10: "9",
+    164: "ok", 207: "ok",                                                   # Play/Pause media keys
+    1: "red", 14: "red",                                                    # Esc / Backspace close like Red
+}
+
+
+class EvdevKeys:
+    """input_event stream -> key presses. on_key(name, held): once per press; a held HOLD_KEYS key acts again every
+    HOLD_EVERY after HOLD_DELAY (the kernel repeats a key held down; the receiver keeps it down while the remote
+    repeats). Other keys act once per press."""
+
+    def __init__(self, on_key, keys=None, mono=time.monotonic):
+        self.on_key, self.mono = on_key, mono
+        self.keys = keys or EVDEV_KEYS
+        self._rest = b""
+        self.down = {}        # code -> time of the press
+        self.acted = {}       # code -> time of the last action
+
+    def feed(self, data):
+        data = self._rest + data
+        n = len(data) - len(data) % EVENT.size
+        self._rest = data[n:]
+        for _s, _us, etype, code, value in EVENT.iter_unpack(data[:n]):
+            if etype != EV_KEY:
+                continue
+            name = self.keys.get(code)
+            now = self.mono()
+            if value == 1:
+                self.down[code] = self.acted[code] = now
+                if name:
+                    self.on_key(name, False)
+            elif value == 2 and name in HOLD_KEYS:
+                if now - self.down.get(code, now) >= HOLD_DELAY and now - self.acted.get(code, 0) >= HOLD_EVERY:
+                    self.acted[code] = now
+                    self.on_key(name, True)
+            elif value == 0:
+                self.down.pop(code, None)
+                self.acted.pop(code, None)
+
+
+def open_evdev(pattern):
+    """First device matching a path or glob, opened non-blocking and grabbed (the box's own console must not see the
+    keys), or None."""
+    for path in sorted(glob.glob(pattern)):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            fcntl.ioctl(fd, EVIOCGRAB, 1)
+        except OSError:
+            pass  # not fatal: the keys still arrive
+        return fd, path
+    return None
 
 
 def open_device(path):

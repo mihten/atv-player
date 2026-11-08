@@ -195,6 +195,42 @@ async def main():
     check(mpv2.cmds("loadfile")[-1][1].endswith("/media/11") and mpv2.cmds("loadfile")[-1][4].endswith("pause=no"),
           "restart: current item reloaded, playing")
 
+    # ---- volume: the web remote's slider sets mpv's volume + mute, kept in the state file, reported to the server
+    import tempfile
+    sd = tempfile.mkdtemp(prefix="mtvstate-")
+    cfg2 = M.Config({"MTV_SERVER": "http://x", "MTV_STATE": sd, "MTV_VOLUME": "60"})
+    sent2 = []
+    p2 = M.Player(cfg2, send=sent2.append)
+    check(p2.volume == 60 and not p2.muted, "no state file: MTV_VOLUME is the first volume")
+    check("--volume=60" in M.mpv_args(cfg2, "/s", p2.volume, p2.muted) and "--mute=no" in M.mpv_args(cfg2, "/s", 60, False)
+          and "--volume=25" in M.mpv_args(cfg2, "/s", 25, True) and "--mute=yes" in M.mpv_args(cfg2, "/s", 25, True),
+          "mpv starts with the player's volume / mute")
+    check("--volume=100" in M.mpv_args(M.Config({"MTV_SERVER": "x"}), "/s"), "default volume is 100 (no attenuation)")
+    m2 = FakeMpv(AUDIO3)
+    m2.props.update({"display-width": 3840, "display-height": 2160, "display-fps": 60.0})
+    await p2.attach(m2)
+    outs = [m for m in sent2 if m.get("type") == "output"]
+    check(outs and outs[-1] == {"type": "output", "name": "TV Player", "screen": "3840x2160 @ 60 Hz",
+                                "device": "alsa/hdmi", "volume": 60, "muted": False, "version": M.VERSION},
+          f"attach reports the output ({outs[-1:] })")
+    await p2.handle({"type": "volume", "percent": 35.4, "muted": False})
+    check(m2.sets("volume")[-1] == 35 and m2.sets("mute")[-1] is False, "volume message -> mpv volume 35")
+    check([m for m in sent2 if m.get("type") == "output"][-1]["volume"] == 35, "... and the new volume is reported")
+    await p2.handle({"type": "volume", "percent": 35, "muted": True})
+    check(m2.sets("mute")[-1] is True and p2.muted, "mute -> mpv mute")
+    await p2.handle({"type": "volume", "percent": 250, "muted": False})
+    check(p2.volume == 100, "volume clamped to 100")
+    await p2.handle({"type": "volume", "percent": "x"})
+    check(p2.volume == 100, "garbage volume ignored")
+    await p2.handle({"type": "volume", "percent": 0, "muted": False})
+    p3 = M.Player(cfg2, send=sent2.append)
+    check(p3.volume == 0 and not p3.muted, "volume kept across a restart (state file)")
+    await p2.handle({"type": "volume", "percent": 40, "muted": True})
+    p4 = M.Player(cfg2)
+    check(p4.volume == 40 and p4.muted, "mute kept too")
+    import shutil
+    shutil.rmtree(sd, ignore_errors=True)
+
     # ---- sound off: empty chain
     await p.handle(sound(0, processed=False))
     check(mpv2.sets("af")[-1] == "", "unprocessed sound -> no filters")

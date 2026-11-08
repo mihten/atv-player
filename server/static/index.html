@@ -860,11 +860,17 @@ function versionsSheet() {
 /** atv-audio volume: shown while the TV's Sound output is atv-audio and the sink has its output. While the slider is
  *  dragged (and a moment after) the state does not move it back. */
 const vol = { dragUntil: 0, last: 0, timer: null, pending: null };
+function volOut(s = st) {
+  if (!s) return null;
+  if (s.session === "mtv") return s.output && s.output.volume != null ? s.output : null;  // the TV Player's own volume
+  return s.sink && s.sink.route && s.sink.output && s.sink.output.ready ? s.sink.output : null;
+}
 function drawVolume(s) {
-  const out = s.sink && s.sink.route && s.sink.output && s.sink.output.ready ? s.sink.output : null;
+  const out = volOut(s);
   const show = !!(out && out.volume != null);
   $("vol").hidden = !show;
   if (!show) return;
+  $("vol").title = s.session === "mtv" ? "TV Player volume (the TV's own volume is separate)" : "atv-audio volume (the headphones' own volume)";
   $("vol").classList.toggle("muted", !!out.muted);
   setIcon($("volMute"), out.muted ? "speakerX" : "speaker");
   $("volMute").classList.toggle("on", !out.muted);
@@ -877,7 +883,7 @@ $("volRange").oninput = () => {
   const p = +$("volRange").value;
   vol.dragUntil = Date.now() + 1500;
   $("volNum").textContent = `${p} %`;
-  const muted = !!(st && st.sink && st.sink.output && st.sink.output.muted);
+  const muted = !!(volOut() && volOut().muted);
   vol.pending = [p, muted];
   const wait = 100 - (Date.now() - vol.last);  // at most 10 per second while dragging
   if (wait <= 0) { sendVolume(p, muted); vol.pending = null; return; }
@@ -885,8 +891,8 @@ $("volRange").oninput = () => {
   vol.timer = setTimeout(() => { if (vol.pending) { sendVolume(...vol.pending); vol.pending = null; } }, wait);
 };
 $("volRange").onchange = () => { vol.dragUntil = Date.now() + 1500; clearTimeout(vol.timer); vol.pending = null;
-  const muted = !!(st && st.sink && st.sink.output && st.sink.output.muted); sendVolume(+$("volRange").value, muted); };
-$("volMute").onclick = () => { const o = st && st.sink && st.sink.output; if (o && o.volume != null) sendVolume(o.volume, !o.muted); };
+  const muted = !!(volOut() && volOut().muted); sendVolume(+$("volRange").value, muted); };
+$("volMute").onclick = () => { const o = volOut(); if (o && o.volume != null) sendVolume(o.volume, !o.muted); };
 
 /** Queues whose sound settings live on the server (atv-audio's "box", the TV Player "mtv"): notice + sound settings. */
 const SERVER_SOUND = ["box", "mtv"];
@@ -1516,7 +1522,7 @@ async function settingsMenu() {
   const row = (k, icon, t, sub) => `<button class="opt" data-m="${k}">${ic(icon)}<span class="grow"><span class="t">${t}</span>${sub ? `<span class="s" style="display:block">${esc(sub)}</span>` : ""}</span>${ic("chev")}</button>`;
   openSheet(`<div class="st">Settings</div>` + row("look", "look", "Look", "This browser") +
     row("lib", "folder", "Library", cfg ? `${cfg.roots.length} folder${cfg.roots.length === 1 ? "" : "s"}` : "") +
-    row("audio", "speaker", "atv-audio", "Sound output and headphones") + row("server", "refresh", "Server", "Status, name, password") +
+    row("audio", "speaker", "Audio", "TV Player, atv-audio headphones") + row("server", "refresh", "Server", "Status, name, password") +
     row("backup", "save", "Backup", "Playlists, Loved, play history") +
     (cfg && cfg.admin ? `<div class="set-hint">${ic("lock")} ${cfg.unlocked ? "Unlocked in this browser" : "Locked: changes ask for the admin password"}</div>` : "") +
     `<button class="opt cancel" data-m="close">Done</button>`, (e) => {
@@ -1674,8 +1680,8 @@ async function audioSheet() {
   let lastKey = null;
   const draw = async () => {
     if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-audio-sheet]")) { clearInterval(audioPoll); audioPoll = null; return; }
-    let s; try { s = await (await fetch("/api/state?session=box")).json(); } catch { return; }
-    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks]);
+    let s, m; try { s = await (await fetch("/api/state?session=box")).json(); m = await (await fetch("/api/state?session=mtv")).json(); } catch { return; }
+    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks, m.players, m.output]);
     if (key === lastKey) return;
     lastKey = key;
     const outs = (a.outputs || []).map((o) => `<option value="${esc(o.key)}"${o.default ? " selected" : ""}>${esc(o.name)}${o.codec ? ` (${esc(codecLabel(o.codec))})` : ""}</option>`).join("");
@@ -1694,7 +1700,12 @@ async function audioSheet() {
       `<div class="set-main"><div class="set-t">${esc(p.name)}${p.codec ? ` · ${esc(codecLabel(p.codec))}` : ""}</div><div class="set-s">${esc(p.id)}</div></div>` +
       (p.active ? `<span class="set-s">In use</span>` : `<button class="pill" data-a="use" data-sink="${esc(p.id)}">Use</button>`) + `</div>`).join("") +
       `<div class="set-btns"><button class="pill" data-a="abtest">${ic("speaker")} Blind test</button><span class="grow"></span></div>` : "";
-    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">atv-audio</div>` + progRows +
+    const mo = m.output || {};
+    const tvp = sec("TV Player") + `<div class="set-row"><span class="set-dot${m.players ? " on" : ""}"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div>` +
+      `<div class="set-s">${m.players ? [mo.screen, mo.volume != null ? `volume ${mo.volume} %${mo.muted ? " (muted)" : ""}` : ""].filter(Boolean).map(esc).join(" · ") || "Running" : "Not running"}</div></div>` +
+      `<span class="set-s">${m.players ? "Running" : ""}</span></div>` +
+      (m.players ? `<div class="set-hint">Sound goes out over HDMI. The volume bar appears on the TV Player's page; the TV's own volume is separate.</div>` : "");
+    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">Audio</div>` + tvp + sec("atv-audio") + progRows +
       (!k.connected ? `<div class="set-hint">${progs.length ? "Switching…" : "atv-audio is not running."}</div>` :
         (a.can_outputs ? sec("Sound output") + `<select class="pill" id="aOut" style="max-width:none" aria-label="Sound output">${outs}</select>` : "") +
         sec("Headphones") + (dg ? dongle : a.can_bluetooth ? (devs || `<div class="set-hint">No headphones paired yet.</div>`) +
@@ -1706,7 +1717,7 @@ async function audioSheet() {
     const sel = $("aOut"); if (sel) sel.onchange = () => audioCmd({ op: "set_output", output: sel.value });
   };
   const audioCmd = async (body) => { try { await sapi("POST", "/api/atv-audio", body, audioSheet); } catch { /* toast shown */ } setTimeout(draw, 300); };
-  openSheet(`<div class="st" data-audio-sheet="1">atv-audio</div><div class="set-hint">Loading…</div>`, (e) => {
+  openSheet(`<div class="st" data-audio-sheet="1">Audio</div><div class="set-hint">Loading…</div>`, (e) => {
     const b = e.target.closest("[data-a]"); if (!b) return;
     if (b.dataset.a === "back") { clearInterval(audioPoll); audioPoll = null; return settingsMenu(); }
     if (b.dataset.a === "abtest") { clearInterval(audioPoll); audioPoll = null; return abSheet(); }

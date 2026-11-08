@@ -259,8 +259,51 @@ async def keys():
           "IR config: off / default device / address")
 
 
+def evdev():
+    t = [0.0]
+    got = []
+    k = ir.EvdevKeys(lambda n, h: got.append((n, h, round(t[0], 2))), mono=lambda: t[0])
+
+    def ev(code, value, etype=1):
+        return ir.EVENT.pack(0, 0, etype, code, value)
+
+    k.feed(ev(28, 1) + ev(28, 0))
+    check(got == [("ok", False, 0.0)], "Enter press -> ok once")
+    got.clear()
+    t[0] = 5.0
+    k.feed(ev(105, 1))
+    for i in range(1, 40):  # kernel autorepeat of a held Left, every 33 ms after 250 ms
+        t[0] = 5.0 + 0.25 + 0.033 * i
+        k.feed(ev(105, 2))
+    k.feed(ev(105, 0))
+    holds = [g for g in got if g[1]]
+    check(got[0] == ("left", False, 5.0) and 3 <= len(holds) <= 5 and holds[0][2] >= 5.5,
+          f"held Left: press + {len(holds)} repeats from 0.5 s, every 0.25 s ({[g[2] for g in holds]})")
+    got.clear()
+    t[0] = 10.0
+    k.feed(ev(104, 1))
+    for i in range(1, 30):
+        t[0] = 10.0 + 0.033 * i + 0.25
+        k.feed(ev(104, 2))
+    k.feed(ev(104, 0))
+    check([g[0] for g in got] == ["ch_up"], "held PageUp (CH+): acts once")
+    got.clear()
+    k.feed(ev(0, 0, etype=0) + ev(59, 1) + ev(59, 0) + ev(61, 1) + ev(999, 1) + ev(999, 0))
+    check([g[0] for g in got] == ["red", "yellow"], "sync events and unmapped codes ignored; F1 = red, F3 = yellow")
+    got.clear()
+    data = ev(108, 1) + ev(108, 0)
+    for i in range(0, len(data), 5):  # split mid-event
+        k.feed(data[i:i + 5])
+    check([g[0] for g in got] == ["down"], "events split across reads")
+    got.clear()
+    k.feed(ev(2, 1) + ev(2, 0) + ev(11, 1) + ev(11, 0))
+    check([g[0] for g in got] == ["1", "0"], "digits 1 and 0")
+    check(ir.EVENT.size == 24, "struct input_event is 24 bytes (64-bit)")
+
+
 if __name__ == "__main__":
     unit()
+    evdev()
     real_holds()
     asyncio.run(keys())
     print("ALL PASSED" if not failed else f"FAILED {failed}")

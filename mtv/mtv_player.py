@@ -21,12 +21,15 @@ Environment:
   MTV_DRM_MODE       DRM mode index or WxH@Hz (default 0 = the screen's first mode; list: mpv --drm-mode=help)
   MTV_INTERPOLATION  1 (default) / 0: blend frames when the video rate is not the screen rate
   MTV_HWDEC          mpv hwdec (default vaapi)
-  MTV_VOLUME         mpv volume 0-100 (default 100: the TV / soundbar sets the level)
+  MTV_VOLUME         mpv volume 0-100 at the first start (default 100); later the web remote's volume bar sets it and it
+                     is kept in MTV_STATE (default $STATE_DIRECTORY): the TV's own volume is separate
   MTV_MPV            mpv binary (default mpv)
   MTV_MPV_ARGS       extra mpv options, shell-quoted (e.g. tone mapping)
   MTV_IR_DEVICE      raw LIRC receiver for the remote (default /dev/lirc0; "off" = no remote)
   MTV_IR_ADDRESS     the remote's NEC address (default 0xE386: LG Magic Remote, set-top box profile "Vip")
   MTV_IR_KEYS        JSON command -> key name map replacing the default (see ir.py), e.g. {"0x0e": "ok"}
+  MTV_KEYS_DEVICE    keyboard-style receiver (Flirc) as a path or glob, e.g. /dev/input/by-id/*flirc*event-kbd; grabbed,
+                     key events: Enter=OK, arrows, PgUp/PgDn=CH+/CH-, F1-F4=red/green/yellow/blue, 0-9 (see ir.EVDEV_KEYS)
   MTV_IR_DEBUG       1: log every decoded IR frame with its time (press, repeat, other remotes) to the journal
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
@@ -57,7 +60,7 @@ from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -89,6 +92,8 @@ class Config:
         except ValueError:
             self.volume = 100
         self.mpv = env.get("MTV_MPV") or "mpv"
+        self.state_dir = env.get("MTV_STATE") or env.get("STATE_DIRECTORY") or ""
+        self.keys_device = env.get("MTV_KEYS_DEVICE") or ""
         self.extra = shlex.split(env.get("MTV_MPV_ARGS") or "")
         dev = env.get("MTV_IR_DEVICE")
         self.ir_device = "" if (dev or "").lower() in ("off", "0", "no", "none") else (dev or "/dev/lirc0")
@@ -107,7 +112,7 @@ class Config:
         return f"{self.server}/media/{item_id}"
 
 
-def mpv_args(cfg, sock):
+def mpv_args(cfg, sock, volume=None, muted=False):
     """mpv for the TV: DRM output in one fixed mode, VAAPI, HDMI sound, idle black screen between items.
     keep-open=yes: at the end of a file mpv stays on its last frame (eof-reached) instead of closing it, so the end
     is reported once and the next load replaces it without a flash of the console. keep-open-pause=no: mpv does not
@@ -115,7 +120,8 @@ def mpv_args(cfg, sock):
     args = [cfg.mpv, "--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--keep-open-pause=no",
             "--vo=gpu-next", "--gpu-context=drm", f"--drm-mode={cfg.mode}", f"--hwdec={cfg.hwdec}",
             "--video-sync=display-resample", "--ao=alsa", f"--audio-device={cfg.audio_device}",
-            f"--volume={cfg.volume}", "--volume-max=100", "--audio-display=embedded-first", "--sid=no",
+            f"--volume={cfg.volume if volume is None else volume}", f"--mute={'yes' if muted else 'no'}",
+            "--volume-max=100", "--audio-display=embedded-first", "--sid=no",
             "--hr-seek=yes", "--cache=yes", "--cache-secs=60", "--demuxer-readahead-secs=30",
             "--demuxer-max-bytes=512MiB", "--demuxer-max-back-bytes=64MiB", "--network-timeout=15",
             "--ytdl=no", "--no-input-terminal", "--input-default-bindings=no", "--osd-level=1",
@@ -147,9 +153,63 @@ class Player:
         self.applied = None          # sound message the running filters were built from / changed to
         self.af_text = None          # last chain written to mpv's 'af' property
         self.last_status, self.status_key = -1e9, None
+        self.volume, self.muted = cfg.volume, False
+        self.screen = None           # "3840x2160 @ 60 Hz", read from mpv once the window is up
+        self.load_volume()
         self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
         self.http = None             # aiohttp session for the menu's lists (set while connected)
         self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state)
+
+    # -- volume: mpv's own (software) volume; the TV / soundbar volume is separate
+    def _volume_file(self):
+        return os.path.join(self.cfg.state_dir, "volume.json") if self.cfg.state_dir else None
+
+    def load_volume(self):
+        path = self._volume_file()
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            self.volume = max(0, min(100, int(data.get("volume"))))
+            self.muted = bool(data.get("muted"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def save_volume(self):
+        path = self._volume_file()
+        if not path:
+            return
+        with contextlib.suppress(OSError):
+            os.makedirs(self.cfg.state_dir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"volume": self.volume, "muted": self.muted}, f)
+            os.replace(tmp, path)
+
+    def report_output(self):
+        """Screen, sound device and volume to the server (web remote: volume bar, Settings -> Audio)."""
+        self.send({"type": "output", "name": "TV Player", "screen": self.screen, "device": self.cfg.audio_device,
+                   "volume": self.volume, "muted": self.muted, "version": VERSION})
+
+    async def read_screen(self):
+        mpv = self.mpv
+        if not mpv:
+            return
+        w = await mpv.get_property("display-width")
+        h = await mpv.get_property("display-height")
+        fps = await mpv.get_property("display-fps")
+        if w and h:
+            self.screen = f"{w}x{h}" + (f" @ {fps:g} Hz" if fps else "")
+
+    async def set_volume(self, percent, muted):
+        self.volume, self.muted = max(0, min(100, int(percent))), bool(muted)
+        self.save_volume()
+        if self.mpv:
+            with contextlib.suppress(MpvError):
+                await self.mpv.set_property("volume", self.volume)
+                await self.mpv.set_property("mute", self.muted)
+        self.report_output()
 
     async def fetch(self, path):
         if self.http is None:
@@ -192,6 +252,8 @@ class Player:
             self.applied = self.sound
         if self.item:
             await self._load(self.pos)
+        await self.read_screen()
+        self.report_output()
         if self.menu.open:
             await self.draw_menu()
 
@@ -307,6 +369,11 @@ class Player:
         elif t == "sound":
             self.sound = msg
             await self.apply_sound()
+        elif t == "volume":
+            try:
+                await self.set_volume(float(msg.get("percent")), msg.get("muted"))
+            except (TypeError, ValueError):
+                pass
         elif t == "state" and isinstance(msg.get("state"), dict):
             self.state = msg["state"]
             if self.menu.open and len(self.menu.pages) == 1:
@@ -483,6 +550,57 @@ async def run_ir(cfg, player, stop):
         os.close(fd)
 
 
+async def run_evdev(cfg, player, stop):
+    """A keyboard-style receiver (Flirc): found by path / glob, grabbed, plugged in or out at any time."""
+    if not cfg.keys_device:
+        return
+    loop = asyncio.get_running_loop()
+    keys = ir.EvdevKeys(lambda name, held: asyncio.ensure_future(on_key(player, name, held)))
+    announced = False
+    while not stop.is_set():
+        found = ir.open_evdev(cfg.keys_device)
+        if not found:
+            if not announced:
+                log(f"remote: no device matches {cfg.keys_device} (waiting)")
+                announced = True
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), 5)
+            continue
+        fd, path = found
+        announced = False
+        gone = asyncio.Event()
+
+        def readable():
+            try:
+                data = os.read(fd, EVENT_BATCH)
+            except BlockingIOError:
+                return
+            except OSError:  # unplugged
+                loop.remove_reader(fd)
+                gone.set()
+                return
+            if cfg.ir_debug:
+                for _s, _us, etype, code, value in ir.EVENT.iter_unpack(data[:len(data) - len(data) % ir.EVENT.size]):
+                    if etype == ir.EV_KEY:
+                        log(f"key event: {time.monotonic():.3f} code {code} value {value}")
+            keys.feed(data)
+
+        loop.add_reader(fd, readable)
+        log(f"remote: reading {path} (keyboard receiver)")
+        try:
+            await asyncio.wait([asyncio.ensure_future(gone.wait()), asyncio.ensure_future(stop.wait())],
+                               return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            with contextlib.suppress(Exception):
+                loop.remove_reader(fd)
+            os.close(fd)
+        if not stop.is_set():
+            log("remote: keyboard receiver unplugged")
+
+
+EVENT_BATCH = ir.EVENT.size * 64
+
+
 class MpvObserver(MpvIpc):
     OBSERVE = MpvIpc.OBSERVE + ("time-pos",)
 
@@ -504,7 +622,7 @@ async def _mpv_loop(cfg, player, stop, sock):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(sock)
         started = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(*mpv_args(cfg, sock))
+        proc = await asyncio.create_subprocess_exec(*mpv_args(cfg, sock, player.volume, player.muted))
         ipc = MpvObserver(on_event=player.on_mpv_event)
         try:
             for _ in range(100):
@@ -555,7 +673,8 @@ async def run_server(cfg, player, stop):
                     player._send = queue.put_nowait
                     player.http = http
                     player.log(f"mtv-player {VERSION} up (mode {cfg.mode}, interpolation "
-                               f"{'on' if cfg.interpolation else 'off'}, audio {cfg.audio_device})")
+                               f"{'on' if cfg.interpolation else 'off'}, audio {cfg.audio_device}, volume {player.volume} %)")
+                    player.report_output()
 
                     async def writer():
                         while True:
@@ -601,7 +720,8 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     tasks = [asyncio.create_task(c) for c in (run_mpv(cfg, player, stop), run_server(cfg, player, stop),
-                                              run_ticks(player, stop), run_ir(cfg, player, stop))]
+                                              run_ticks(player, stop), run_ir(cfg, player, stop),
+                                              run_evdev(cfg, player, stop))]
     await stop.wait()  # SIGTERM / SIGINT: the server loop sits in a ws read, so cancel instead of waiting for it
     for t in tasks:
         t.cancel()

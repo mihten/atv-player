@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.21.0"
+VERSION = "0.21.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -74,7 +74,8 @@ mimetypes.add_type("audio/x-matroska", ".mka")
 LIB: dict[int, dict] = {}
 LAST_SCAN: dict = {}
 SCANNING = False
-PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone" / "box")
+PLAYERS: dict = {}  # ws -> session kind ("tv" / "phone" / "box" / "mtv")
+MTV_OUT: dict = {}  # ws of a TV Player -> its reported output (screen, sound device, volume): `output` in the state
 REMOTES: dict = {}  # ws -> session kind the web remote controls
 SINKS: dict = {}  # session kind -> the atv-audio sink's ws (only "tv"; a new sink replaces the old one)
 SINK_INFO: dict = {}  # session kind -> {"name", "output"} as last reported by its sink
@@ -342,6 +343,7 @@ class Session:
             "server_name": server_name(), "disk": DISK,
             "sink": sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box" else None,
             **(box_extra(self) if self.kind in SERVER_SOUND else {}),
+            **({"output": mtv_output(self)} if self.kind == "mtv" else {}),
         }
 
     def save(self):
@@ -964,6 +966,26 @@ async def on_button(data):
         extra = f" {delta:+.0f} s -> {msg['position']:.1f}"
     log.info("button: %s%s -> %s (%s)", c, extra, KIND_NAMES[s.kind], s.kind)
     await handle_cmd(s, msg)
+
+
+def clean_mtv_output(data):
+    """The TV Player's `output` message: {name, screen, device, volume 0..100, muted, version}, bounded and typed."""
+    def s(v, n=80):
+        return str(v)[:n] if v is not None else None
+    try:
+        volume = max(0, min(100, int(round(float(data.get("volume"))))))
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        volume = None
+    return {"name": s(data.get("name"), 60), "screen": s(data.get("screen"), 60), "device": s(data.get("device"), 120),
+            "volume": volume, "muted": bool(data.get("muted")), "version": s(data.get("version"), 20)}
+
+
+def mtv_output(s):
+    """Output of the session's player (None while none is connected or it has not reported yet)."""
+    for ws in s.players:
+        if ws in MTV_OUT:
+            return MTV_OUT[ws]
+    return None
 
 
 def clean_volume(data):
@@ -1957,6 +1979,13 @@ async def on_message(s, data, role, ws=None):
         await handle_cmd(s, data)
     elif kind == "ping" and ws is not None:
         await send(ws, pong(data))
+    elif kind == "volume" and role == "remote" and s.kind == "mtv":  # web remote: the TV Player's own volume
+        vol = clean_volume(data)
+        if vol is not None:
+            await to_players(s, {"type": "volume", **vol})
+    elif role == "player" and kind == "output" and s.kind == "mtv":  # screen, sound device, volume as it is now
+        MTV_OUT[ws] = clean_mtv_output(data)
+        await broadcast_state(s)
     elif kind == "volume" and role in ("player", "remote") and s.kind in ("tv", "box"):  # TV quick panel, web remote
         vol = clean_volume(data)
         if vol is not None:
@@ -2093,6 +2122,7 @@ async def ws_handler(request):
             if ws not in PLAYERS:  # a standby program's box player: it never counted
                 return ws
             PLAYERS.pop(ws, None)
+            MTV_OUT.pop(ws, None)
             if not s.players:
                 s.playing = False
                 s.want_play = False

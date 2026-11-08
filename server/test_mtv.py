@@ -130,10 +130,45 @@ async def main(tmp):
             await mtv.close()
             await H.drain(remote)
             check((await H.state(http, "mtv"))["players"] == 0, "mtv player gone -> 0 players")
+            check((await H.state(http, "mtv"))["output"] is None, "... and its output is forgotten")
             mtv = await http.ws_connect(f"{H.WS}/ws?role=player&kind=mtv")
             types = [m["type"] for m in await H.drain(mtv)]
             check("sound" in types and "load" in types and types.index("sound") < types.index("load"),
                   f"mtv reconnect: sound before load ({types})")
+
+            # ---- the TV Player's output: reported by the player, in the state; the web remote's volume reaches it
+            check((await H.state(http, "mtv")).get("output") is None, "no output reported yet -> state.output null")
+            check("output" not in await H.state(http, "tv") and "output" not in await H.state(http, "box"),
+                  "TV and box states carry no output")
+            await mtv.send_json({"type": "output", "name": "TV Player", "screen": "3840x2160 @ 60 Hz",
+                                 "device": "alsa/hdmi", "volume": 72.6, "muted": False, "version": "0.4.0", "junk": 1})
+            await H.drain(mtv)
+            out = (await H.state(http, "mtv")).get("output")
+            check(out == {"name": "TV Player", "screen": "3840x2160 @ 60 Hz", "device": "alsa/hdmi", "volume": 73,
+                          "muted": False, "version": "0.4.0"}, f"output in the state, typed and bounded ({out})")
+            await mtv.send_json({"type": "output", "name": "x" * 500, "volume": 900})
+            await H.drain(mtv)
+            out = (await H.state(http, "mtv"))["output"]
+            check(out["volume"] == 100 and len(out["name"]) == 60, "output values clamped")
+            await H.drain(mtv)
+            await remote.send_json({"type": "volume", "percent": 41.2, "muted": True})
+            vol, _ = await until(mtv, "volume")
+            check(vol == {"type": "volume", "percent": 41, "muted": True}, f"web remote volume -> the mtv player ({vol})")
+            await remote.send_json({"type": "volume", "percent": "x"})
+            vol, _ = await until(mtv, "volume", 0.6)
+            check(vol is None, "garbage volume not relayed")
+            sinkvol = [m for m in await H.drain(sink) if m.get("type") == "volume"]
+            check(not sinkvol, "an mtv volume never reaches the atv-audio sink")
+            await mtv.send_json({"type": "volume", "percent": 5})  # a player cannot set the volume this way
+            check(not [m for m in await H.drain(mtv) if m.get("type") == "volume"]
+                  and not [m for m in await H.drain(sink) if m.get("type") == "volume"],
+                  "volume sent BY the mtv player is not relayed (to itself or the sink)")
+            # a volume from a box remote still reaches the sink, as before
+            boxremote = await H.connect(http, "role=remote&session=box")
+            await boxremote.send_json({"type": "volume", "percent": 33, "muted": False})
+            v2, _ = await until(sink, "volume")
+            check(v2 is not None and v2["percent"] == 33, "box remote volume still reaches the sink")
+            await boxremote.close()
 
             # ---- backup carries mtv_sound; restore applies it (and an old backup without it changes nothing)
             async with http.get(f"{H.BASE}/api/backup") as r:
