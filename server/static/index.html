@@ -1743,10 +1743,16 @@ function remoteSection(m) {
   const r = m.output && m.output.remote;
   if (!m.players || !r || !r.can) return "";
   const p = r.progress || {}, busy = p.state !== "idle";
-  const rows = (r.profiles || []).map((n) => `<div class="set-row"><span class="set-dot${n === r.active ? " on" : ""}"></span>` +
-    `<div class="set-main"><div class="set-t">${esc(n)}</div><div class="set-s">${n === r.active ? "In use" : "Saved"}</div></div>` +
-    (n === r.active ? "" : `<button class="pill" data-a="r-use" data-name="${esc(n)}"${busy ? " disabled" : ""}>Use</button>` +
-      `<button class="ib" data-a="r-delete" data-name="${esc(n)}" title="Delete"${busy ? " disabled" : ""}>${ic("trash")}</button>`) + `</div>`).join("");
+  const act = Array.isArray(r.active) ? r.active : r.active ? [r.active] : [];
+  const rows = (r.profiles || []).map((n) => {
+    const on = act.includes(n), dis = busy ? " disabled" : "";
+    return `<div class="set-row"><span class="set-dot${on ? " on" : ""}"></span>` +
+      `<div class="set-main"><div class="set-t">${esc(n)}</div><div class="set-s">${on ? "In use" : "Saved"}</div></div>` +
+      (on ? `<button class="pill" data-a="r-remove" data-name="${esc(n)}"${busy || act.length < 2 ? " disabled" : ""}>Off</button>`
+          : `<button class="pill" data-a="r-add" data-name="${esc(n)}"${dis}>Add</button>` +
+            `<button class="pill" data-a="r-use" data-name="${esc(n)}"${dis}>Only</button>` +
+            `<button class="ib" data-a="r-delete" data-name="${esc(n)}" title="Delete"${dis}>${ic("trash")}</button>`) + `</div>`;
+  }).join("");
   const fn = (n) => (p.lit || []).includes(n) ? `<span style="color:#80d080">✓ ${esc(n)}</span>` : `<span class="set-s">· ${esc(n)}</span>`;
   const row = (title, buttons) => `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">${title}</div></div>${buttons}</div>`;
   const hint = (t) => `<div class="set-hint">${t}</div>`;
@@ -1769,7 +1775,7 @@ function remoteSection(m) {
     : p.text ? `<div class="set-hint">${esc(p.text)}</div>` : "";
   return sec("Remote") + (rows || `<div class="set-hint">No remote saved yet.</div>`) + status +
     `<div class="set-btns"><button class="pill primary" data-a="r-learn"${busy ? " disabled" : ""}>Learn a new remote…</button><span class="grow"></span></div>` +
-    `<div class="set-hint">Set the TV's universal control to the device first (for example Set-top box). The TV then names each function (Play / Pause, Menu, arrows, Next, Previous): press whichever button you want for it, once, aimed at the receiver. Next and Previous can be skipped. The buttons in use now are put back if you stop.</div>`;
+    `<div class="set-hint">Several remotes can be in use at once: Add puts a saved one next to the ones already in use, Off takes one out, Only switches to that one alone. A new remote joins the ones in use. To learn one, set the TV's universal control to its device first (for example Set-top box); the TV then names each function (Play / Pause, Menu, arrows, Next, Previous) and you press whichever button you want for it, once, aimed at the receiver. Next and Previous can be skipped. A test follows. The buttons in use now are put back if you stop.</div>`;
 }
 
 /** Headphones on the player card: atv-audio's own queue, or the Apple TV while its sound goes to atv-audio. */

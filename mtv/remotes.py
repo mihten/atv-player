@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import re
+import struct
 import textwrap
 import time
 
@@ -48,7 +49,13 @@ LOADED = "Loaded Successfully"
 NOT_A_BUTTON = {"7C8BCB1E": "the repeat part of a signal"}
 ROW = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]{8})\s+(\d+)\s+(\d+)\s+(\S+)\s*$", re.M)
 MAX_PARTIAL = 8
+# The receiver holds ONE button table and `loadconfig` replaces it (measured 2026-11-08), so several remotes at once =
+# one combined table written by us: a .fcfg file is a 28-byte header (magic, version, row count, checksum the device does
+# not verify when loading, ...) and 16-byte rows (hash LE u32, IK, ..., HID key code in the last byte).
+FCFG_MAGIC = b"\xef\xbe\xad\xde"
+FCFG_HEAD, FCFG_ROW = 28, 16
 # The player's key name each learned function arrives as (ir.EVDEV_KEYS: Enter -> ok, F4 -> blue, PgUp -> ch_up ...)
+HID = {"return": 0x28, "F4": 0x3d, "up": 0x52, "down": 0x51, "left": 0x50, "right": 0x4f, "pageup": 0x4b, "pagedown": 0x4e}
 PLAYER_KEY = {"return": "ok", "F4": "blue", "up": "up", "down": "down", "left": "left", "right": "right",
               "pageup": "ch_up", "pagedown": "ch_down"}
 TEST_IDLE = 60.0          # s without any key before a test step gives up
@@ -67,6 +74,52 @@ def clean_name(name):
     """The profile name, or None when it is not allowed (it becomes a file name)."""
     name = " ".join(str(name or "").split())
     return name if NAME_RE.match(name) else None
+
+
+def read_fcfg(path):
+    """(header bytes, [16-byte rows]) of a saved table; ValueError when it is no table."""
+    with open(path, "rb") as f:
+        b = f.read()
+    if len(b) < FCFG_HEAD or b[:4] != FCFG_MAGIC:
+        raise ValueError("not a button table")
+    n = struct.unpack_from("<I", b, 8)[0]
+    if FCFG_HEAD + n * FCFG_ROW != len(b):
+        raise ValueError("table size does not match its row count")
+    return b[:FCFG_HEAD], [b[FCFG_HEAD + i * FCFG_ROW:FCFG_HEAD + (i + 1) * FCFG_ROW] for i in range(n)]
+
+
+def row_hash(row):
+    return f"{struct.unpack_from('<I', row, 0)[0]:08X}"
+
+
+def row_name(row):
+    hid = row[FCFG_ROW - 1]
+    for flirc, label, _h, _o in KEYS:
+        if HID.get(flirc) == hid:
+            return label
+    return f"key 0x{hid:02x}"
+
+
+def merge_tables(tables):
+    """tables: [(name, header, rows)] in priority order. Returns (header, rows, notes): one row per signal. The same signal
+    with the same key twice is one row; the same signal with another key stays with the first profile (a note names it);
+    a stored NEC repeat frame is dropped (it would fire for every unknown key)."""
+    seen, out, notes = {}, [], []
+    head = tables[0][1]
+    for name, _h, rows in tables:
+        for row in rows:
+            h = row_hash(row)
+            if h in NOT_A_BUTTON:
+                notes.append(f"{name}: {row_name(row)} is only {NOT_A_BUTTON[h]} - left out")
+            elif h not in seen:
+                seen[h] = (name, row)
+                out.append(row)
+            elif seen[h][1][FCFG_ROW - 1] != row[FCFG_ROW - 1]:
+                notes.append(f"{name}: {row_name(row)} has the same signal as {seen[h][0]}'s {row_name(seen[h][1])} - "
+                             f"{seen[h][0]} wins")
+    hdr = bytearray(head)
+    struct.pack_into("<I", hdr, 8, len(out))
+    return bytes(hdr), out, notes
 
 
 class Remotes:
@@ -98,6 +151,8 @@ class Remotes:
         self.decision = None         # "keep" | "discard" from the phone after a failed test
         self._wake = asyncio.Event()
         self._menu_pressed = False
+        self._want = None            # (op, names) of a running switch
+        self._before = []            # profiles in use before a learn
 
     # -- profiles on disk
     def _path(self, name):
@@ -111,19 +166,29 @@ class Remotes:
             return []
 
     @property
-    def active(self):
+    def active_names(self):
+        """The profiles in use together, in priority order (active.json: a name, or a list of names)."""
         try:
             with open(os.path.join(self.dir, "active.json")) as f:
-                name = json.load(f).get("active")
-            return name if name in self.profiles() else None
+                val = json.load(f).get("active")
         except (OSError, ValueError, AttributeError):
-            return None
+            return []
+        names = val if isinstance(val, list) else [val]
+        have = self.profiles()
+        return [n for n in names if isinstance(n, str) and n in have]
 
-    def _set_active(self, name):
+    @property
+    def active(self):
+        """The first profile in use (None when none)."""
+        names = self.active_names
+        return names[0] if names else None
+
+    def _set_active(self, names):
+        names = [names] if isinstance(names, str) else list(names)
         os.makedirs(self.dir, exist_ok=True)
         tmp = os.path.join(self.dir, "active.json.tmp")
         with open(tmp, "w") as f:
-            json.dump({"active": name}, f)
+            json.dump({"active": names}, f)
         os.replace(tmp, os.path.join(self.dir, "active.json"))
 
     # -- a marker while the table is being changed: a crash or restart in between is repaired at the next start
@@ -180,7 +245,7 @@ class Remotes:
         elif state in ("testing", "review"):
             prog.update(phase=self.phase, expected=[KEYS[i][1] for i in self.learned],
                         lit=[l for l, n in self.hits.items() if n], strays=self._stray_list(), problems=list(self.problems))
-        return {"profiles": self.profiles(), "active": self.active, "progress": prog}
+        return {"profiles": self.profiles(), "active": self.active_names, "progress": prog}
 
     # -- the flirc_util program
     async def _util(self, *args, timeout=15.0):
@@ -256,7 +321,7 @@ class Remotes:
         if self.busy:
             return "busy"
         clean = clean_name(name)
-        if op in ("learn", "use", "delete") and clean is None:
+        if op in ("learn", "use", "add", "remove", "delete") and clean is None:
             return "bad name"
         if op == "learn":
             if clean in self.profiles():
@@ -264,19 +329,29 @@ class Remotes:
             self.mode, self.name, self.index, self.note, self.cancelled = "learn", clean, 0, "", False
             self.stage, self.restored, self.ok, self.text = "run", None, False, ""
             self.learned, self.phase, self.hits, self.strays, self.problems, self.decision = [], None, {}, {}, [], None
+            self._before = self.active_names
             self._mark(True)
             self.task = asyncio.ensure_future(self._learn())
-        elif op == "use":
+        elif op in ("use", "add", "remove"):
             if clean not in self.profiles():
                 return "no such profile"
+            now = self.active_names
+            names = [clean] if op == "use" else now + [clean] if clean not in now else now
+            if op == "remove":
+                if clean not in now:
+                    return "that profile is not in use"
+                names = [n for n in now if n != clean]
+                if not names:
+                    return "at least one remote must stay in use"
             self.mode, self.name, self.cancelled, self.text = "use", clean, False, ""
+            self._want = (op, names)
             self._mark(True)
             self.task = asyncio.ensure_future(self._use())
         elif op == "delete":
             if clean not in self.profiles():
                 return "no such profile"
-            if clean == self.active:
-                return "that profile is in use - switch to another one first"
+            if clean in self.active_names:
+                return "that profile is in use - turn it off first"
             with contextlib.suppress(OSError):
                 os.unlink(self._path(clean))
             self.text = f"{clean} deleted"
@@ -305,22 +380,60 @@ class Remotes:
         return None
 
     # -- switching
+    async def _apply(self, names):
+        """Make the receiver's table = the profiles in `names` (one: its file as saved; several: one combined table).
+        Returns (ok, notes). The caller keeps / restores the previous table."""
+        if len(names) == 1:
+            ok = await self._load(self._path(names[0]))
+            notes = []
+            if ok:
+                notes = [f"{names[0]}: {k} is only the repeat part of a signal and fires for other keys too - learn it again"
+                         for k in await self._bad_rows()]
+            return ok, notes
+        tables = []
+        for n in names:
+            try:
+                head, rows = read_fcfg(self._path(n))
+            except (OSError, ValueError) as e:
+                return False, [f"{n}: {e}"]
+            tables.append((n, head, rows))
+        head, rows, notes = merge_tables(tables)
+        path = os.path.join(self.dir, ".merged.fcfg")
+        with open(path, "wb") as f:
+            f.write(head + b"".join(rows))
+        if not await self._load(path):
+            return False, ["the receiver did not accept the combined table"]
+        got = await self._table_hashes()
+        if got is not None and got != sorted(row_hash(r) for r in rows):
+            return False, [f"the receiver holds {len(got)} buttons instead of the expected {len(rows)}"]
+        return True, notes
+
+    async def _table_hashes(self):
+        rc, out = await self._util("settings", timeout=15)
+        if rc != 0:
+            return None
+        return sorted(h.upper() for _i, h, _ik, _id, _k in ROW.findall(out))
+
     async def _use(self):
+        op, names = self._want
         name = self.name
         try:
             if not await self._keep_current():
-                return await self._done_use(f"Could not save the current buttons - nothing changed")
-            if await self._load(self._path(name)):
-                self._set_active(name)
-                bad = await self._bad_rows()
-                if bad:
-                    self.log(f"remotes: {name} holds {len(bad)} row(s) that are no button: {bad}")
-                    return await self._done_use(f"Now using {name} - but its {', '.join(bad)} button caught only the repeat part "
-                                                f"of a signal and fires for other keys too: delete the remote and learn it again")
-                return await self._done_use(f"Now using {name}")
+                return await self._done_use("Could not save the current buttons - nothing changed")
+            ok, notes = await self._apply(names)
+            if ok:
+                self._set_active(names)
+                joined = " + ".join(names)
+                text = {"remove": f"{name} turned off - now using {joined}", "add": f"{name} added - now using {joined}"
+                        }.get(op, f"Now using {joined}")
+                if notes:
+                    self.log(f"remotes: {text}: {notes}")
+                    text += " - " + "; ".join(notes)
+                return await self._done_use(text)
             await self._restore()
-            return await self._done_use(f"Could not load {name} - the previous buttons are back" if self.restored
-                                        else f"Could not load {name} - RESTORE FAILED")
+            why = notes[0] if notes else "it did not load"
+            return await self._done_use(f"Could not switch ({why}) - the previous buttons are back" if self.restored
+                                        else f"Could not switch ({why}) - RESTORE FAILED")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -423,10 +536,23 @@ class Remotes:
             rc, _ = await self._util("saveconfig", os.path.join(self.dir, self.name))
             if rc != 0 or not os.path.isfile(self._path(self.name)):
                 return await self._finish(False, "Learned, but could not save the profile, " + await self._restore())
-            self._set_active(self.name)
             skipped = len(KEYS) - learned
-            await self._finish(True, f"{self.name}: {learned} functions learned" + (f", {skipped} skipped" if skipped else "")
-                               + (" - kept although the test found problems" if kept_with_problems else ", test passed"))
+            text = (f"{self.name}: {learned} functions learned" + (f", {skipped} skipped" if skipped else "")
+                    + (" - kept although the test found problems" if kept_with_problems else ", test passed"))
+            before = [n for n in self._before if n != self.name]
+            if before:   # the new remote joins the ones in use: one combined table
+                ok, notes = await self._apply(before + [self.name])
+                if ok:
+                    self._set_active(before + [self.name])
+                    text += f"; now using {' + '.join(before + [self.name])}" + (" - " + "; ".join(notes) if notes else "")
+                else:
+                    await self._restore()
+                    self._set_active(before)
+                    text += f"; could not combine it with {' + '.join(before)} ({notes[0] if notes else 'not accepted'}), " \
+                            f"{'those are' if len(before) > 1 else 'that one is'} back - use Add on the phone to try again"
+            else:
+                self._set_active([self.name])
+            await self._finish(True, text)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # never leave the screen stuck

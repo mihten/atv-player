@@ -172,12 +172,12 @@ async def main(tmp):
 
             # ---- remote profiles of the player's Flirc: reported in the output, commands from the web remote reach the player
             await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {
-                "can": True, "profiles": ["Vip STB", "Other"] + ["x"] * 60, "active": "Vip STB", "junk": 1,
+                "can": True, "profiles": ["Vip STB", "Other"] + ["x"] * 60, "active": ["Vip STB", "Other"], "junk": 1,
                 "progress": {"state": "learning", "name": "Other", "index": 6, "total": 8, "label": "Next", "optional": 1,
                              "note": "n" * 300, "text": "t" * 500}}})
             await H.drain(mtv)
             rem = (await H.state(http, "mtv"))["output"].get("remote")
-            check(rem and rem["can"] and rem["active"] == "Vip STB" and rem["profiles"][:2] == ["Vip STB", "Other"]
+            check(rem and rem["can"] and rem["active"] == ["Vip STB", "Other"] and rem["profiles"][:2] == ["Vip STB", "Other"]
                   and len(rem["profiles"]) == 40, f"output.remote typed, profile list bounded ({rem and rem['profiles'][:3]})")
             check(rem["progress"] == {"state": "learning", "name": "Other", "text": "t" * 160, "index": 6, "total": 8,
                                       "label": "Next", "optional": True, "note": "n" * 80}, "progress typed and bounded")
@@ -198,13 +198,20 @@ async def main(tmp):
             await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"progress": {"state": "x"}}})
             await H.drain(mtv)
             rem = (await H.state(http, "mtv"))["output"]["remote"]
-            check(rem["progress"]["state"] == "idle" and rem["profiles"] == [] and rem["active"] is None and not rem["can"],
+            check(rem["progress"]["state"] == "idle" and rem["profiles"] == [] and rem["active"] == [] and not rem["can"],
                   "unknown progress state -> idle, empty lists")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "active": "Single", "profiles": ["Single"]}})
+            await H.drain(mtv)
+            check((await H.state(http, "mtv"))["output"]["remote"]["active"] == ["Single"], "an old player's single active name becomes a list")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "active": ["a"] * 60, "profiles": []}})
+            await H.drain(mtv)
+            check(len((await H.state(http, "mtv"))["output"]["remote"]["active"]) == 40, "the active list is bounded")
             await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100})
             await H.drain(mtv)
             check("remote" not in (await H.state(http, "mtv"))["output"], "a player without a learnable receiver reports no remote")
             await H.drain(mtv)
-            for body in ({"op": "learn", "name": "Cambridge"}, {"op": "use", "name": "Vip STB"},
+            for body in ({"op": "learn", "name": "Cambridge"}, {"op": "use", "name": "Vip STB"}, {"op": "add", "name": "TotalTV"},
+                         {"op": "remove", "name": "TotalTV"},
                          {"op": "delete", "name": "Old"}, {"op": "cancel"}, {"op": "skip"}, {"op": "keep"},
                          {"op": "discard"}):
                 async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
@@ -212,7 +219,7 @@ async def main(tmp):
                 got, _ = await until(mtv, "remote")
                 want = {"type": "remote", "op": body["op"], **({"name": body["name"]} if "name" in body else {})}
                 check(got == want, f"mtv player gets {want} ({got})")
-            for body, what in (({"op": "format", "name": "x"}, "unknown op"), ({"op": "learn"}, "learn without a name"),
+            for body, what in (({"op": "format", "name": "x"}, "unknown op"), ({"op": "learn"}, "learn without a name"), ({"op": "add"}, "add without a name"),
                                ({"op": "use", "name": "x" * 80}, "name too long"), ({"op": "use", "name": 5}, "name not text")):
                 async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
                     check(r.status == 400, f"{what} -> 400 ({r.status})")

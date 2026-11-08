@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.23.0"
+VERSION = "0.24.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -985,7 +985,7 @@ def clean_mtv_output(data):
 
 
 def clean_mtv_remote(r):
-    """The player's remote profiles: {can, profiles [names], active, progress {state, name, text, index, total, label,
+    """The player's remote profiles: {can, profiles [names], active [names in use together], progress {state, name, text, index, total, label,
     note}}, bounded and typed, or None."""
     if not isinstance(r, dict):
         return None
@@ -1009,7 +1009,8 @@ def clean_mtv_remote(r):
                         expected=lst(prog.get("expected"), 12, 16), lit=lst(prog.get("lit"), 12, 16),
                         strays=lst(prog.get("strays"), 12, 24), problems=lst(prog.get("problems"), 4, 160))
     profiles = [t(n, 30) for n in (r.get("profiles") if isinstance(r.get("profiles"), list) else [])[:40]]
-    return {"can": bool(r.get("can")), "profiles": profiles, "active": t(r.get("active"), 30) or None,
+    act = r.get("active") if isinstance(r.get("active"), list) else [r.get("active")] if r.get("active") else []
+    return {"can": bool(r.get("can")), "profiles": profiles, "active": [t(n, 30) for n in act[:40] if n],
             "progress": out_prog}
 
 
@@ -3564,12 +3565,12 @@ async def api_atv_audio(request):
 
 
 
-MTV_REMOTE_OPS = ("learn", "use", "delete", "cancel", "skip", "keep", "discard")
+MTV_REMOTE_OPS = ("learn", "use", "add", "remove", "delete", "cancel", "skip", "keep", "discard")
 MTV_REMOTE_NO_NAME = ("cancel", "skip", "keep", "discard")
 
 
 async def api_mtv_remote(request):
-    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, switch, delete, cancel, skip an optional function, keep / discard after a failed test).
+    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, use only one / add / remove one of several in use together, delete, cancel, skip an optional function, keep / discard after a failed test).
     The player answers through its `output` message (state.output.remote)."""
     need_admin(request)
     body = await _json_body(request)

@@ -133,7 +133,7 @@ async def main():
     u = FakeUtil()
     r, drawn, tmp = await make(u)
     s = r.summary()
-    check(s["profiles"] == [] and s["active"] is None and s["progress"]["state"] == "idle", "start: no profiles, idle")
+    check(s["profiles"] == [] and s["active"] == [] and s["progress"]["state"] == "idle", "start: no profiles, none in use, idle")
     check(r.render() == "" and not r.active_screen, "nothing drawn")
 
     # ---- name rules
@@ -178,7 +178,7 @@ async def main():
     await r.task
     u.load_ok = True  # the restore uses loadconfig too: with it failing both, the receiver would be empty (separate test)
     check(r.active == "Vip STB", "failed switch: active unchanged")
-    check("Could not load" in r.text, f"failed switch reported ({r.text})")
+    check("Could not switch" in r.text, f"failed switch reported ({r.text})")
 
     class FailOnce(FakeUtil):
         n = 0
@@ -199,7 +199,7 @@ async def main():
     check(r2.active is None, "... and no profile became active")
 
     # ---- delete
-    check(await r.command("delete", "Vip STB") == "that profile is in use - switch to another one first", "active profile cannot be deleted")
+    check(await r.command("delete", "Vip STB") == "that profile is in use - turn it off first", "active profile cannot be deleted")
     check(await r.command("delete", "Cambridge") is None and r.profiles() == ["Vip STB"], "other profile deleted")
     check(await r.command("delete", "Cambridge") == "no such profile", "deleting twice refused")
 
@@ -442,7 +442,7 @@ async def main():
     await seed(r, "Good", ["return", "down", "up"])
     await r.command("use", "Bad")
     await r.task
-    check("down button caught only the repeat part" in r.text and r.active == "Bad", f"warning on a bad profile ({r.text[:80]})")
+    check("down is only the repeat part of a signal" in r.text and r.active == "Bad", f"warning on a bad profile ({r.text[:80]})")
     await r.command("use", "Good")
     await r.task
     check(r.text == "Now using Good", "no warning on a good one")
@@ -541,6 +541,166 @@ async def main():
     check(r.summary()["progress"]["strays"] == ["Next"], "Next was skipped but its key fired: a stray")
     await r.command("cancel")
     await asyncio.wait_for(r.task, 5)
+
+    # ---- several remotes at once: one combined table (binary tables, like the real receiver's files)
+    import struct as _st
+
+    def mkrow(h, hid, ik=130):
+        return _st.pack("<I", int(h, 16)) + bytes([ik]) + b"\x00" * 8 + b"\x01\x00" + bytes([hid])
+
+    def mkfile(path, rows):
+        head = bytearray(b"\xef\xbe\xad\xde\x01\x00\x00\x00" + _st.pack("<I", len(rows)) + b"\x11\x22\x33\x44" + b"\xff\xff\xff\xff\x0f" + b"\x00" * 7)
+        open(path, "wb").write(bytes(head) + b"".join(rows))
+
+    HIDS = R.HID
+
+    class BinFake:
+        """flirc_util with real binary tables: loadconfig REPLACES the table (measured), record adds one row."""
+        def __init__(self, salt, presses=(), accept=True, drop=False):
+            self.salt, self.presses, self.table, self.calls, self.accept, self.drop = salt, list(presses), [], [], accept, drop
+            self.only_merged_refused = False
+            self.table = [mkrow("0000%04X" % i, 1 + i) for i in range(2)]      # the "old" buttons
+
+        async def __call__(self, util, *args, **kw):
+            self.calls.append(args)
+            c = args[0]
+            if c == "saveconfig":
+                mkfile(args[1] + ".fcfg", self.table)
+                return FakeProc("Configuration File saved")
+            if c == "format":
+                self.table = []
+                return FakeProc("Done")
+            if c == "loadconfig":
+                if not self.accept or (self.only_merged_refused and args[1].endswith(".merged.fcfg")):
+                    return FakeProc("[E] bad", rc=1)
+                _h, rows = R.read_fcfg(args[1])
+                lose = self.drop and args[1].endswith(".merged.fcfg")   # the receiver silently loses a row of a combined table
+                self.table = rows[:-1] if lose else rows
+                return FakeProc("Configuration File Loaded Successfully")
+            if c == "record":
+                what = self.presses.pop(0) if self.presses else "ok"
+                if what == "none":
+                    return FakeProc("", hang=True)
+                h = "%08X" % (zlib.crc32((self.salt + args[1]).encode()) & 0xffffffff)
+                self.table.append(mkrow(h, HIDS[args[1]]))
+                return FakeProc("Succesfully recorded button")
+            if c == "settings":
+                rows = "".join(f"{i:5d}  {R.row_hash(r)}   130  01  k{r[15]:02x}\n" for i, r in enumerate(self.table))
+                return FakeProc("Recorded Keys:\nIndex  hash       IK   ID  key\n-----  --------   ---  --  ------------\n" + rows)
+            if c == "delete_index":
+                self.table.pop(int(args[1]))
+                return FakeProc("deleted")
+            raise AssertionError(args)
+
+    import zlib
+    A_ROWS = [mkrow("AAAA0001", 0x28), mkrow("AAAA0002", 0x3d), mkrow("AAAA0003", 0x52)]
+    B_ROWS = [mkrow("BBBB0001", 0x28), mkrow("BBBB0002", 0x51), mkrow("BBBB0003", 0x50)]
+
+    # merge_tables itself
+    hd = b"\xef\xbe\xad\xde" + b"\x00" * 24
+    head, rows, notes = R.merge_tables([("A", hd, A_ROWS), ("B", hd, B_ROWS)])
+    check(len(rows) == 6 and not notes and _st.unpack_from("<I", head, 8)[0] == 6, "merge: all rows kept, count in the header fixed")
+    head, rows, notes = R.merge_tables([("A", hd, A_ROWS), ("B", hd, A_ROWS)])
+    check(len(rows) == 3 and not notes, "merge: the same signal and key twice = one row")
+    head, rows, notes = R.merge_tables([("A", hd, A_ROWS), ("B", hd, [mkrow("AAAA0001", 0x51)])])
+    check(len(rows) == 3 and len(notes) == 1 and "Play / Pause" in notes[0] and "A wins" in notes[0], f"merge: conflicting key, first wins, noted ({notes})")
+    head, rows, notes = R.merge_tables([("A", hd, A_ROWS), ("B", hd, [mkrow("7C8BCB1E", 0x51), mkrow("BBBB0009", 0x4f)])])
+    check(len(rows) == 4 and any("repeat" in n for n in notes) and all(R.row_hash(r) != "7C8BCB1E" for r in rows), "merge: the NEC repeat frame is left out")
+    try:
+        open(tmp := tempfile.mktemp(), "wb").write(b"junk")
+        R.read_fcfg(tmp)
+        check(False, "read_fcfg refuses a non-table")
+    except ValueError:
+        check(True, "read_fcfg refuses a non-table")
+    open(tmp, "wb").write(open(tmp, "rb").read() + b"")
+    mkfile(tmp, A_ROWS)
+    open(tmp, "ab").write(b"x")
+    try:
+        R.read_fcfg(tmp)
+        check(False, "read_fcfg refuses a size that does not match the row count")
+    except ValueError:
+        check(True, "read_fcfg refuses a size that does not match the row count")
+
+    # switching with several profiles
+    u = BinFake("x")
+    r, drawn, tmp = await make(u, auto=False)
+    os.makedirs(r.dir, exist_ok=True)
+    mkfile(r._path("A"), A_ROWS)
+    mkfile(r._path("B"), B_ROWS)
+    check(await r.command("use", "A") is None, "use A")
+    await r.task
+    check(r.active_names == ["A"] and u.table == A_ROWS, "A alone: its table as saved")
+    check(await r.command("add", "B") is None, "add B")
+    await r.task
+    check(r.active_names == ["A", "B"] and sorted(R.row_hash(x) for x in u.table) == sorted(R.row_hash(x) for x in A_ROWS + B_ROWS),
+          f"A + B: the receiver holds the combined table ({len(u.table)} rows)")
+    check("B added - now using A + B" in r.text and r.summary()["active"] == ["A", "B"], f"text + summary list both ({r.text})")
+    check(r.active == "A", "the first one in use is the primary")
+    check(await r.command("delete", "B") == "that profile is in use - turn it off first", "a profile in use cannot be deleted")
+    check(await r.command("add", "B") is None, "adding one already in use is accepted (no change)")
+    await r.task
+    check(r.active_names == ["A", "B"] and len(u.table) == 6, "... and changes nothing")
+    check(await r.command("remove", "A") is None, "remove A")
+    await r.task
+    check(r.active_names == ["B"] and u.table == B_ROWS and "A turned off" in r.text, f"back to B alone ({r.text})")
+    check(await r.command("remove", "B") == "at least one remote must stay in use", "the last one cannot be turned off")
+    check(await r.command("remove", "A") == "that profile is not in use", "turning off one that is not in use is refused")
+    check(await r.command("use", "A") is None, "use A only")
+    await r.task
+    check(r.active_names == ["A"] and u.table == A_ROWS, "'use' = only this one")
+
+    # a receiver that refuses / loses a row: the previous table comes back
+    u = BinFake("x", accept=True)
+    r, drawn, tmp = await make(u, auto=False)
+    os.makedirs(r.dir, exist_ok=True)
+    mkfile(r._path("A"), A_ROWS); mkfile(r._path("B"), B_ROWS)
+    await r.command("use", "A"); await r.task
+    u.drop = True
+    await r.command("add", "B"); await r.task
+    check(r.active_names == ["A"] and "Could not switch" in r.text and "expected 6" in r.text, f"wrong row count after loading: refused ({r.text[:100]})")
+    u.drop = False
+    check(u.table == A_ROWS, "... and the previous table is back")
+    u.only_merged_refused = True
+    await r.command("add", "B"); await r.task
+    check(r.active_names == ["A"] and "Could not switch" in r.text and "did not accept" in r.text and u.table == A_ROWS,
+          f"a refused combined table: previous profiles and table kept ({r.text[:90]})")
+    u.only_merged_refused = False
+    open(r._path("C"), "wb").write(b"not a table")
+    await r.command("add", "C"); await r.task
+    check(r.active_names == ["A"] and "not a button table" in r.text and u.table == A_ROWS, f"a broken profile file is named, nothing changed ({r.text[:90]})")
+
+    # old active.json (one name) still reads
+    open(os.path.join(r.dir, "active.json"), "w").write(json.dumps({"active": "B"}))
+    check(r.active_names == ["B"] and r.active == "B", "an old active.json with one name still works")
+    open(os.path.join(r.dir, "active.json"), "w").write(json.dumps({"active": ["A", "gone", "B"]}))
+    check(r.active_names == ["A", "B"], "names of deleted profiles drop out of the list")
+
+    # learning while other remotes are in use: the new one joins them
+    u = BinFake("learn")
+    r, drawn, tmp = await make(u, auto=True)
+    os.makedirs(r.dir, exist_ok=True)
+    mkfile(r._path("A"), A_ROWS)
+    r._set_active(["A"])
+    await r.command("learn", "New")
+    await asyncio.wait_for(r.task, 15)
+    check(r.ok and r.active_names == ["A", "New"], f"learned: now using A + New ({r.text})")
+    check("now using A + New" in r.text, "the result says so")
+    hs = sorted(R.row_hash(x) for x in u.table)
+    check(len(hs) == 3 + 8 and set(R.row_hash(x) for x in A_ROWS) <= set(hs), f"the receiver holds A's 3 + the new remote's 8 buttons ({len(hs)})")
+    u = BinFake("learn2")
+    u.only_merged_refused = True          # the combined table is refused after the new remote was learned
+    r, drawn, tmp = await make(u, auto=True)
+    os.makedirs(r.dir, exist_ok=True)
+    mkfile(r._path("A"), A_ROWS)
+    r._set_active(["A"])
+    u.table = list(A_ROWS)
+    await r.command("learn", "New2")
+    await asyncio.wait_for(r.task, 15)
+    check(r.ok and r.profiles() == ["A", "New2"] and r.active_names == ["A"], f"combine failed: the new remote is saved, A stays in use ({r.text[-110:]})")
+    check(u.table == A_ROWS and "back - use Add" in r.text, "... and A's table is back in the receiver")
+    u.only_merged_refused = False
+    await r.command("add", "New2"); await r.task
+    check(r.active_names == ["A", "New2"] and len(u.table) == 3 + 8, "Add afterwards works")
 
     # ---- ASS
     check(R.esc("a{b}\\c") == "a\\{b\\}\\\u200bc", "escape")
