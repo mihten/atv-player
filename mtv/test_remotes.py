@@ -68,8 +68,15 @@ class FakeUtil:
                 return FakeProc("", hang=True)
             if what == "dup":
                 return FakeProc("[E] button already exists")
-            self.table.append(args[1])
+            self.table.append(args[1] + ("@REP" if what == "rep" else ""))   # "rep": only the repeat part was caught
             return FakeProc(f"Press any button on the remote to link it with '{args[1]}'\n Succesfully recorded button")
+        if cmd == "settings":
+            rows = "".join(f"{i:5d}  {'7C8BCB1E' if '@REP' in e else '%08X' % (0xA0000000 + i)}   130  01  {e.split('@')[0]}\n"
+                           for i, e in enumerate(self.table))
+            return FakeProc("FW Version: v4.7.0\n\nRecorded Keys:\nIndex  hash       IK   ID  key\n-----  --------   ---  --  ------------\n" + rows)
+        if cmd == "delete_index":
+            self.table.pop(int(args[1]))
+            return FakeProc("deleted")
         raise AssertionError(args)
 
 
@@ -380,6 +387,35 @@ async def main():
     await r.command("cancel")
     await asyncio.wait_for(r.task, 5)
     check(await r.command("skip") == "this function cannot be skipped", "skip when nothing is learning is refused")
+
+    # ---- only the repeat part of a signal was caught (the TotalTV "Down" that fired for every unknown key)
+    u = FakeUtil(["ok", "ok", "ok", "rep", "ok"])
+    r, drawn, tmp = await make(u)
+    await r.command("learn", "Rep")
+    await r.task
+    keys = [c[1] for c in u.calls if c[0] == "record"]
+    check(r.ok and keys[3:5] == ["down", "down"], f"a repeat-only capture is asked for again ({keys[2:6]})")
+    check(("delete_index", "3") in u.calls, "... and removed from the receiver")
+    check(u.table == ALL and not any("@REP" in e for e in u.table), "the saved table holds only real buttons")
+    check(any("Only part of the signal" in d[2] for d in drawn), "the screen says only part of the signal was caught")
+    u = FakeUtil(["rep"] * 20)
+    r, drawn, tmp = await make(u)
+    await r.command("learn", "Rep2")
+    await r.task
+    check(not r.ok and "only part of the signal" in r.text, f"endless repeat-only captures end the run ({r.text})")
+    check(u.table == ["old1", "old2"] and r.profiles() == [], "... old buttons back, nothing saved, no bad entry kept")
+
+    # ---- switching to a profile that holds a repeat-only row warns about it
+    u = FakeUtil()
+    r, drawn, tmp = await make(u)
+    await seed(r, "Bad", ["return", "down@REP", "up"])
+    await seed(r, "Good", ["return", "down", "up"])
+    await r.command("use", "Bad")
+    await r.task
+    check("down button caught only the repeat part" in r.text and r.active == "Bad", f"warning on a bad profile ({r.text[:80]})")
+    await r.command("use", "Good")
+    await r.task
+    check(r.text == "Now using Good", "no warning on a good one")
 
     # ---- ASS
     check(R.esc("a{b}\\c") == "a\\{b\\}\\\u200bc", "escape")

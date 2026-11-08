@@ -41,6 +41,12 @@ QUIET_MAX = 12.0          # s to wait for that silence at most
 STRAY = 2.0               # s: a refusal this soon after a signal is the previous button's tail, not a real duplicate
 MAX_STRAYS = 20
 LOADED = "Loaded Successfully"
+# Hashes of signals that are no button: the NEC "repeat" frame (9 ms burst, 2.25 ms space) is the same for every key of
+# every NEC remote and follows most presses. The receiver stores it as a button when the press starts just before it
+# listens; the stored "button" then fires for every key whose own code is not stored (measured 2026-11-08: TotalTV).
+NOT_A_BUTTON = {"7C8BCB1E": "the repeat part of a signal"}
+ROW = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]{8})\s+(\d+)\s+(\d+)\s+(\S+)\s*$", re.M)
+MAX_PARTIAL = 8
 
 BG, BG_ALPHA = "&H101010&", "&H18&"
 WHITE, GREY, DIM, BLUE, GREEN = "&HFFFFFF&", "&HB4B4B4&", "&H808080&", "&HE0A060&", "&H80D080&"
@@ -184,6 +190,21 @@ class Remotes:
         rc, out = await self._util("loadconfig", path, timeout=30)
         return rc == 0 and LOADED in out
 
+    async def _stored(self, key):
+        """(index, hash) of the newest table row for a flirc key name, or None."""
+        rc, out = await self._util("settings", timeout=15)
+        if rc != 0:
+            return None
+        rows = [(int(i), h.upper()) for i, h, _ik, _id, k in ROW.findall(out) if k.lower() == key.lower()]
+        return rows[-1] if rows else None
+
+    async def _bad_rows(self):
+        """Names (flirc keys) of table rows that are no real button (see NOT_A_BUTTON); [] when none or unreadable."""
+        rc, out = await self._util("settings", timeout=15)
+        if rc != 0:
+            return []
+        return [k for _i, h, _ik, _id, k in ROW.findall(out) if h.upper() in NOT_A_BUTTON]
+
     async def _keep_current(self):
         """The table in the receiver now, saved so that it can be put back."""
         os.makedirs(self.dir, exist_ok=True)
@@ -262,6 +283,11 @@ class Remotes:
                 return await self._done_use(f"Could not save the current buttons - nothing changed")
             if await self._load(self._path(name)):
                 self._set_active(name)
+                bad = await self._bad_rows()
+                if bad:
+                    self.log(f"remotes: {name} holds {len(bad)} row(s) that are no button: {bad}")
+                    return await self._done_use(f"Now using {name} - but its {', '.join(bad)} button caught only the repeat part "
+                                                f"of a signal and fires for other keys too: delete the remote and learn it again")
                 return await self._done_use(f"Now using {name}")
             await self._restore()
             return await self._done_use(f"Could not load {name} - the previous buttons are back" if self.restored
@@ -301,7 +327,7 @@ class Remotes:
             rc, out = await self._util("format", timeout=30)
             if rc != 0:
                 return await self._finish(False, f"Could not clear the receiver: {' '.join(out.split())[:60]}")
-            rejects = strays = learned = 0
+            rejects = strays = learned = partial = 0
             while self.index < len(KEYS):
                 key, label, _hint, optional = KEYS[self.index]
                 await self.changed()
@@ -324,7 +350,17 @@ class Remotes:
                     why = "Stopped" if self.cancelled else "No button pressed - stopped"
                     return await self._finish(False, why + ", " + await self._restore())
                 if "recorded button" in out:
-                    self.log(f"remotes: {label} stored")
+                    row = await self._stored(key)
+                    if row and row[1] in NOT_A_BUTTON:
+                        partial += 1   # only the repeat part was caught: take it out and listen again
+                        await self._util("delete_index", str(row[0]), timeout=15)
+                        self.log(f"remotes: {label}: only {NOT_A_BUTTON[row[1]]} was caught (hash {row[1]}), removed, asking again")
+                        if partial >= MAX_PARTIAL:
+                            return await self._finish(False, "The receiver keeps catching only part of the signal - stopped, "
+                                                      + await self._restore())
+                        self.note = "Only part of the signal was caught - press the button again"
+                        continue
+                    self.log(f"remotes: {label} stored" + (f" (hash {row[1]})" if row else ""))
                     self.note = f"{label} stored"
                     self.index += 1
                     learned += 1
