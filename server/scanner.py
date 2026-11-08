@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -241,12 +242,17 @@ def _picture_rank(name):
     return 6
 
 
+# Every ffmpeg / ffprobe run that is not playback goes behind this prefix (scans, thumbnails, audio copies, keyframe index,
+# probes): lowest CPU priority and idle disk priority, so the Bluetooth player and the web streams never wait for them.
+LOW_PRIORITY = ["nice", "-n", "19"] + (["ionice", "-c", "3"] if shutil.which("ionice") else [])
+
+
 def video_pictures(path):
     """Pictures stored INSIDE a video file, best first: [(kind, stream index, name)]. Kinds:
     'attachment' (Matroska attachment with an image mimetype that ffmpeg does not expose as a picture stream),
     'picture' (attached picture: Matroska image attachments as ffmpeg exposes them, MP4/MOV cover atoms),
     'still' (a second, still-image video track such as an Apple Music V_MJPEG cover track). Reads headers only."""
-    out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", path],
+    out = subprocess.run([*LOW_PRIORITY, "ffprobe", "-v", "error", "-print_format", "json", "-show_streams", path],
                          capture_output=True, text=True, timeout=60)
     streams = json.loads(out.stdout or "{}").get("streams") or []
     found = []
@@ -272,13 +278,13 @@ def video_picture_bytes(path, kind, index):
         with tempfile.TemporaryDirectory() as tmp:
             dst = os.path.join(tmp, "pic")
             # ffmpeg dumps the attachment while opening the input and then complains about the missing output
-            subprocess.run(["ffmpeg", "-v", "quiet", "-y", f"-dump_attachment:{index}", dst, "-i", path],
+            subprocess.run([*LOW_PRIORITY, "ffmpeg", "-v", "quiet", "-y", f"-dump_attachment:{index}", dst, "-i", path],
                            capture_output=True, timeout=60)
             try:
                 return Path(dst).read_bytes() or None
             except OSError:
                 return None
-    res = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-map", f"0:{index}", "-frames:v", "1", "-c", "copy",
+    res = subprocess.run([*LOW_PRIORITY, "ffmpeg", "-v", "error", "-i", path, "-map", f"0:{index}", "-frames:v", "1", "-c", "copy",
                           "-f", "image2pipe", "pipe:1"], capture_output=True, timeout=60)
     return res.stdout or None
 
@@ -306,7 +312,7 @@ def dynamic_range(video):
 
 def probe_video(path):
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
+        [*LOW_PRIORITY, "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
         capture_output=True, text=True, timeout=120,
     )
     data = json.loads(out.stdout or "{}")

@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.25.0"
+VERSION = "0.25.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -1517,10 +1517,9 @@ def load_audio_copies():
 def make_main_copy(it, out):
     """Stream copy of the default audio track (audio_ord; None = the only / first track) into a .mka."""
     tmp = out.with_name(f"{out.stem}.{os.getpid()}.{time.monotonic_ns()}.tmp.mka")
-    low = ["nice", "-n", "10"] + (["ionice", "-c3"] if shutil.which("ionice") else [])
     try:
         res = subprocess.run(
-            low + ["ffmpeg", "-v", "error", "-y", "-i", item_path(it), "-map", f"0:a:{it.get('audio_ord') or 0}",
+            scanner.LOW_PRIORITY + ["ffmpeg", "-v", "error", "-y", "-i", item_path(it), "-map", f"0:a:{it.get('audio_ord') or 0}",
                    "-c", "copy", "-f", "matroska", str(tmp)],
             capture_output=True, timeout=900,
         )
@@ -2487,7 +2486,7 @@ ART_SEM = asyncio.Semaphore(1)
 def video_keyframes(path):
     """Presentation times (s) of the first video stream's keyframes, sorted. Reads the packet index only, no decoding."""
     res = subprocess.run(
-        ["nice", "-n", "10", "ffprobe", "-v", "error", "-select_streams", "v:0",
+        [*scanner.LOW_PRIORITY, "ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", path],
         capture_output=True, text=True, timeout=300,
     )
@@ -2508,7 +2507,7 @@ def make_audio_only(it, out):
     app's audio ordinal still points at the right track."""
     tmp = out.with_name(f"{out.stem}.{os.getpid()}.{time.monotonic_ns()}.tmp.mka")
     res = subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-i", item_path(it), "-map", "0:a", "-c:a", "copy", "-f", "matroska", str(tmp)],
+        [*scanner.LOW_PRIORITY, "ffmpeg", "-v", "error", "-y", "-i", item_path(it), "-map", "0:a", "-c:a", "copy", "-f", "matroska", str(tmp)],
         capture_output=True, timeout=900,
     )
     if res.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
@@ -2532,7 +2531,7 @@ MAIN_LOCKS: dict[int, asyncio.Lock] = {}
 def probe_audio(it):
     """codec, bit depth (lossless only), sample rate and bit rate of the default audio track."""
     res = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", f"a:{it.get('audio_ord') or 0}", "-show_entries",
+        [*scanner.LOW_PRIORITY, "ffprobe", "-v", "error", "-select_streams", f"a:{it.get('audio_ord') or 0}", "-show_entries",
          "stream=codec_name,bits_per_raw_sample,bits_per_sample,sample_rate,bit_rate:stream_tags=BPS:format=bit_rate",
          "-of", "json", item_path(it)],
         capture_output=True, text=True, timeout=60,
@@ -2780,7 +2779,7 @@ def make_art(it, out):
             # there instead of every frame up to t; -threads 2 keeps a 4K decode's frame buffers small.
             t = min(30.0, (it.get("duration") or 0) * 0.25)
             res = subprocess.run(
-                ["nice", "-n", "10", "ffmpeg", "-v", "error", "-threads", "2", "-noaccurate_seek", "-ss", f"{t:.1f}",
+                [*scanner.LOW_PRIORITY, "ffmpeg", "-v", "error", "-threads", "2", "-noaccurate_seek", "-ss", f"{t:.1f}",
                  "-i", path, "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=800:-2", "-f", "image2", "-c:v", "mjpeg",
                  "pipe:1"],
                 capture_output=True, timeout=120,
