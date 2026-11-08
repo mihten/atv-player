@@ -133,6 +133,11 @@ async def main():
     check(m.page.title == "Playlists", "Left goes back one page")
     await m.key("red")
     check(not m.open, "Red closes from any depth")
+    await m.show()
+    m.page.sel = 2
+    await m.key("ok")
+    await m.key("blue")
+    check(not m.open, "Blue closes from any depth")
 
     # ---- For you: start_id; empty list; music videos
     await m.show()

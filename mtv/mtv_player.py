@@ -31,7 +31,8 @@ Environment:
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
 Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
-move, CH+ / CH- page, OK / Right select, Left back, Red close. The menu's first row is Play / Pause (the menu stays open).
+move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close. A held key counts as one press (arrows
+repeat while held). The menu's first row is Play / Pause (the menu stays open).
 
 Run: python3 mtv_player.py
 """
@@ -56,7 +57,7 @@ from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -454,7 +455,7 @@ async def run_ir(cfg, player, stop):
     loop = asyncio.get_running_loop()
     mode2 = ir.Mode2()
     keys = ir.Keys(lambda name, held: asyncio.ensure_future(on_key(player, name, held)),
-                   address=cfg.ir_address, keys=cfg.ir_keys,
+                   address=cfg.ir_address, keys=cfg.ir_keys, later=loop.call_later,
                    on_unknown=lambda a, c: log(f"remote: unknown key address 0x{a:x} command 0x{c:02x}"))
 
     def readable():

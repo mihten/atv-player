@@ -111,6 +111,92 @@ def unit():
     check(got == ["ok"], "custom address + key map")
 
 
+# Real Magic Remote timings (CT log 2026-11-08 11:00:53-11:01:09, MTV_IR_DEBUG): F = OK frame, R = repeat.
+SHORT = [(36040.768, "F"), (36040.820, "R")]
+HOLD1 = [(36046.271, "F"), (36046.320, "R"), (36046.767, "F"), (36046.822, "R"), (36046.931, "R"), (36047.035, "R"),
+         (36047.144, "R"), (36047.364, "F"), (36047.412, "R"), (36047.620, "F"), (36047.675, "R"), (36047.885, "F"),
+         (36047.933, "R"), (36048.140, "F"), (36048.193, "R"), (36048.401, "F"), (36048.452, "R")]
+HOLD3 = [(36052.489, "F"), (36052.541, "R"), (36052.989, "F")] + \
+    [(round(36053.039 + 0.1085 * i, 3), "R") for i in range(25)] + \
+    [(36056.002, "F"), (36056.053, "R"), (36056.264, "F"), (36056.313, "R"), (36056.522, "F"), (36056.573, "R")]
+
+
+class Clock:
+    """Fake time + call_later: due callbacks run before each signal (as the event loop would)."""
+
+    def __init__(self):
+        self.t, self.jobs = 0.0, []
+
+    def later(self, delay, fn):
+        self.jobs.append((self.t + delay, fn))
+
+    def advance(self, to):
+        for due, fn in sorted(self.jobs, key=lambda j: j[0]):
+            if due <= to:
+                self.t = due
+                self.jobs.remove((due, fn))
+                fn()
+        self.t = to
+
+
+def play(keys, clock, seq, cmd=0x0E, shift=0.0):
+    for t, kind in seq:
+        clock.advance(t + shift)
+        keys.frame(nec_frame(0xE386, cmd) if kind == "F" else REPEAT)
+    clock.advance(seq[-1][0] + shift + 2.0)
+
+
+def real_holds():
+    clock = Clock()
+    got = []
+    k = ir.Keys(lambda n, h: got.append((n, h, round(clock.t, 3))), mono=lambda: clock.t, later=clock.later)
+    play(k, clock, SHORT)
+    check([g[0] for g in got] == ["ok"], f"real short OK -> one press ({got})")
+    got.clear()
+    play(k, clock, HOLD1)
+    check([g[:2] for g in got] == [("ok", False)], f"real 1 s OK hold + release burst -> one press ({got})")
+    got.clear()
+    play(k, clock, HOLD3)
+    check([g[:2] for g in got] == [("ok", False)], f"real 3 s OK hold + release burst -> one press ({got})")
+    # the same 3 s hold on Right: press + repeats while held, nothing after the last continuous repeat
+    got.clear()
+    play(k, clock, HOLD3, cmd=0x06, shift=100)
+    holds = [g for g in got if g[1]]
+    last_r = 36053.039 + 0.1085 * 24 + 100
+    check(got[0][:2] == ("right", False) and 8 <= len(holds) <= 11 and all(g[2] <= last_r + 0.001 for g in holds)
+          and len([g for g in got if not g[1]]) == 1, f"real 3 s Right hold: 1 press + {len(holds)} repeats, none after release")
+    # fast deliberate taps 0.35 s apart (as in the menu test): each acts at once
+    got.clear()
+    base = 300.0
+    for i in range(4):
+        play(k, clock, [(base + 0.35 * i, "F"), (base + 0.35 * i + 0.05, "R")], cmd=0x41)
+        clock.t = base + 0.35 * i + 0.06  # play() jumped 2 s ahead: back to the tap rhythm for the next one
+    check([g[0] for g in got] == ["down"] * 4, f"4 taps 0.35 s apart -> 4 presses ({len(got)})")
+    # taps 0.5 s apart (the ambiguous spacing): the second waits HOLD_CONFIRM, then counts
+    got.clear()
+    clock = Clock()
+    k = ir.Keys(lambda n, h: got.append((n, round(clock.t, 3))), mono=lambda: clock.t, later=clock.later)
+    for t, kind in [(10.0, "F"), (10.05, "R"), (10.5, "F"), (10.55, "R")]:
+        clock.advance(t)
+        k.frame(nec_frame(0xE386, 0x41) if kind == "F" else REPEAT)
+    check(got == [("down", 10.0)], "second tap at +0.5 s: not yet (waiting for repeats)")
+    clock.advance(11.0)
+    check(got == [("down", 10.0), ("down", 10.7)], f"... counted 0.2 s later ({got})")
+    # third tap while the second waits: both count, in order
+    got.clear()
+    for t, kind in [(20.0, "F"), (20.05, "R"), (20.5, "F"), (20.55, "R"), (20.62, "F")]:
+        clock.advance(t)
+        k.frame(nec_frame(0xE386, 0x41) if kind == "F" else REPEAT)
+    check([g[0] for g in got] == ["down"] * 3, f"tap during a pending tap: all 3 count ({got})")
+    # no scheduler: the waiting tap is decided by the next signal
+    got.clear()
+    k2 = ir.Keys(lambda n, h: got.append(n), mono=lambda: clock.t)
+    for t, kind, c in [(30.0, "F", 0x41), (30.05, "R", 0), (30.5, "F", 0x41), (30.55, "R", 0), (32.0, "F", 0x0E)]:
+        clock.t = t
+        k2.frame(nec_frame(0xE386, c) if kind == "F" else REPEAT)
+    check(got == ["down", "down", "ok"], f"without later(): pending tap counted when the next key comes ({got})")
+
+
 class FakeMpv:
     def __init__(self):
         self.props = {"duration": 200.0, "pause": False}
@@ -143,6 +229,9 @@ async def keys():
     check(not [m for m in sent if m.get("cmd") == "seek"], "menu open: Right is the menu's, no seek")
     await M.on_key(p, "red", False)
     check(not p.menu.open and p.mpv.overlays[-1] == "none", "Red closes the menu, overlay removed")
+    await M.on_key(p, "blue", False)
+    await M.on_key(p, "blue", False)
+    check(not p.menu.open and p.mpv.overlays[-2:] == ["ass-events", "none"], "Blue opens and Blue closes the menu")
     await M.on_key(p, "ch_up", False)
     await M.on_key(p, "ch_down", False)
     cmds = [m["cmd"] for m in sent if m.get("type") == "cmd"]
@@ -172,6 +261,7 @@ async def keys():
 
 if __name__ == "__main__":
     unit()
+    real_holds()
     asyncio.run(keys())
     print("ALL PASSED" if not failed else f"FAILED {failed}")
     sys.exit(1 if failed else 0)
