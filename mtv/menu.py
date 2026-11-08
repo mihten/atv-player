@@ -53,8 +53,9 @@ def fit(label, sub):
 
 
 class Row:
-    def __init__(self, label, sub="", act=None, opens=False, closes=False):
+    def __init__(self, label, sub="", act=None, opens=False, closes=False, local=None):
         self.label, self.sub, self.act, self.opens, self.closes = label, sub, act, opens, closes
+        self.local = local   # async callable run on this box (not sent to the server); the menu closes first
 
 
 class Page:
@@ -66,8 +67,9 @@ class Page:
 
 
 class Menu:
-    def __init__(self, fetch, send, state=lambda: None):
+    def __init__(self, fetch, send, state=lambda: None, learn=None):
         self.fetch, self.send, self.state = fetch, send, state
+        self.learn = learn           # async callable: "Learn remote" row (receiver that can learn buttons), or None
         self.pages = []
         self.library = None          # id -> summary, for queue titles (loaded once per open)
 
@@ -99,6 +101,8 @@ class Menu:
             Row("Shuffle", "on" if st.get("shuffle") else "off", act={"cmd": "shuffle"}),
             Row("Repeat", st.get("repeat_mode") or "all", act={"cmd": "repeat"}),
         ]
+        if self.learn:
+            rows.append(Row("Learn remote", "teach the receiver", local=self.learn))
         return Page("TV Player", rows)
 
     def queue_page(self):
@@ -216,6 +220,10 @@ class Menu:
             return True
         if name in ("ok", "right"):
             row = page.rows[page.sel]
+            if row.local and name == "ok":
+                self.close()
+                await row.local()
+                return True
             if row.act is None or (name == "right" and not row.opens):
                 return False
             if row.opens:

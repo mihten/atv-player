@@ -31,6 +31,8 @@ Environment:
   MTV_KEYS_DEVICE    keyboard-style receiver (Flirc) as a path or glob, e.g. /dev/input/by-id/*flirc*event-kbd; grabbed,
                      key events: Enter=OK, arrows, PgUp/PgDn=CH+/CH-, F1-F4=red/green/yellow/blue, 0-9 (see ir.EVDEV_KEYS)
   MTV_IR_DEBUG       1: log every decoded IR frame with its time (press, repeat, other remotes) to the journal
+  MTV_FLIRC_UTIL     flirc_util binary (default: PATH or /usr/local/bin); with MTV_KEYS_DEVICE it adds the menu row
+                     "Learn remote" (learn.py: the TV names each button, you press it; old buttons saved and restored)
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
 Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
@@ -59,8 +61,9 @@ for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
 from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
+import learn as learn_mod  # noqa: E402
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -94,6 +97,7 @@ class Config:
         self.mpv = env.get("MTV_MPV") or "mpv"
         self.state_dir = env.get("MTV_STATE") or env.get("STATE_DIRECTORY") or ""
         self.keys_device = env.get("MTV_KEYS_DEVICE") or ""
+        self.flirc_util = env.get("MTV_FLIRC_UTIL") or shutil.which("flirc_util") or "/usr/local/bin/flirc_util"
         self.extra = shlex.split(env.get("MTV_MPV_ARGS") or "")
         dev = env.get("MTV_IR_DEVICE")
         self.ir_device = "" if (dev or "").lower() in ("off", "0", "no", "none") else (dev or "/dev/lirc0")
@@ -103,6 +107,11 @@ class Config:
             self.ir_address = ir.DEFAULT_ADDRESS
         self.ir_keys = ir.parse_keys(env.get("MTV_IR_KEYS"))
         self.ir_debug = flag(env.get("MTV_IR_DEBUG"), default=False)
+
+    @property
+    def can_learn(self):
+        """The menu offers "Learn remote" when a Flirc is configured and its tool is installed."""
+        return bool(self.keys_device) and os.access(self.flirc_util, os.X_OK)
 
     @property
     def ws_url(self):
@@ -124,7 +133,7 @@ def mpv_args(cfg, sock, volume=None, muted=False):
             "--volume-max=100", "--audio-display=embedded-first", "--sid=no",
             "--hr-seek=yes", "--cache=yes", "--cache-secs=60", "--demuxer-readahead-secs=30",
             "--demuxer-max-bytes=512MiB", "--demuxer-max-back-bytes=64MiB", "--network-timeout=15",
-            "--ytdl=no", "--no-input-terminal", "--input-default-bindings=no", "--osd-level=1",
+            "--ytdl=no", "--no-input-terminal", "--input-default-bindings=no", "--osd-level=1", "--osc=no",
             "--quiet", "--msg-level=all=warn", "--background-color=#000000", f"--input-ipc-server={sock}"]
     if cfg.connector:
         args.append(f"--drm-connector={cfg.connector}")
@@ -158,7 +167,13 @@ class Player:
         self.load_volume()
         self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
         self.http = None             # aiohttp session for the menu's lists (set while connected)
-        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state)
+        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state,
+                                  learn=self.start_learn if cfg.can_learn else None)
+        self.learn = learn_mod.Learn(cfg.flirc_util, os.path.join(cfg.state_dir or tempfile.gettempdir(), "flirc"),
+                                     self.draw_menu, self.log)
+
+    async def start_learn(self):
+        await self.learn.open()
 
     # -- volume: mpv's own (software) volume; the TV / soundbar volume is separate
     def _volume_file(self):
@@ -224,7 +239,10 @@ class Player:
         if not self.mpv:
             return
         try:
-            if self.menu.open:
+            if self.learn.active:
+                await self.mpv.command("osd-overlay", 1, "ass-events", self.learn.render(), learn_mod.RES_X,
+                                       learn_mod.RES_Y, 10)
+            elif self.menu.open:
                 await self.mpv.command("osd-overlay", 1, "ass-events", self.menu.render(), menu_mod.RES_X,
                                        menu_mod.RES_Y, 10)
             else:
@@ -468,6 +486,10 @@ async def osd(player, text, ms=1500):
 async def on_key(player, name, held):
     """A remote key: the menu's while it is open; else a server command (the server owns the queue and sends the
     control back to this player)."""
+    if player.learn.active:   # learning the remote: the Flirc takes the presses; other receivers' keys do not count
+        if await player.learn.key(name):
+            await player.draw_menu()
+        return
     if player.menu.open:
         if await player.menu.key(name):
             await player.draw_menu()
