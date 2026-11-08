@@ -80,15 +80,44 @@ class FakeUtil:
         raise AssertionError(args)
 
 
-async def make(util, **kw):
+async def autotest(r):
+    """The user at the remote for the test stage: step 1 presses every learned function, step 2 presses Menu."""
+    d1 = d2 = False
+    while True:
+        await asyncio.sleep(0.01)
+        if r.phase == "test1" and not d1:
+            d1 = True
+            for i in list(r.learned):
+                await r.key(R.PLAYER_KEY[R.KEYS[i][0]])
+        elif r.phase == "test2" and not d2:
+            d2 = True
+            await r.key("blue")
+        elif r.phase is None:
+            d1 = d2 = False
+
+
+async def make(util, auto=True, **kw):
     drawn = []
     tmp = tempfile.mkdtemp()
 
     async def changed():
         drawn.append((r.stage, r.index, r.note))
 
+    kw.setdefault("test_idle", 0.3)
+    kw.setdefault("review_for", 0.5)
     r = R.Remotes("flirc_util", tmp, changed, lambda m: None, spawn=util, timeout=0.2, flash=0, result_for=0.3, **kw)
+    if auto:
+        r._auto = asyncio.ensure_future(autotest(r))
     return r, drawn, tmp
+
+
+async def until(cond, t=5.0):
+    end = asyncio.get_running_loop().time() + t
+    while not cond():
+        if asyncio.get_running_loop().time() > end:
+            return False
+        await asyncio.sleep(0.01)
+    return True
 
 
 async def seed(r, name, table):
@@ -331,19 +360,20 @@ async def main():
                 asyncio.ensure_future(hold())
             return proc
     u = Holder()
-    drawn = []
+    held_notes = []
     tmp = tempfile.mkdtemp()
 
     async def ch():
-        drawn.append(r.note)
+        held_notes.append(r.note)
     r = R.Remotes("flirc_util", tmp, ch, lambda m: None, spawn=u, timeout=2, flash=0, result_for=0.3,
-                  quiet_for=lambda: _t.monotonic() - last["t"], quiet=0.3, quiet_max=3, settle=0.1)
+                  quiet_for=lambda: _t.monotonic() - last["t"], quiet=0.3, quiet_max=3, settle=0.1, test_idle=0.3)
+    r._auto = asyncio.ensure_future(autotest(r))
     await r.command("learn", "Held")
     await asyncio.wait_for(r.task, 60)
     gaps = [b2[1] - a2[1] for a2, b2 in zip(stamps, stamps[1:]) if a2[0] == "stored" and b2[0] == "start"]
     check(r.ok and len(gaps) == N - 1, f"held buttons: all learned ({len(gaps)} gaps)")
     check(min(gaps) >= 0.75, f"next button listened for only after silence (shortest gap {min(gaps):.2f} s >= 0.5 hold + 0.3 quiet)")
-    check("Release the button" in drawn, "the screen asks to release the button while waiting")
+    check("Release the button" in held_notes, "the screen asks to release the button while waiting")
     check(r.note == "" or r.stage == "result", "hint cleared afterwards")
 
     # ---- a refusal right after a signal = the previous button's tail: not counted, not shown, retried
@@ -416,6 +446,101 @@ async def main():
     await r.command("use", "Good")
     await r.task
     check(r.text == "Now using Good", "no warning on a good one")
+
+    # ---- the test stage: pass
+    u = FakeUtil()
+    r, drawn, tmp = await make(u, auto=False, test_idle=3)
+    shots = {}
+    await r.command("learn", "Pass")
+    check(await until(lambda: r.phase == "test1"), "after the last button the test starts")
+    check(r.stage == "test" and r.summary()["progress"]["state"] == "testing" and r.summary()["progress"]["phase"] == "test1",
+          "summary: testing, step 1")
+    shots[1] = r.render()
+    check("Test remote: Pass" in shots[1] and "Test 1 / 2" in shots[1] and "Press each button you assigned" in shots[1], "TV: step 1 text")
+    check(r.summary()["progress"]["expected"] == [k[1] for k in R.KEYS] and r.summary()["progress"]["lit"] == [], "nothing lit yet")
+    await r.key("ok"); await r.key("up")
+    check(set(r.summary()["progress"]["lit"]) == {"Play / Pause", "Up"} and "✓  Play / Pause" in r.render(), "pressed functions light up")
+    for k in ("blue", "down", "left", "right", "ch_up", "ch_down"):
+        await r.key(k)
+    check(await until(lambda: r.phase == "test2"), "all lit -> step 2")
+    shots[2] = r.render()
+    check("Test 2 / 2" in shots[2] and "did NOT assign" in shots[2] and "press your Menu button" in shots[2], "TV: step 2 text")
+    t0 = asyncio.get_running_loop().time()
+    await r.key("blue")
+    await asyncio.wait_for(r.task, 5)
+    check(asyncio.get_running_loop().time() - t0 < 1.5, "the Menu button ends step 2 at once (not after the idle time)")
+    check(r.ok and r.text.endswith("test passed") and r.profiles() == ["Pass"] and r.active == "Pass", f"passed -> saved and active ({r.text})")
+    check(r.summary()["progress"]["state"] == "idle", "idle after")
+
+    # ---- a function never answers: step 1 times out, review, Discard restores
+    u = FakeUtil()
+    r, drawn, tmp = await make(u, auto=False)
+    await r.command("learn", "Miss")
+    await until(lambda: r.phase == "test1")
+    for k in ("ok", "blue", "down", "left", "right", "ch_up", "ch_down"):   # Up is never pressed (or never arrives)
+        await r.key(k)
+    check(await until(lambda: r.phase == "test2", 3), "silence in step 1 ends it after the idle time")
+    await r.key("blue")
+    check(await until(lambda: r.phase == "review"), "a missing function -> review")
+    p = r.summary()["progress"]
+    check(p["state"] == "review" and p["problems"] == ["no answer from Up"], f"problem named ({p['problems']})")
+    check("Test failed" in r.render() and "no answer from Up" in r.render() and "Keep or Discard" in r.render(), "TV: review screen")
+    check(await r.command("discard") is None, "Discard accepted")
+    await asyncio.wait_for(r.task, 5)
+    check(not r.ok and "Discarded" in r.text and u.table == ["old1", "old2"] and r.profiles() == [] and r.active is None,
+          f"discard: old buttons back, nothing saved ({r.text[:90]})")
+
+    # ---- a button fires a function it was not assigned (step 2): review, Keep saves it anyway
+    u = FakeUtil()
+    r, drawn, tmp = await make(u, auto=False)
+    await r.command("learn", "Stray")
+    await until(lambda: r.phase == "test1")
+    for k in ("ok", "blue", "up", "down", "left", "right", "ch_up", "ch_down"):
+        await r.key(k)
+    await until(lambda: r.phase == "test2")
+    await r.key("down"); await r.key("down"); await r.key("green")   # Green and Yellow acting as Down (the TotalTV case)
+    check(r.summary()["progress"]["strays"] == ["Down x2", "green"] and "Fired without being assigned" in r.render(), "strays listed live")
+    await r.key("blue")
+    check(await until(lambda: r.phase == "review"), "strays -> review")
+    check("fired without being assigned: Down x2, green" in r.summary()["progress"]["problems"][0], "problem names what fired")
+    check(await r.command("keep") is None, "Keep accepted")
+    await asyncio.wait_for(r.task, 5)
+    check(r.ok and "kept although the test found problems" in r.text and r.profiles() == ["Stray"], f"keep: saved with the warning ({r.text[:90]})")
+
+    # ---- nobody answers on the phone: discard after the review time
+    u = FakeUtil()
+    r, drawn, tmp = await make(u, auto=False, review_for=0.3)
+    await r.command("learn", "Quiet")
+    await asyncio.wait_for(r.task, 10)
+    check(not r.ok and "No answer from the phone" in r.text and u.table == ["old1", "old2"], f"no decision -> discarded ({r.text[-70:]})")
+
+    # ---- Cancel during the test
+    u = FakeUtil()
+    r, drawn, tmp = await make(u, auto=False, test_idle=30)
+    await r.command("learn", "Cx")
+    await until(lambda: r.phase == "test1")
+    await r.command("cancel")
+    await asyncio.wait_for(r.task, 5)
+    check(not r.ok and r.text.startswith("Stopped") and u.table == ["old1", "old2"] and r.profiles() == [], "cancel in the test: stopped, old table back")
+
+    # ---- keep / discard outside a review
+    check(await r.command("keep") == "nothing to decide" and await r.command("discard") == "nothing to decide", "keep / discard only in a review")
+
+    # ---- a skipped function's key firing counts as a stray in step 1
+    u = FakeUtil(["ok"] * 6 + ["none", "none"])
+    r, drawn, tmp = await make(u, auto=False, test_idle=0.4)
+    r.timeout = 30
+    await r.command("learn", "Skp")
+    await asyncio.sleep(0.15)
+    await r.command("skip")
+    await asyncio.sleep(0.2)
+    await r.command("skip")
+    await until(lambda: r.phase == "test1")
+    check(r.summary()["progress"]["expected"] == [k[1] for k in R.KEYS[:6]], "only the learned functions are expected")
+    await r.key("ch_up")
+    check(r.summary()["progress"]["strays"] == ["Next"], "Next was skipped but its key fired: a stray")
+    await r.command("cancel")
+    await asyncio.wait_for(r.task, 5)
 
     # ---- ASS
     check(R.esc("a{b}\\c") == "a\\{b\\}\\\u200bc", "escape")

@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.22.1"
+VERSION = "0.23.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -993,7 +993,7 @@ def clean_mtv_remote(r):
     def t(v, n):
         return str(v)[:n] if v is not None else ""
     prog = r.get("progress") if isinstance(r.get("progress"), dict) else {}
-    state = prog.get("state") if prog.get("state") in ("idle", "learning", "switching") else "idle"
+    state = prog.get("state") if prog.get("state") in ("idle", "learning", "switching", "testing", "review") else "idle"
     out_prog = {"state": state, "name": t(prog.get("name"), 30), "text": t(prog.get("text"), 160)}
     if state == "learning":
         for k in ("index", "total"):
@@ -1002,6 +1002,12 @@ def clean_mtv_remote(r):
             except (TypeError, ValueError):
                 out_prog[k] = 0
         out_prog.update(label=t(prog.get("label"), 12), optional=bool(prog.get("optional")), note=t(prog.get("note"), 80))
+    if state in ("testing", "review"):  # the test after a learn: what is expected / lit / fired by mistake / found wrong
+        def lst(v, n, m):
+            return [t(x, m) for x in (v if isinstance(v, list) else [])[:n]]
+        out_prog.update(phase=prog.get("phase") if prog.get("phase") in ("test1", "test2", "review") else "",
+                        expected=lst(prog.get("expected"), 12, 16), lit=lst(prog.get("lit"), 12, 16),
+                        strays=lst(prog.get("strays"), 12, 24), problems=lst(prog.get("problems"), 4, 160))
     profiles = [t(n, 30) for n in (r.get("profiles") if isinstance(r.get("profiles"), list) else [])[:40]]
     return {"can": bool(r.get("can")), "profiles": profiles, "active": t(r.get("active"), 30) or None,
             "progress": out_prog}
@@ -3558,11 +3564,12 @@ async def api_atv_audio(request):
 
 
 
-MTV_REMOTE_OPS = ("learn", "use", "delete", "cancel", "skip")
+MTV_REMOTE_OPS = ("learn", "use", "delete", "cancel", "skip", "keep", "discard")
+MTV_REMOTE_NO_NAME = ("cancel", "skip", "keep", "discard")
 
 
 async def api_mtv_remote(request):
-    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, switch, delete, cancel, skip an optional function).
+    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, switch, delete, cancel, skip an optional function, keep / discard after a failed test).
     The player answers through its `output` message (state.output.remote)."""
     need_admin(request)
     body = await _json_body(request)
@@ -3570,13 +3577,13 @@ async def api_mtv_remote(request):
     if op not in MTV_REMOTE_OPS:
         raise web.HTTPBadRequest(text="unknown op")
     name = body.get("name")
-    if op not in ("cancel", "skip") and not (isinstance(name, str) and 0 < len(name.strip()) <= 60):
+    if op not in MTV_REMOTE_NO_NAME and not (isinstance(name, str) and 0 < len(name.strip()) <= 60):
         raise web.HTTPBadRequest(text="a profile name is needed")
     s = SESSIONS["mtv"]
     if not s.players:
         raise web.HTTPServiceUnavailable(text="the TV Player is not running")
     log.info("tv remote: %s %s (web remote)", op, name or "")
-    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op not in ("cancel", "skip") else {})})
+    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op not in MTV_REMOTE_NO_NAME else {})})
     return web.json_response({"ok": True})
 
 

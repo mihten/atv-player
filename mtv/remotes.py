@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import re
+import textwrap
 import time
 
 RES_X, RES_Y = 1920, 1080
@@ -47,6 +48,12 @@ LOADED = "Loaded Successfully"
 NOT_A_BUTTON = {"7C8BCB1E": "the repeat part of a signal"}
 ROW = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]{8})\s+(\d+)\s+(\d+)\s+(\S+)\s*$", re.M)
 MAX_PARTIAL = 8
+# The player's key name each learned function arrives as (ir.EVDEV_KEYS: Enter -> ok, F4 -> blue, PgUp -> ch_up ...)
+PLAYER_KEY = {"return": "ok", "F4": "blue", "up": "up", "down": "down", "left": "left", "right": "right",
+              "pageup": "ch_up", "pagedown": "ch_down"}
+TEST_IDLE = 60.0          # s without any key before a test step gives up
+REVIEW_FOR = 120.0        # s the phone has to choose Keep / Discard after a failed test (then: discard)
+WARN = "&H4080F0&"        # orange (BGR)
 
 BG, BG_ALPHA = "&H101010&", "&H18&"
 WHITE, GREY, DIM, BLUE, GREEN = "&HFFFFFF&", "&HB4B4B4&", "&H808080&", "&HE0A060&", "&H80D080&"
@@ -64,10 +71,12 @@ def clean_name(name):
 
 class Remotes:
     def __init__(self, util, state_dir, changed, log=lambda m: None, spawn=None, timeout=TIMEOUT, flash=FLASH,
-                 result_for=RESULT_FOR, quiet_for=None, quiet=QUIET, quiet_max=QUIET_MAX, settle=SETTLE):
+                 result_for=RESULT_FOR, quiet_for=None, quiet=QUIET, quiet_max=QUIET_MAX, settle=SETTLE,
+                 test_idle=TEST_IDLE, review_for=REVIEW_FOR):
         self.util, self.dir, self.changed, self.log = util, os.path.join(state_dir, "remotes"), changed, log
         self.quiet_for = quiet_for   # callable: seconds since the receiver last sent a key event (None: unknown)
         self.quiet, self.quiet_max, self.settle = quiet, quiet_max, settle
+        self.test_idle, self.review_for = test_idle, review_for
         self.spawn = spawn or asyncio.create_subprocess_exec
         self.timeout, self.flash, self.result_for = timeout, flash, result_for
         self.stage = None          # TV screen: None | "run" | "result"
@@ -81,6 +90,14 @@ class Remotes:
         self.task = self.closer = self.proc = None
         self.cancelled = False
         self.skip_flag = False       # "Skip" pressed for an optional function
+        self.learned = []            # KEYS indexes stored in this learn
+        self.phase = None            # None | "test1" (press what you assigned) | "test2" (press what you did not) | "review"
+        self.hits = {}               # function label -> presses seen in the test
+        self.strays = {}             # function label (or key name) -> times it fired without being asked for
+        self.problems = []
+        self.decision = None         # "keep" | "discard" from the phone after a failed test
+        self._wake = asyncio.Event()
+        self._menu_pressed = False
 
     # -- profiles on disk
     def _path(self, name):
@@ -153,12 +170,16 @@ class Remotes:
 
     def summary(self):
         """For the web remote (inside the player's `output` message)."""
-        state = "learning" if self.mode == "learn" and self.busy else "switching" if self.mode == "use" and self.busy \
-            else "idle"
+        learn = self.mode == "learn" and self.busy
+        state = ("review" if self.phase == "review" else "testing" if self.phase in ("test1", "test2") else "learning") \
+            if learn else "switching" if self.mode == "use" and self.busy else "idle"
         prog = {"state": state, "name": self.name if state != "idle" else "", "text": self.text}
         if state == "learning":
             fn = KEYS[min(self.index, len(KEYS) - 1)]
             prog.update(index=self.index, total=len(KEYS), label=fn[1], optional=fn[3], note=self.note)
+        elif state in ("testing", "review"):
+            prog.update(phase=self.phase, expected=[KEYS[i][1] for i in self.learned],
+                        lit=[l for l, n in self.hits.items() if n], strays=self._stray_list(), problems=list(self.problems))
         return {"profiles": self.profiles(), "active": self.active, "progress": prog}
 
     # -- the flirc_util program
@@ -226,6 +247,12 @@ class Remotes:
             return await self.cancel()
         if op == "skip":
             return await self.skip()
+        if op in ("keep", "discard"):
+            if self.phase != "review":
+                return "nothing to decide"
+            self.decision = op
+            self._wake.set()
+            return None
         if self.busy:
             return "busy"
         clean = clean_name(name)
@@ -236,6 +263,7 @@ class Remotes:
                 return "a profile with that name already exists"
             self.mode, self.name, self.index, self.note, self.cancelled = "learn", clean, 0, "", False
             self.stage, self.restored, self.ok, self.text = "run", None, False, ""
+            self.learned, self.phase, self.hits, self.strays, self.problems, self.decision = [], None, {}, {}, [], None
             self._mark(True)
             self.task = asyncio.ensure_future(self._learn())
         elif op == "use":
@@ -271,6 +299,7 @@ class Remotes:
         if not self.busy or self.mode != "learn":   # a switch is short and always ends with a working table
             return None
         self.cancelled = True
+        self._wake.set()          # a test step waiting for keys
         if self.proc:
             await self._kill(self.proc)
         return None
@@ -362,6 +391,7 @@ class Remotes:
                         continue
                     self.log(f"remotes: {label} stored" + (f" (hash {row[1]})" if row else ""))
                     self.note = f"{label} stored"
+                    self.learned.append(self.index)
                     self.index += 1
                     learned += 1
                     rejects = 0
@@ -379,16 +409,94 @@ class Remotes:
                     else "Not stored - press the button again"
                 if rejects >= MAX_REJECTS:
                     return await self._finish(False, "Too many refused presses - stopped, " + await self._restore())
+            self.problems = await self._verify()
+            if self.cancelled:
+                return await self._finish(False, "Stopped, " + await self._restore())
+            kept_with_problems = False
+            if self.problems:
+                decision = await self._review()
+                if decision != "keep":
+                    why = "Stopped" if self.cancelled else "Discarded" if decision == "discard" else "No answer from the phone"
+                    return await self._finish(False, f"Test failed ({'; '.join(self.problems)}). {why}, " + await self._restore())
+                kept_with_problems = True
+            self.phase = None
             rc, _ = await self._util("saveconfig", os.path.join(self.dir, self.name))
             if rc != 0 or not os.path.isfile(self._path(self.name)):
                 return await self._finish(False, "Learned, but could not save the profile, " + await self._restore())
             self._set_active(self.name)
             skipped = len(KEYS) - learned
-            await self._finish(True, f"{self.name}: {learned} functions learned" + (f", {skipped} skipped" if skipped else ""))
+            await self._finish(True, f"{self.name}: {learned} functions learned" + (f", {skipped} skipped" if skipped else "")
+                               + (" - kept although the test found problems" if kept_with_problems else ", test passed"))
         except asyncio.CancelledError:
             raise
         except Exception as e:  # never leave the screen stuck
             await self._finish(False, f"Error: {e!r:.60} - " + await self._restore())
+
+    def _label_of(self, name):
+        """Function label for a player key name (ok -> Play / Pause), or the key name itself when no function has it."""
+        for flirc, label, _h, _o in KEYS:
+            if PLAYER_KEY.get(flirc) == name:
+                return label
+        return name
+
+    def _stray_list(self):
+        return [f"{k} x{v}" if v > 1 else k for k, v in self.strays.items()]
+
+    async def _wait_key(self, idle):
+        """True when a key (or a stop) arrived within `idle` s, False on silence."""
+        try:
+            await asyncio.wait_for(self._wake.wait(), idle)
+        except asyncio.TimeoutError:
+            return False
+        self._wake.clear()
+        return True
+
+    async def _verify(self):
+        """Test what was learned, live, on the TV. Step 1: press every button you assigned (each lights up when the player
+        gets its key). Step 2: press buttons you did NOT assign: nothing may happen (a stored repeat frame, a wrong or
+        doubled button shows up as a function that fires). Returns a list of problems ([] = passed)."""
+        fns = list(self.learned)
+        expected = [KEYS[i][1] for i in fns]
+        self.hits, self.strays, self.stage = {l: 0 for l in expected}, {}, "test"
+        menu_key = PLAYER_KEY["F4"]
+        self.phase = "test1"
+        await self.changed()
+        self._wake.clear()
+        while not self.cancelled and not all(self.hits.values()):
+            got = await self._wait_key(self.test_idle)
+            await self.changed()
+            if not got:
+                break
+        if not self.cancelled:
+            self.phase = "test2"
+            self._wake.clear()
+            await self.changed()
+            while not self.cancelled:
+                got = await self._wait_key(self.test_idle)
+                await self.changed()
+                if not got or self._menu_pressed:
+                    break
+        self._menu_pressed = False
+        problems = []
+        missing = [l for l, n in self.hits.items() if not n]
+        if missing:
+            problems.append("no answer from " + ", ".join(missing))
+        if self.strays:
+            problems.append("fired without being assigned: " + ", ".join(self._stray_list()))
+        self.log(f"remotes: test {'passed' if not problems else 'FAILED: ' + '; '.join(problems)}")
+        return problems
+
+    async def _review(self):
+        """Failed test: the phone decides (Keep / Discard). Returns 'keep', 'discard', or None (stopped / no answer)."""
+        self.phase, self.decision = "review", None
+        self._wake.clear()
+        await self.changed()
+        end = asyncio.get_running_loop().time() + self.review_for
+        while not self.cancelled and self.decision is None:
+            left = end - asyncio.get_running_loop().time()
+            if left <= 0 or not await self._wait_key(left):
+                break
+        return None if self.cancelled else self.decision
 
     def _since(self):
         return "?" if self.quiet_for is None else f"{self.quiet_for():.1f}"
@@ -416,6 +524,17 @@ class Remotes:
                 self.closer.cancel()
                 self.closer = None
             return True
+        if self.stage == "test" and self.phase in ("test1", "test2"):
+            label = self._label_of(name)
+            if self.phase == "test1" and label in self.hits:
+                self.hits[label] += 1
+            elif self.phase == "test2" and name == PLAYER_KEY["F4"] and "Menu" in self.hits:
+                self._menu_pressed = True          # the Menu button ends step 2
+                self.hits["Menu"] += 1
+            else:
+                self.strays[label] = self.strays.get(label, 0) + 1
+            self._wake.set()
+            return True
         return False  # running: the receiver takes the presses, nothing else counts
 
     # -- drawing (TV)
@@ -428,7 +547,7 @@ class Remotes:
             ev.append(f"{{\\an{an}\\pos({x},{y})\\fs{size}\\bord0\\shad0\\1c{color}\\b{1 if bold else 0}}}{esc(s)}")
 
         mid = RES_X // 2
-        text(120, 90, f"Learn remote: {self.name}", 56, WHITE, bold=True)
+        text(120, 90, f"{'Test' if self.stage == 'test' else 'Learn'} remote: {self.name}", 56, WHITE, bold=True)
         if self.stage == "run":
             key, label, hint, optional = KEYS[min(self.index, len(KEYS) - 1)]
             text(mid, 250, f"{self.index + 1} / {len(KEYS)}", 44, GREY, an=8)
@@ -444,6 +563,40 @@ class Remotes:
             ev.append(f"{{\\an8\\pos({mid},900)\\fs40\\bord0\\shad0\\b0}}" + "  ".join(parts))
             text(mid, 990, f"No press for {int(self.timeout)} s, or Cancel on the phone, stops and restores the old buttons",
                  32, DIM, an=8)
+        elif self.stage == "test":
+            if self.phase == "test1":
+                text(mid, 220, "Test 1 / 2", 40, GREY, an=8)
+                text(mid, 290, "Press each button you assigned", 62, WHITE, an=8, bold=True)
+                text(mid, 380, "once. Each function lights up when its button works.", 38, GREY, an=8)
+            elif self.phase == "test2":
+                text(mid, 220, "Test 2 / 2", 40, GREY, an=8)
+                text(mid, 290, "Now press buttons you did NOT assign", 62, WHITE, an=8, bold=True)
+                text(mid, 380, "Colours, digits, anything else. Nothing should happen.", 38, GREY, an=8)
+            else:
+                text(mid, 220, "Test failed", 80, WARN, an=8, bold=True)
+            y = 480
+            for lab in [KEYS[i][1] for i in self.learned]:
+                n = self.hits.get(lab, 0)
+                text(mid - 220, y, ("✓  " if n else "·  ") + lab, 46, GREEN if n else DIM, an=7)
+                y += 62 if len(self.learned) <= 8 else 52
+            col = mid + 220         # right column: what fired by mistake, or (review) what the test found
+            if self.phase == "review":
+                y2 = 480
+                for prob in self.problems[:3]:
+                    for line in textwrap.wrap(prob, 30) or [""]:
+                        text(col, y2, line, 36, WARN, an=7)
+                        y2 += 46
+                    y2 += 14
+            elif self.strays:
+                text(col, 480, "Fired without being assigned:", 34, WARN, an=7, bold=True)
+                for k, line in enumerate(self._stray_list()[:6]):
+                    text(col, 536 + k * 52, line, 44, WARN, an=7)
+            if self.phase == "test2":
+                text(mid, 990, "When done, press your Menu button.", 36, GREY, an=8)
+            elif self.phase == "review":
+                text(mid, 990, "Choose on the phone: Keep or Discard (Discard puts the old buttons back)", 34, GREY, an=8)
+            else:
+                text(mid, 990, f"No key for {int(self.test_idle)} s, or Cancel on the phone, stops and restores the old buttons", 32, DIM, an=8)
         else:
             text(mid, 400, "Done" if self.ok else "Stopped", 120, GREEN if self.ok else BLUE, an=8, bold=True)
             text(mid, 580, self.text, 44, WHITE, an=8)

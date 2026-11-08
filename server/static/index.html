@@ -1722,7 +1722,7 @@ async function audioSheet() {
     if (b.dataset.a === "back") { clearInterval(audioPoll); audioPoll = null; return settingsMenu(); }
     if (b.dataset.a === "abtest") { clearInterval(audioPoll); audioPoll = null; return abSheet(); }
     if (b.dataset.a.startsWith("r-")) {   // TV Player remote profiles
-      const op = b.dataset.a.slice(2), name = b.dataset.name, noName = op === "cancel" || op === "skip";
+      const op = b.dataset.a.slice(2), name = b.dataset.name, noName = ["cancel", "skip", "keep", "discard"].includes(op);
       if (op === "delete" && !confirm(`Delete the remote “${name}”?`)) return;
       let nn = name;
       if (op === "learn") { nn = (prompt("Name for the new remote (letters, digits, space, - _):", "") || "").trim(); if (!nn) return; }
@@ -1747,10 +1747,24 @@ function remoteSection(m) {
     `<div class="set-main"><div class="set-t">${esc(n)}</div><div class="set-s">${n === r.active ? "In use" : "Saved"}</div></div>` +
     (n === r.active ? "" : `<button class="pill" data-a="r-use" data-name="${esc(n)}"${busy ? " disabled" : ""}>Use</button>` +
       `<button class="ib" data-a="r-delete" data-name="${esc(n)}" title="Delete"${busy ? " disabled" : ""}>${ic("trash")}</button>`) + `</div>`).join("");
-  const status = p.state === "learning"
-    ? `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">Learning “${esc(p.name)}”: ${esc(String(p.index + 1))} / ${esc(String(p.total))}</div>` +
-      `<div class="set-s">On the TV: press the button you want for “${esc(p.label)}”${p.note ? ` · ${esc(p.note)}` : ""}</div></div>` +
-      (p.optional ? `<button class="pill" data-a="r-skip">Skip</button>` : "") + `<button class="pill" data-a="r-cancel">Cancel</button></div>`
+  const fn = (n) => (p.lit || []).includes(n) ? `<span style="color:#80d080">✓ ${esc(n)}</span>` : `<span class="set-s">· ${esc(n)}</span>`;
+  const row = (title, buttons) => `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">${title}</div></div>${buttons}</div>`;
+  const hint = (t) => `<div class="set-hint">${t}</div>`;
+  const status = p.state === "testing"
+    ? row(`Testing “${esc(p.name)}” ${p.phase === "test2" ? "2/2" : "1/2"}`, `<button class="pill" data-a="r-cancel">Cancel</button>`) +
+      hint(p.phase === "test2" ? "On the TV: press buttons you did NOT assign (colours, digits…). Nothing should happen. Then press your Menu button."
+        : "On the TV: press each button you assigned, once.") +
+      hint((p.expected || []).map(fn).join(" &nbsp; ")) +
+      ((p.strays || []).length ? `<div class="set-hint" style="color:#f08080">Fired without being assigned: ${(p.strays || []).map(esc).join(", ")}</div>` : "")
+    : p.state === "review"
+    ? `<div class="set-row"><span class="set-dot"></span><div class="set-main"><div class="set-t">Test found problems</div></div></div>` +
+      (p.problems || []).map((x) => `<div class="set-hint" style="color:#f08080">${esc(x)}</div>`).join("") +
+      hint("Discard puts the old buttons back. Keep saves this remote as it is.") +
+      `<div class="set-btns"><button class="pill primary" data-a="r-discard">Discard</button><button class="pill" data-a="r-keep">Keep anyway</button><span class="grow"></span></div>`
+    : p.state === "learning"
+    ? row(`Learning “${esc(p.name)}” ${esc(String(p.index + 1))}/${esc(String(p.total))}`,
+        (p.optional ? `<button class="pill" data-a="r-skip">Skip</button>` : "") + `<button class="pill" data-a="r-cancel">Cancel</button>`) +
+      hint(`On the TV: press the button you want for “${esc(p.label)}”${p.note ? ` · ${esc(p.note)}` : ""}`)
     : p.state === "switching" ? `<div class="set-hint">Switching to “${esc(p.name)}”…</div>`
     : p.text ? `<div class="set-hint">${esc(p.text)}</div>` : "";
   return sec("Remote") + (rows || `<div class="set-hint">No remote saved yet.</div>`) + status +

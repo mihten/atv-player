@@ -63,7 +63,7 @@ import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 import remotes as remotes_mod  # noqa: E402
 
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0

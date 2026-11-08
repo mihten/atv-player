@@ -181,6 +181,20 @@ async def main(tmp):
                   and len(rem["profiles"]) == 40, f"output.remote typed, profile list bounded ({rem and rem['profiles'][:3]})")
             check(rem["progress"] == {"state": "learning", "name": "Other", "text": "t" * 160, "index": 6, "total": 8,
                                       "label": "Next", "optional": True, "note": "n" * 80}, "progress typed and bounded")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "progress": {
+                "state": "testing", "name": "T", "phase": "test2", "expected": ["Play / Pause"] + ["f" * 40] * 20,
+                "lit": ["Play / Pause"], "strays": ["Down x2", "green"], "problems": ["p" * 400] * 9, "junk": 1}}})
+            await H.drain(mtv)
+            pr = (await H.state(http, "mtv"))["output"]["remote"]["progress"]
+            check(pr["state"] == "testing" and pr["phase"] == "test2" and pr["lit"] == ["Play / Pause"]
+                  and pr["strays"] == ["Down x2", "green"] and len(pr["expected"]) == 12 and len(pr["expected"][1]) == 16
+                  and len(pr["problems"]) == 4 and len(pr["problems"][0]) == 160 and "junk" not in pr,
+                  f"testing progress typed and bounded ({pr['state']}, {len(pr['expected'])} expected)")
+            await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"can": True, "progress": {
+                "state": "review", "name": "T", "phase": "bogus", "problems": ["no answer from Up"]}}})
+            await H.drain(mtv)
+            pr = (await H.state(http, "mtv"))["output"]["remote"]["progress"]
+            check(pr["state"] == "review" and pr["phase"] == "" and pr["problems"] == ["no answer from Up"], f"review progress ({pr})")
             await mtv.send_json({"type": "output", "name": "TV Player", "volume": 100, "remote": {"progress": {"state": "x"}}})
             await H.drain(mtv)
             rem = (await H.state(http, "mtv"))["output"]["remote"]
@@ -191,7 +205,8 @@ async def main(tmp):
             check("remote" not in (await H.state(http, "mtv"))["output"], "a player without a learnable receiver reports no remote")
             await H.drain(mtv)
             for body in ({"op": "learn", "name": "Cambridge"}, {"op": "use", "name": "Vip STB"},
-                         {"op": "delete", "name": "Old"}, {"op": "cancel"}, {"op": "skip"}):
+                         {"op": "delete", "name": "Old"}, {"op": "cancel"}, {"op": "skip"}, {"op": "keep"},
+                         {"op": "discard"}):
                 async with http.post(f"{H.BASE}/api/mtv-remote", json=body) as r:
                     check(r.status == 200, f"POST /api/mtv-remote {body['op']} -> {r.status}")
                 got, _ = await until(mtv, "remote")
