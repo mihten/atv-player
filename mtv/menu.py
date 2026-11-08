@@ -87,7 +87,7 @@ class Menu:
         rows = []
         if cur:
             rows.append(Row("Pause" if playing else "Play", item_label(cur),
-                            act={"cmd": "toggle"}, closes=True))
+                            act={"cmd": "toggle"}))  # stays open (Mihovil): the label follows the state
         n = len(st.get("queue") or [])
         rows += [
             Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True),

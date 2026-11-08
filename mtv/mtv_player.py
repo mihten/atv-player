@@ -27,10 +27,11 @@ Environment:
   MTV_IR_DEVICE      raw LIRC receiver for the remote (default /dev/lirc0; "off" = no remote)
   MTV_IR_ADDRESS     the remote's NEC address (default 0xE386: LG Magic Remote, set-top box profile "Vip")
   MTV_IR_KEYS        JSON command -> key name map replacing the default (see ir.py), e.g. {"0x0e": "ok"}
+  MTV_IR_DEBUG       1: log every decoded IR frame with its time (press, repeat, other remotes) to the journal
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
 Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
-move, CH+ / CH- page, OK / Right select, Left back, Red close. The menu's first row is Play / Pause.
+move, CH+ / CH- page, OK / Right select, Left back, Red close. The menu's first row is Play / Pause (the menu stays open).
 
 Run: python3 mtv_player.py
 """
@@ -55,7 +56,7 @@ from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -95,6 +96,7 @@ class Config:
         except ValueError:
             self.ir_address = ir.DEFAULT_ADDRESS
         self.ir_keys = ir.parse_keys(env.get("MTV_IR_KEYS"))
+        self.ir_debug = flag(env.get("MTV_IR_DEBUG"), default=False)
 
     @property
     def ws_url(self):
@@ -465,6 +467,10 @@ async def run_ir(cfg, player, stop):
             loop.remove_reader(fd)
             return
         for frame in mode2.feed(data):
+            if cfg.ir_debug:
+                r = ir.decode_nec(frame)
+                what = "noise" if r is None else ("repeat" if r[0] == "repeat" else f"0x{r[1]:x}/0x{r[2]:02x}")
+                log(f"ir: {time.monotonic():.3f} {what} ({len(frame)} edges)")
             keys.frame(frame)
 
     loop.add_reader(fd, readable)

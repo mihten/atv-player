@@ -58,10 +58,10 @@ async def main():
 
     # ---- Play/Pause row: toggle and close
     await m.key("ok")
-    check(sent[-1] == {"cmd": "toggle", "type": "cmd"} and not m.open, "OK on Pause -> toggle, menu closed")
+    check(sent[-1] == {"cmd": "toggle", "type": "cmd"} and m.open, "OK on Pause -> toggle, menu stays open")
     state["playing"] = False
-    await m.show()
-    check(m.page.rows[0].label == "Play", "paused state -> 'Play'")
+    m.refresh_root()
+    check(m.page.rows[0].label == "Play" and m.page.sel == 0, "paused state -> 'Play', still selected")
 
     # ---- wrap, shuffle / repeat stay open, root follows state
     await m.key("up")
