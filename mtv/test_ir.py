@@ -129,10 +129,16 @@ async def keys():
     cfg = M.Config({"MTV_SERVER": "http://x"})
     p = M.Player(cfg, send=sent.append)
     p.mpv = FakeMpv()
+    await M.on_key(p, "ok", False)
+    check(not [m for m in sent if m.get("type") == "cmd"] and p.mpv.texts[-1] == "Nothing to play",
+          "OK with nothing loaded: no command, text shown")
     p.item, p.file_loaded, p.want_play, p.pos = {"id": 5, "duration": 200}, True, True, 50.0
     await M.on_key(p, "ok", False)
-    check(p.menu.open and p.mpv.overlays == ["ass-events"] and not [m for m in sent if m.get("type") == "cmd"],
-          "OK (menu closed) opens the menu, sends no command")
+    check(sent[-2:] == [{"type": "cmd", "cmd": "toggle"}, {"type": "log", "message": "mtv: key ok"}]
+          and p.mpv.texts[-1] == "Pause" and not p.menu.open, "OK while playing -> toggle, 'Pause', no menu")
+    await M.on_key(p, "blue", False)
+    check(p.menu.open and p.mpv.overlays == ["ass-events"] and sent[-1] == {"type": "log", "message": "mtv: menu opened"},
+          "Blue (menu closed) opens the menu, sends no command")
     await M.on_key(p, "right", False)
     check(not [m for m in sent if m.get("cmd") == "seek"], "menu open: Right is the menu's, no seek")
     await M.on_key(p, "red", False)
@@ -155,7 +161,7 @@ async def keys():
     check([m["position"] for m in sent if m.get("cmd") == "seek"][-1] == 198.0, "up near the end stops 2 s before it")
     n = len(sent)
     await M.on_key(p, "red", False)
-    check(len(sent) == n, "unassigned key: nothing sent")
+    check(len(sent) == n, "Red with the menu closed: nothing sent")
     p._send = None
     await M.on_key(p, "ch_up", False)
     check(p.mpv.texts[-1] == "Not connected to the server", "no server: text instead of a command")

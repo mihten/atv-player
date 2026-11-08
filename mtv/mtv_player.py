@@ -28,7 +28,7 @@ Environment:
   MTV_IR_ADDRESS     the remote's NEC address (default 0xE386: LG Magic Remote, set-top box profile "Vip")
   MTV_IR_KEYS        JSON command -> key name map replacing the default (see ir.py), e.g. {"0x0e": "ok"}
 
-Remote keys (ir.py names), menu closed: OK = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
+Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
 Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
 move, CH+ / CH- page, OK / Right select, Left back, Red close. The menu's first row is Play / Pause.
 
@@ -55,7 +55,7 @@ from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -404,7 +404,7 @@ async def on_key(player, name, held):
         if not held:
             player.log(f"menu key {name}")
         return
-    if name == "ok":
+    if name == "blue":
         await player.menu.show()
         await player.draw_menu()
         player.log("menu opened")
@@ -413,7 +413,14 @@ async def on_key(player, name, held):
         await osd(player, "Not connected to the server")
         return
     it = player.item
-    if name in ("ch_up", "ch_down"):
+    if name == "ok":
+        if not it:
+            await osd(player, "Nothing to play")
+            return
+        playing = player.want_play
+        player.send({"type": "cmd", "cmd": "toggle"})
+        await osd(player, "Pause" if playing else "Play")
+    elif name in ("ch_up", "ch_down"):
         player.send({"type": "cmd", "cmd": "next" if name == "ch_up" else "prev"})
         await osd(player, "Next" if name == "ch_up" else "Previous")
     elif name in SEEK_KEYS:
