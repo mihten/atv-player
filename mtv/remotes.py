@@ -17,15 +17,29 @@ import re
 import time
 
 RES_X, RES_Y = 1920, 1080
-# (flirc key name, text on the screen): the Flirc sends the matching keyboard key, ir.EVDEV_KEYS turns it into the key
-KEYS = [("return", "OK"), ("up", "UP"), ("down", "DOWN"), ("left", "LEFT"), ("right", "RIGHT"),
-        ("pageup", "CH +"), ("pagedown", "CH -"), ("F1", "RED"), ("F2", "GREEN"), ("F3", "YELLOW"), ("F4", "BLUE")] + \
-       [(str(n), str(n)) for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 0)]
+# What the player needs, not what a remote has: (flirc key name, function, hint, optional). Whatever button the user
+# presses for a function, the Flirc sends the key named here and ir.EVDEV_KEYS turns it into the player's key. Optional
+# functions can be skipped from the phone (a small remote has no spare buttons).
+KEYS = [("return", "Play / Pause", "also selects in the menu", False),
+        ("F4", "Menu", "opens and closes the menu", False),
+        ("up", "Up", "menu up; forward 1 minute", False),
+        ("down", "Down", "menu down; back 1 minute", False),
+        ("left", "Left", "menu back; back 10 seconds", False),
+        ("right", "Right", "menu select; forward 10 seconds", False),
+        ("pageup", "Next", "next video; page down in the menu", True),
+        ("pagedown", "Previous", "previous video; page up in the menu", True)]
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,29}$")
 TIMEOUT = 40.0            # s to wait for one press
 MAX_REJECTS = 5           # presses refused ("already used") before giving up
 FLASH = 1.0               # s the "stored" confirmation stays
 RESULT_FOR = 30.0         # s the result screen stays when no button dismisses it
+QUIET = 1.0               # s without a signal from the receiver before the next button is listened for: a held button
+                          # keeps sending (repeats every ~0.1 s, a burst ~1 s after release) and the receiver would refuse
+                          # the tail of the PREVIOUS button as "already used"
+SETTLE = 0.25             # s after a stored button before the silence check (the first repeat has not shown up yet)
+QUIET_MAX = 12.0          # s to wait for that silence at most
+STRAY = 2.0               # s: a refusal this soon after a signal is the previous button's tail, not a real duplicate
+MAX_STRAYS = 20
 LOADED = "Loaded Successfully"
 
 BG, BG_ALPHA = "&H101010&", "&H18&"
@@ -44,8 +58,10 @@ def clean_name(name):
 
 class Remotes:
     def __init__(self, util, state_dir, changed, log=lambda m: None, spawn=None, timeout=TIMEOUT, flash=FLASH,
-                 result_for=RESULT_FOR):
+                 result_for=RESULT_FOR, quiet_for=None, quiet=QUIET, quiet_max=QUIET_MAX, settle=SETTLE):
         self.util, self.dir, self.changed, self.log = util, os.path.join(state_dir, "remotes"), changed, log
+        self.quiet_for = quiet_for   # callable: seconds since the receiver last sent a key event (None: unknown)
+        self.quiet, self.quiet_max, self.settle = quiet, quiet_max, settle
         self.spawn = spawn or asyncio.create_subprocess_exec
         self.timeout, self.flash, self.result_for = timeout, flash, result_for
         self.stage = None          # TV screen: None | "run" | "result"
@@ -58,6 +74,7 @@ class Remotes:
         self.restored = None       # after an abort: were the old buttons put back
         self.task = self.closer = self.proc = None
         self.cancelled = False
+        self.skip_flag = False       # "Skip" pressed for an optional function
 
     # -- profiles on disk
     def _path(self, name):
@@ -134,7 +151,8 @@ class Remotes:
             else "idle"
         prog = {"state": state, "name": self.name if state != "idle" else "", "text": self.text}
         if state == "learning":
-            prog.update(index=self.index, total=len(KEYS), label=KEYS[min(self.index, len(KEYS) - 1)][1], note=self.note)
+            fn = KEYS[min(self.index, len(KEYS) - 1)]
+            prog.update(index=self.index, total=len(KEYS), label=fn[1], optional=fn[3], note=self.note)
         return {"profiles": self.profiles(), "active": self.active, "progress": prog}
 
     # -- the flirc_util program
@@ -185,6 +203,8 @@ class Remotes:
     async def command(self, op, name=None):
         if op == "cancel":
             return await self.cancel()
+        if op == "skip":
+            return await self.skip()
         if self.busy:
             return "busy"
         clean = clean_name(name)
@@ -215,6 +235,15 @@ class Remotes:
         else:
             return "unknown op"
         await self.changed()
+        return None
+
+    async def skip(self):
+        """Leave out the function being asked for (only the optional ones: Next / Previous)."""
+        if not self.busy or self.mode != "learn" or self.index >= len(KEYS) or not KEYS[self.index][3]:
+            return "this function cannot be skipped"
+        self.skip_flag = True
+        if self.proc:
+            await self._kill(self.proc)
         return None
 
     async def cancel(self):
@@ -249,6 +278,22 @@ class Remotes:
         await self.changed()
 
     # -- learning
+    async def _wait_quiet(self):
+        """Until the receiver has been silent for `quiet` s (the previous button is let go). Shows a hint meanwhile."""
+        if self.quiet_for is None:
+            return
+        await asyncio.sleep(self.settle)
+        loop = asyncio.get_running_loop()
+        deadline, hinted = loop.time() + self.quiet_max, False
+        while self.quiet_for() < self.quiet and not self.cancelled and loop.time() < deadline:
+            if not hinted:
+                hinted, self.note = True, "Release the button"
+                await self.changed()
+            await asyncio.sleep(0.1)
+        if hinted:
+            self.note = ""
+            await self.changed()
+
     async def _learn(self):
         try:
             if not await self._keep_current():
@@ -256,11 +301,25 @@ class Remotes:
             rc, out = await self._util("format", timeout=30)
             if rc != 0:
                 return await self._finish(False, f"Could not clear the receiver: {' '.join(out.split())[:60]}")
-            rejects = 0
+            rejects = strays = learned = 0
             while self.index < len(KEYS):
-                key, label = KEYS[self.index]
+                key, label, _hint, optional = KEYS[self.index]
                 await self.changed()
+                await self._wait_quiet()
+                if self.cancelled:
+                    return await self._finish(False, "Stopped, " + await self._restore())
+                if self.skip_flag:          # "Skip" arrived before the receiver was listening
+                    self.skip_flag = False
+                    self.log(f"remotes: {label} skipped")
+                    self.index += 1
+                    continue
                 rc, out = await self._util("record", key, timeout=self.timeout)
+                if self.skip_flag:          # "Skip" on the phone killed the wait
+                    self.skip_flag = False
+                    self.log(f"remotes: {label} skipped")
+                    self.index += 1
+                    rejects = 0
+                    continue
                 if rc is None:
                     why = "Stopped" if self.cancelled else "No button pressed - stopped"
                     return await self._finish(False, why + ", " + await self._restore())
@@ -268,11 +327,16 @@ class Remotes:
                     self.log(f"remotes: {label} stored")
                     self.note = f"{label} stored"
                     self.index += 1
+                    learned += 1
                     rejects = 0
                     if self.flash and self.index < len(KEYS):
                         await self.changed()
                         await asyncio.sleep(self.flash)
                     self.note = ""
+                    continue
+                self.log(f"remotes: {label} refused: {' '.join(out.split())[-100:]} (signal {self._since()} s ago)")
+                if "already exists" in out and self.quiet_for is not None and self.quiet_for() < STRAY and strays < MAX_STRAYS:
+                    strays += 1      # the tail of the previous button, not a duplicate: wait for silence, listen again
                     continue
                 rejects += 1
                 self.note = "That button is already used - press a different one" if "already exists" in out \
@@ -283,11 +347,15 @@ class Remotes:
             if rc != 0 or not os.path.isfile(self._path(self.name)):
                 return await self._finish(False, "Learned, but could not save the profile, " + await self._restore())
             self._set_active(self.name)
-            await self._finish(True, f"{self.name}: all {len(KEYS)} buttons learned")
+            skipped = len(KEYS) - learned
+            await self._finish(True, f"{self.name}: {learned} functions learned" + (f", {skipped} skipped" if skipped else ""))
         except asyncio.CancelledError:
             raise
         except Exception as e:  # never leave the screen stuck
             await self._finish(False, f"Error: {e!r:.60} - " + await self._restore())
+
+    def _since(self):
+        return "?" if self.quiet_for is None else f"{self.quiet_for():.1f}"
 
     async def _finish(self, ok, text):
         if ok or self.restored or "nothing was changed" in text:   # a failed restore keeps the marker: next start retries
@@ -326,13 +394,15 @@ class Remotes:
         mid = RES_X // 2
         text(120, 90, f"Learn remote: {self.name}", 56, WHITE, bold=True)
         if self.stage == "run":
-            key, label = KEYS[min(self.index, len(KEYS) - 1)]
-            text(mid, 270, f"{self.index + 1} / {len(KEYS)}", 44, GREY, an=8)
-            text(mid, 380, "Press", 56, GREY, an=8)
-            text(mid, 460, label, 190, WHITE, an=8, bold=True)
-            text(mid, 720, self.note or "once, on the remote", 44, GREEN if "stored" in self.note else GREY, an=8)
+            key, label, hint, optional = KEYS[min(self.index, len(KEYS) - 1)]
+            text(mid, 250, f"{self.index + 1} / {len(KEYS)}", 44, GREY, an=8)
+            text(mid, 340, "Press the button you want for", 56, GREY, an=8)
+            text(mid, 440, label, 170, WHITE, an=8, bold=True)
+            text(mid, 650, hint, 40, GREY, an=8)
+            text(mid, 740, self.note or ("once, on the remote" + ("  (or Skip on the phone)" if optional else "")), 44,
+                 GREEN if "stored" in self.note else GREY, an=8)
             parts = []
-            for n, (_k, lab) in enumerate(KEYS):
+            for n, (_k, lab, _h, _o) in enumerate(KEYS):
                 col = GREEN if n < self.index else (BLUE if n == self.index else DIM)
                 parts.append(f"{{\\1c{col}}}{esc(lab)}")
             ev.append(f"{{\\an8\\pos({mid},900)\\fs40\\bord0\\shad0\\b0}}" + "  ".join(parts))

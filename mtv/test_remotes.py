@@ -90,7 +90,8 @@ async def seed(r, name, table):
 
 
 async def main():
-    ALL = [k for k, _ in R.KEYS]
+    ALL = [k[0] for k in R.KEYS]
+    N = len(R.KEYS)
 
     # ---- empty state
     u = FakeUtil()
@@ -105,16 +106,18 @@ async def main():
     check(clean := R.clean_name("  My   Remote  ") == "My Remote", "spaces collapsed")
     check(u.calls == [], "bad names ran nothing")
 
-    # ---- learn a profile: current table kept, 21 presses in order, saved, becomes active
+    # ---- learn a profile: current table kept, one press per player function in order, saved, becomes active
     check(await r.command("learn", "Cambridge") is None, "learn starts")
     check(r.busy and r.summary()["progress"]["state"] == "learning", "summary: learning")
     await r.task
     keys = [c[1] for c in u.calls if c[0] == "record"]
-    check(keys == ALL and len(keys) == 21, f"recorded {len(keys)} keys in order")
+    check(keys == ALL and N == 8, f"recorded {len(keys)} functions in order")
+    check([k[1] for k in R.KEYS] == ["Play / Pause", "Menu", "Up", "Down", "Left", "Right", "Next", "Previous"], "the functions asked for: no digits, no colours")
+    check(not any(len(k[1]) > 12 for k in R.KEYS), "labels fit the server's 12 characters")
     check(u.calls[0][0] == "saveconfig" and u.calls[1] == ("format",), "current table saved before the format")
     check(r.profiles() == ["Cambridge"] and r.active == "Cambridge", "profile saved and active")
-    check(json.load(open(os.path.join(r.dir, "Cambridge.fcfg"))) == ALL, "the saved file holds the 21 buttons only")
-    check(r.stage == "result" and r.ok and "21 buttons" in r.text, "result: all learned")
+    check(json.load(open(os.path.join(r.dir, "Cambridge.fcfg"))) == ALL, "the saved file holds the learned functions only")
+    check(r.stage == "result" and r.ok and "8 functions learned" in r.text, "result: all learned")
     check("Done" in r.render() and "Learn remote: Cambridge" in r.render(), "done screen")
     check(await r.key("up") is True and not r.active_screen, "a key closes the result screen")
     check(r.summary()["progress"]["state"] == "idle" and "learned" in r.summary()["progress"]["text"], "summary idle + last result")
@@ -170,7 +173,7 @@ async def main():
     await r.command("learn", "T")
     await r.task
     keys = [c[1] for c in u.calls if c[0] == "record"]
-    check(keys[:3] == ["return", "up", "up"] and r.ok, "refused press -> same button asked again, run completes")
+    check(keys[:3] == ["return", "F4", "F4"] and r.ok, "refused press -> same button asked again, run completes")
     check(any("already used" in d[2] for d in drawn), "screen says the button is already used")
     u = FakeUtil(["dup"] * 10)
     r, drawn, tmp = await make(u)
@@ -249,7 +252,7 @@ async def main():
     r.timeout = 30
     await r.command("learn", "T")
     await asyncio.sleep(0.1)
-    check(pend(r) and u.table == ["return", "up"], "learn running: marker set, table half filled")
+    check(pend(r) and u.table == ["return", "F4"], "learn running: marker set, table half filled")
     r.task.cancel()                      # the process dies here (no restore runs)
     await asyncio.sleep(0.05)
     check(pend(r), "after the crash the marker is still there")
@@ -300,13 +303,96 @@ async def main():
     await r.shutdown()
     check(True, "shutdown when idle returns")
 
+    # ---- a held button: the next one is not listened for until the receiver is silent (its tail would be refused)
+    import time as _t
+    last = {"t": -1e9}
+    stamps = []
+
+    class Holder(FakeUtil):
+        async def __call__(self, util, *args, **kw):
+            if args[0] == "record":
+                stamps.append(("start", _t.monotonic()))
+            proc = await super().__call__(util, *args, **kw)
+            if args[0] == "record" and b"recorded" in proc.out:
+                stamps.append(("stored", _t.monotonic()))
+
+                async def hold():             # the remote keeps sending for 0.5 s after the first signal
+                    end = _t.monotonic() + 0.5
+                    while _t.monotonic() < end:
+                        last["t"] = _t.monotonic()
+                        await asyncio.sleep(0.05)
+                asyncio.ensure_future(hold())
+            return proc
+    u = Holder()
+    drawn = []
+    tmp = tempfile.mkdtemp()
+
+    async def ch():
+        drawn.append(r.note)
+    r = R.Remotes("flirc_util", tmp, ch, lambda m: None, spawn=u, timeout=2, flash=0, result_for=0.3,
+                  quiet_for=lambda: _t.monotonic() - last["t"], quiet=0.3, quiet_max=3, settle=0.1)
+    await r.command("learn", "Held")
+    await asyncio.wait_for(r.task, 60)
+    gaps = [b2[1] - a2[1] for a2, b2 in zip(stamps, stamps[1:]) if a2[0] == "stored" and b2[0] == "start"]
+    check(r.ok and len(gaps) == N - 1, f"held buttons: all learned ({len(gaps)} gaps)")
+    check(min(gaps) >= 0.75, f"next button listened for only after silence (shortest gap {min(gaps):.2f} s >= 0.5 hold + 0.3 quiet)")
+    check("Release the button" in drawn, "the screen asks to release the button while waiting")
+    check(r.note == "" or r.stage == "result", "hint cleared afterwards")
+
+    # ---- a refusal right after a signal = the previous button's tail: not counted, not shown, retried
+    u = FakeUtil(["ok", "dup", "dup", "dup", "dup", "dup", "dup", "dup", "ok"])
+    r, drawn, tmp = await make(u, quiet_for=lambda: 0.5, quiet=0.3, settle=0)
+    await r.command("learn", "S")
+    await r.task
+    check(r.ok and not any("already used" in d[2] for d in drawn), "7 stray refusals: run completes, never told 'already used'")
+    u = FakeUtil(["ok", "dup", "dup", "dup", "dup", "dup", "ok"])
+    r, drawn, tmp = await make(u, quiet_for=lambda: 100.0, quiet=0.3, settle=0)
+    await r.command("learn", "S")
+    await r.task
+    check(not r.ok and "Too many refused" in r.text, "refusals long after any signal are real duplicates and count")
+    u = FakeUtil(["ok", "dup", "dup", "dup", "dup", "dup", "ok"])
+    r, drawn, tmp = await make(u, quiet_for=lambda: 0.5, quiet=0.3, settle=0)
+    await r.command("learn", "S")
+    await r.task
+    check(r.ok, "the same 5 refusals right after a signal are strays: completes")
+
+    # ---- skipping the optional functions (a small remote)
+    u = FakeUtil(["ok"] * 6 + ["none", "none"])
+    r, drawn, tmp = await make(u)
+    r.timeout = 30
+    await r.command("learn", "Small")
+    await asyncio.sleep(0.15)
+    check(r.index == 6 and r.busy and r.summary()["progress"]["optional"] is True and r.summary()["progress"]["label"] == "Next",
+          "at Next: optional, reported to the phone")
+    check(await r.command("skip") is None, "skip accepted for an optional function")
+    await asyncio.sleep(0.2)
+    check(r.index == 7 and r.summary()["progress"]["label"] == "Previous", "skipped: now asking for Previous")
+    check(await r.command("skip") is None, "Previous can be skipped too")
+    await asyncio.wait_for(r.task, 10)
+    check(r.ok and "6 functions learned, 2 skipped" in r.text, f"done with two skipped ({r.text})")
+    check(u.table == ALL[:6] and r.profiles() == ["Small"], "the profile holds the 6 learned functions")
+    u = FakeUtil(["none"])
+    r, drawn, tmp = await make(u)
+    r.timeout = 30
+    await r.command("learn", "X")
+    await asyncio.sleep(0.1)
+    check(await r.command("skip") == "this function cannot be skipped" and r.index == 0, "a required function cannot be skipped")
+    await r.command("cancel")
+    await asyncio.wait_for(r.task, 5)
+    check(await r.command("skip") == "this function cannot be skipped", "skip when nothing is learning is refused")
+
     # ---- ASS
     check(R.esc("a{b}\\c") == "a\\{b\\}\\\u200bc", "escape")
     u = FakeUtil()
     r, drawn, tmp = await make(u)
     r.stage, r.index, r.name = "run", 7, "X"
     ass = r.render()
-    check("RED" in ass and "8 / 21" in ass, "run screen names the button and the count")
+    check("Previous" in ass and "8 / 8" in ass and "Press the button you want for" in ass, "run screen names the function and the count")
+    r.index = 6
+    ass = r.render()
+    check("Next" in ass and "Skip on the phone" in ass, "an optional function mentions Skip")
+    r.index = 1
+    check("Skip on the phone" not in r.render() and "opens and closes the menu" in r.render(), "a required one does not; the hint says what it does")
 
     print("FAILED" if failed else "ALL PASS", failed)
     return failed

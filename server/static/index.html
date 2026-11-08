@@ -1722,12 +1722,12 @@ async function audioSheet() {
     if (b.dataset.a === "back") { clearInterval(audioPoll); audioPoll = null; return settingsMenu(); }
     if (b.dataset.a === "abtest") { clearInterval(audioPoll); audioPoll = null; return abSheet(); }
     if (b.dataset.a.startsWith("r-")) {   // TV Player remote profiles
-      const op = b.dataset.a.slice(2), name = b.dataset.name;
+      const op = b.dataset.a.slice(2), name = b.dataset.name, noName = op === "cancel" || op === "skip";
       if (op === "delete" && !confirm(`Delete the remote “${name}”?`)) return;
       let nn = name;
       if (op === "learn") { nn = (prompt("Name for the new remote (letters, digits, space, - _):", "") || "").trim(); if (!nn) return; }
       b.disabled = true;
-      return sapi("POST", "/api/mtv-remote", op === "cancel" ? { op } : { op, name: nn }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
+      return sapi("POST", "/api/mtv-remote", noName ? { op } : { op, name: nn }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
     }
     if (b.dataset.a === "use") { b.disabled = true; toast("Moving the headphones…"); return audioCmd({ op: "set_sink", sink: b.dataset.sink }); }
     if (b.dataset.a === "forget" && !confirm("Forget these headphones? They have to be paired again.")) return;
@@ -1749,13 +1749,13 @@ function remoteSection(m) {
       `<button class="ib" data-a="r-delete" data-name="${esc(n)}" title="Delete"${busy ? " disabled" : ""}>${ic("trash")}</button>`) + `</div>`).join("");
   const status = p.state === "learning"
     ? `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">Learning “${esc(p.name)}”: ${esc(String(p.index + 1))} / ${esc(String(p.total))}</div>` +
-      `<div class="set-s">On the TV: press ${esc(p.label)} on the remote${p.note ? ` · ${esc(p.note)}` : ""}</div></div>` +
-      `<button class="pill" data-a="r-cancel">Cancel</button></div>`
+      `<div class="set-s">On the TV: press the button you want for “${esc(p.label)}”${p.note ? ` · ${esc(p.note)}` : ""}</div></div>` +
+      (p.optional ? `<button class="pill" data-a="r-skip">Skip</button>` : "") + `<button class="pill" data-a="r-cancel">Cancel</button></div>`
     : p.state === "switching" ? `<div class="set-hint">Switching to “${esc(p.name)}”…</div>`
     : p.text ? `<div class="set-hint">${esc(p.text)}</div>` : "";
   return sec("Remote") + (rows || `<div class="set-hint">No remote saved yet.</div>`) + status +
     `<div class="set-btns"><button class="pill primary" data-a="r-learn"${busy ? " disabled" : ""}>Learn a new remote…</button><span class="grow"></span></div>` +
-    `<div class="set-hint">Set the TV's universal control to the device first (for example Set-top box). The TV then names each button, press it once aimed at the receiver. The buttons in use now are put back if you stop.</div>`;
+    `<div class="set-hint">Set the TV's universal control to the device first (for example Set-top box). The TV then names each function (Play / Pause, Menu, arrows, Next, Previous): press whichever button you want for it, once, aimed at the receiver. Next and Previous can be skipped. The buttons in use now are put back if you stop.</div>`;
 }
 
 /** Headphones on the player card: atv-audio's own queue, or the Apple TV while its sound goes to atv-audio. */

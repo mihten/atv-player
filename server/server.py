@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.22.0"
+VERSION = "0.22.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -1001,7 +1001,7 @@ def clean_mtv_remote(r):
                 out_prog[k] = max(0, min(99, int(prog.get(k))))
             except (TypeError, ValueError):
                 out_prog[k] = 0
-        out_prog.update(label=t(prog.get("label"), 12), note=t(prog.get("note"), 80))
+        out_prog.update(label=t(prog.get("label"), 12), optional=bool(prog.get("optional")), note=t(prog.get("note"), 80))
     profiles = [t(n, 30) for n in (r.get("profiles") if isinstance(r.get("profiles"), list) else [])[:40]]
     return {"can": bool(r.get("can")), "profiles": profiles, "active": t(r.get("active"), 30) or None,
             "progress": out_prog}
@@ -3558,11 +3558,11 @@ async def api_atv_audio(request):
 
 
 
-MTV_REMOTE_OPS = ("learn", "use", "delete", "cancel")
+MTV_REMOTE_OPS = ("learn", "use", "delete", "cancel", "skip")
 
 
 async def api_mtv_remote(request):
-    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, switch, delete, cancel).
+    """Web remote -> the TV Player: remote profiles of its Flirc receiver (learn a new one, switch, delete, cancel, skip an optional function).
     The player answers through its `output` message (state.output.remote)."""
     need_admin(request)
     body = await _json_body(request)
@@ -3570,13 +3570,13 @@ async def api_mtv_remote(request):
     if op not in MTV_REMOTE_OPS:
         raise web.HTTPBadRequest(text="unknown op")
     name = body.get("name")
-    if op != "cancel" and not (isinstance(name, str) and 0 < len(name.strip()) <= 60):
+    if op not in ("cancel", "skip") and not (isinstance(name, str) and 0 < len(name.strip()) <= 60):
         raise web.HTTPBadRequest(text="a profile name is needed")
     s = SESSIONS["mtv"]
     if not s.players:
         raise web.HTTPServiceUnavailable(text="the TV Player is not running")
     log.info("tv remote: %s %s (web remote)", op, name or "")
-    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op != "cancel" else {})})
+    await to_players(s, {"type": "remote", "op": op, **({"name": name.strip()} if op not in ("cancel", "skip") else {})})
     return web.json_response({"ok": True})
 
 

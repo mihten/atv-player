@@ -63,7 +63,7 @@ import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 import remotes as remotes_mod  # noqa: E402
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -168,8 +168,9 @@ class Player:
         self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
         self.http = None             # aiohttp session for the menu's lists (set while connected)
         self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state)
+        self.last_key_at = -1e9      # monotonic time of the last key event from the keyboard receiver (Flirc)
         self.remotes = remotes_mod.Remotes(cfg.flirc_util, cfg.state_dir or tempfile.gettempdir(), self.remotes_changed,
-                                           self.log)
+                                           self.log, quiet_for=lambda: self.mono() - self.last_key_at)
 
     # -- volume: mpv's own (software) volume; the TV / soundbar volume is separate
     def _volume_file(self):
@@ -616,9 +617,10 @@ async def run_evdev(cfg, player, stop):
                 loop.remove_reader(fd)
                 gone.set()
                 return
-            if cfg.ir_debug:
-                for _s, _us, etype, code, value in ir.EVENT.iter_unpack(data[:len(data) - len(data) % ir.EVENT.size]):
-                    if etype == ir.EV_KEY:
+            for _s, _us, etype, code, value in ir.EVENT.iter_unpack(data[:len(data) - len(data) % ir.EVENT.size]):
+                if etype == ir.EV_KEY:
+                    player.last_key_at = player.mono()
+                    if cfg.ir_debug:
                         log(f"key event: {time.monotonic():.3f} code {code} value {value}")
             keys.feed(data)
 
