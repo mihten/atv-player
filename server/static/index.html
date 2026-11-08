@@ -576,7 +576,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <span class="vn" id="volNum"></span>
     </div>
     <div class="bconn" id="bconn" hidden><span id="bconnText"></span><button class="pill" id="bconnBtn"></button></div>
-    <div class="snd" id="snd" hidden title="Sound of the Web Player (the Apple TV keeps its own settings)">
+    <div class="snd" id="snd" hidden title="Sound of this player (the Apple TV keeps its own settings)">
       <span>EQ</span><div class="sctl"><select class="pill" id="sndPreset" aria-label="Equalizer"></select><button class="pill" id="sndEdit" hidden>Edit</button></div>
       <span>Boost</span><div class="sctl"><button class="ib" id="sndDown" aria-label="Boost down">−</button><span class="num" id="sndBoost">+0 dB</span><button class="ib" id="sndUp" aria-label="Boost up">+</button></div>
       <span>Loudness</span><div class="sctl"><button class="tog" id="sndLoud" role="switch" aria-label="Loudness" title="Raises quiet recordings. Never turns anything down."></button></div>
@@ -723,7 +723,7 @@ function applyLook() { root.dataset.look = look; root.dataset.motion = motion ? 
 
 /* ── State ── */
 // mode: "auto" = follow whichever app (Apple TV / iPhone) is playing; "tv" / "phone" = pinned. session = the queue shown.
-let mode = ["tv", "phone", "box"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
+let mode = ["tv", "phone", "box", "mtv"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
 let session = mode === "auto" ? "tv" : mode, sessionList = [], followTimer = null;
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
 let scope = null, plQuery = "";  // scope = {root, folder}: Search limited to one folder (incl. subfolders); plQuery = filter inside the open playlist
@@ -888,9 +888,10 @@ $("volRange").onchange = () => { vol.dragUntil = Date.now() + 1500; clearTimeout
   const muted = !!(st && st.sink && st.sink.output && st.sink.output.muted); sendVolume(+$("volRange").value, muted); };
 $("volMute").onclick = () => { const o = st && st.sink && st.sink.output; if (o && o.volume != null) sendVolume(o.volume, !o.muted); };
 
-/** atv-audio's own queue ("box"): its notice and sound settings (only on that queue). */
+/** Queues whose sound settings live on the server (atv-audio's "box", the TV Player "mtv"): notice + sound settings. */
+const SERVER_SOUND = ["box", "mtv"];
 function drawBox(s) {
-  const box = s.session === "box";
+  const box = SERVER_SOUND.includes(s.session);
   const n = box && s.notice ? s.notice.text : "";
   $("note").hidden = !n;
   if (n) $("noteText").textContent = n;
@@ -983,7 +984,9 @@ function onState(s) {
   st = s; clockOffset = s.server_time - Date.now() / 1000;
   $("dot").className = "dot" + (s.players ? " ok" : "");
   // Server 0.10.0: the Apple TV and the iPhone each have their own queue; this page controls one of them.
-  $("conn").textContent = s.session === "box" ? boxStatus(s) : (s.players ? "app connected" : "app not open");
+  $("conn").textContent = s.session === "box" ? boxStatus(s)
+    : s.session === "mtv" ? (s.players ? "TV Player running" : "TV Player not running")
+    : (s.players ? "app connected" : "app not open");
   if (s.sessions) sessionList = s.sessions;
   showShot(s.session || session);
   drawSelector(); follow();
@@ -1033,12 +1036,12 @@ function boxStatus(s) {
 }
 
 /** Selector: Auto + one entry per app (▶ = playing). Auto shows which one it currently follows. atv-audio's own
- *  queue only while that program runs (or while it is the one chosen). */
+ *  queue and the TV Player's only while that program runs (or while it is the one chosen). */
 function drawSelector() {
   if (document.activeElement === $("out")) return;
   const label = (x) => `${x.name}${x.playing ? " ▶" : ""}`;
   const cur = sessionList.find((x) => x.session === session);
-  const shown = sessionList.filter((x) => x.session !== "box" || x.players || mode === "box" || session === "box");
+  const shown = sessionList.filter((x) => !SERVER_SOUND.includes(x.session) || x.players || mode === x.session || session === x.session);
   $("out").innerHTML = `<option value="auto"${mode === "auto" ? " selected" : ""}>Auto${mode === "auto" && cur ? `: ${esc(label(cur))}` : ""}</option>` +
     shown.map((x) => `<option value="${esc(x.session)}"${mode === x.session ? " selected" : ""}>${esc(label(x))}</option>`).join("");
 }

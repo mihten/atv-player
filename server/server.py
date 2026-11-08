@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.20.3"
+VERSION = "0.21.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -263,9 +263,13 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
 # one session at a time: ?session=<kind> on /ws or a {"type": "select", "session": <kind>} message.
 
 STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
-KINDS = ("tv", "phone", "box")
+KINDS = ("tv", "phone", "box", "mtv")
 # "box": the atv-audio program plays this queue by itself (player role kind=box), the web remote is its only UI.
-KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "Web Player"}
+# "mtv": a video player on its own screen output (mtv/ in the repo); its own queue, controlled from its on-screen UI
+# and the web remote. Unlike "box" it never shares an output with the Apple TV.
+KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "Web Player", "mtv": "TV Player"}
+# Sessions whose player gets its sound settings (preset, boost, loudness) from the server: `sound` before every load.
+SERVER_SOUND = ("box", "mtv")
 SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items",
               "prefer_videos", "swapped", "pinned", "dropped", "noted", "sound")
 
@@ -300,7 +304,8 @@ class Session:
         self.swapped: dict[int, int] = {}
         self.pinned: list[int] = []
         self.dropped: dict[int, list[int]] = {}
-        # box only: its sound settings (box_sound.clean) and the notice shown in the web remote until the next Play
+        # SERVER_SOUND sessions: their sound settings (box_sound.clean) and the notice shown in the web remote until
+        # the next Play
         self.sound = dict(box_sound.DEFAULT)
         self.notice = None
 
@@ -336,7 +341,7 @@ class Session:
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
             "server_name": server_name(), "disk": DISK,
             "sink": sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box" else None,
-            **(box_extra(self) if self.kind == "box" else {}),
+            **(box_extra(self) if self.kind in SERVER_SOUND else {}),
         }
 
     def save(self):
@@ -900,8 +905,8 @@ def box_extra(s):
 
 
 async def box_send_sound(s):
-    """The box player's `sound` (from its settings and the current track's loudness); sent before every load."""
-    if s.kind == "box":
+    """The player's `sound` (from the session's settings and the current track's loudness); sent before every load."""
+    if s.kind in SERVER_SOUND:
         msg = box_sound.message(s.sound, s.current)
         for ws in s.players:
             await send(ws, msg)
@@ -909,7 +914,7 @@ async def box_send_sound(s):
 
 async def box_notice(s, text):
     s.notice = {"text": text, "at": time.time()}
-    log.info("[box] notice: %s", text)
+    log.info("[%s] notice: %s", s.kind, text)
     await broadcast_state(s)
 
 
@@ -1839,29 +1844,29 @@ async def handle_cmd(s, msg):
             await start_current(s, present=True)
     elif cmd in ("toggle", "play", "pause"):
         if cmd == "play" or (cmd == "toggle" and not s.playing):
-            if s.kind == "box":
-                if tv_owns_output():
-                    await box_notice(s, IN_USE_NOTICE)
-                    return
+            if s.kind == "box" and tv_owns_output():
+                await box_notice(s, IN_USE_NOTICE)
+                return
+            if s.kind in SERVER_SOUND:
                 s.notice = None
                 cmd = "play"
             s.want_play = True
         else:
             s.want_play = False
-            if s.kind == "box":
+            if s.kind in SERVER_SOUND:
                 cmd = "pause"
         await to_players(s, {"type": "control", "action": cmd})
-        if s.kind == "box":
+        if s.kind in SERVER_SOUND:
             await broadcast_state(s)
-    elif cmd == "sound" and s.kind == "box":  # web remote: {preset, boost, loudness}
+    elif cmd == "sound" and s.kind in SERVER_SOUND:  # web remote: {preset, boost, loudness}
         new = box_sound.clean({**s.sound, **{k: msg[k] for k in ("preset", "boost", "loudness", "custom") if k in msg}})
         if new != s.sound:
             s.sound = new
             s.save()
-            log.info("[box] sound: %s", box_sound.label(s.sound, s.current))
+            log.info("[%s] sound: %s", s.kind, box_sound.label(s.sound, s.current))
             await box_send_sound(s)
         await broadcast_state(s)
-    elif cmd == "dismiss" and s.kind == "box":
+    elif cmd == "dismiss" and s.kind in SERVER_SOUND:
         s.notice = None
         await broadcast_state(s)
     elif cmd == "seek":
@@ -1956,7 +1961,7 @@ async def on_message(s, data, role, ws=None):
         vol = clean_volume(data)
         if vol is not None:
             await relay_to_sink(SESSIONS["tv"], {"type": "volume", **vol})  # one output: the sink of both
-    elif role == "player" and kind == "notice" and s.kind == "box":  # e.g. the headphones went away: paused
+    elif role == "player" and kind == "notice" and s.kind in SERVER_SOUND:  # e.g. the headphones went away: paused
         s.want_play = False
         await box_notice(s, str(data.get("text") or "")[:200])
     elif role == "player" and kind in RELAY_TYPES and s.kind == "tv":
@@ -2035,8 +2040,9 @@ async def ws_handler(request):
         await send(ws, {"type": "state", "state": s.to_dict()})
     if role == "player" and not standby_box:
         if s.current and await ensure_current_file(s):
-            if s.kind == "box":
+            if s.kind in SERVER_SOUND:
                 await send(ws, box_sound.message(s.sound, s.current))
+            if s.kind == "box":
                 if s.want_play and tv_owns_output():
                     s.want_play = False
             await send(ws, load_message(s, s.want_play, s.position))
@@ -3367,7 +3373,7 @@ def backup_data():
             "playlists": [{"name": pl["name"], "items": pl["items"], "created": pl["created"]}
                           for pl in sorted(PLAYLISTS.values(), key=lambda p: p["id"])],
             "loved": [[i, at] for i, at in loved], "plays": [[i, at] for i, at in plays],
-            "box_sound": SESSIONS["box"].sound}
+            "box_sound": SESSIONS["box"].sound, "mtv_sound": SESSIONS["mtv"].sound}
 
 
 async def api_backup_get(request):
@@ -3449,9 +3455,10 @@ async def api_backup_restore(request):
         PLAYLISTS[n] = {"id": n, "name": name, "items": items, "created": created or now, "updated": now}
     NEXT_PLAYLIST_ID = len(lists) + 1
     save_playlists()
-    if isinstance(data.get("box_sound"), dict):
-        SESSIONS["box"].sound = box_sound.clean(data["box_sound"])
-        SESSIONS["box"].save()
+    for kind in SERVER_SOUND:  # older backups have no "mtv_sound": that session keeps its settings
+        if isinstance(data.get(f"{kind}_sound"), dict):
+            SESSIONS[kind].sound = box_sound.clean(data[f"{kind}_sound"])
+            SESSIONS[kind].save()
     for s in SESSIONS.values():
         s.source, s.source_items = None, []
     log.info("backup restored: %d playlists, %d hearts, %d plays, %d ids without their file",
