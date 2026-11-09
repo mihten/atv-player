@@ -36,16 +36,25 @@ Environment:
   MTV_SAVER_AFTER    s paused / stopped / idle before the screensaver (black, the name moving around; default 300)
   MTV_SAVER_MOVE     s between two jumps of the screensaver text (default 180)
   MTV_LIP_SYNC       ms the headphones play earlier than the picture (default -100, the Apple TV's default)
+  MTV_FONT_DIR       directory of the Inter font files for text measuring (default /usr/share/fonts/opentype/inter, Debian's
+                     fonts-inter); mpv draws with the Inter family through fontconfig. Pillow (python3-pil) reads the cover
+                     colours and measures text; without it the colours come from the item id and widths are estimated
 
 Sound: HDMI (default) or the atv-audio headphones, chosen on the web remote (Settings > Audio): mpv is muted, the
 server's atv-audio sink plays the same file and follows this player's clock (sinklink.py).
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black, "MTV Player stopped"; Play starts
 the item again), Blue = open the menu, Up / Down = next / previous video, Right / Left = +10 / -10 s (Left/Right repeat while
-held), CH+ / CH- = next / previous video on HDMI sound, volume up / down (5 %) when the sound is on the headphones; each shows a
-short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close; on the Volume
-row Left / Right change the volume and OK mutes. A held key counts as one press (arrows repeat while held in the menu). The
-menu's first rows are Play / Pause, Stop and Volume (the menu stays open). While the screensaver is on, any key only closes it.
+held), CH+ / CH- = volume up / down (5 %; mpv's volume on HDMI, the headphones' own when the sound goes there); each shows a
+short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close. A held key
+counts as one press (arrows repeat while held in the menu). The menu's first page: Play / Pause, Stop, Volume, Boost, Loudness
+(the server's sound settings of this session), Lyrics (language: Off / Auto / English / Croatian), Lyrics screen, then the
+lists, Shuffle, Repeat. While the screensaver is on, any key only closes it.
+
+Lyrics: the video's own lyrics (subtitle) track in the chosen language is shown on the picture (Auto = the file's default
+track). The lyrics screen (lyricsview.py) replaces the picture with the Apple TV's lyrics view: time-synced lyrics only,
+scrolling by themselves, on a backdrop in the cover's colours that the GPU draws as a shader; the video keeps playing under it.
+Language and screen are kept in MTV_STATE/lyrics.json.
 
 Run: python3 mtv_player.py
 """
@@ -68,12 +77,14 @@ for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
         break
 from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
 import ir  # noqa: E402
+import lyricsview  # noqa: E402
 import menu as menu_mod  # noqa: E402
+import palette as palette_mod  # noqa: E402
 import remotes as remotes_mod  # noqa: E402
 import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -152,6 +163,8 @@ def mpv_args(cfg, sock, volume=None, muted=False):
             "--video-sync=display-resample", "--ao=alsa", f"--audio-device={cfg.audio_device}",
             f"--volume={cfg.volume if volume is None else volume}", f"--mute={'yes' if muted else 'no'}",
             "--volume-max=100", "--audio-display=embedded-first", "--sid=no",
+            "--sub-font=Inter", "--sub-bold=yes", "--sub-font-size=40", "--sub-outline-size=2", "--sub-shadow-offset=1",
+            "--sub-margin-y=44", "--osd-font=Inter",
             "--hr-seek=yes", "--cache=yes", "--cache-secs=60", "--demuxer-readahead-secs=30",
             "--demuxer-max-bytes=512MiB", "--demuxer-max-back-bytes=64MiB", "--network-timeout=15",
             "--ytdl=no", "--no-input-terminal", "--input-default-bindings=no", "--osd-level=1", "--osc=no",
@@ -188,7 +201,7 @@ class Player:
         self.load_volume()
         self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
         self.http = None             # aiohttp session for the menu's lists (set while connected)
-        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state, volume=self)
+        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state, volume=self, mono=mono)
         self.last_key_at = -1e9      # monotonic time of the last key event from the keyboard receiver (Flirc)
         self.remotes = remotes_mod.Remotes(cfg.flirc_util, cfg.state_dir or tempfile.gettempdir(), self.remotes_changed,
                                            self.log, quiet_for=lambda: self.mono() - self.last_key_at)
@@ -197,6 +210,23 @@ class Player:
         self.link = sinklink.SinkLink(self)   # the sound on the atv-audio headphones (chosen on the web remote)
         self.link.lip_ms = cfg.lip_sync
         self.saver = saver_mod.Saver(mono, after=cfg.saver_after, move=cfg.saver_move)
+        # lyrics: the language (subtitles on the video and the lyrics screen) and the lyrics screen itself, kept in
+        # lyrics.json; the screen's model, the cover colours per item and the shader file mpv draws the backdrop from
+        self.lyrics_lang, self.lyrics_on = "auto", False
+        self.load_lyrics_settings()
+        self.view = lyricsview.LyricsView()
+        self.view.set_lang(self.lyrics_lang)
+        self.palettes = {}           # item id -> Palette (small cache)
+        self.has_picture = True      # the loaded file has a video track or a cover (the shader has something to draw on)
+        self.shader_path = None      # backdrop shader in mpv now (None: none)
+        self.shader_text = None
+        self.shader_dir = None
+        self.shader_n = 0
+        self.display = None          # (width, height) of the screen, read from mpv
+        self.lyrics_drawn = None     # signature of the lyrics screen on the TV now (None: draw it again)
+        self.lyrics_layer = False    # its overlays (4, 5) are on the screen
+        self.aspect_set = False      # video-aspect-override set for the lyrics screen
+        self.fetching = set()        # ("lyrics" | "art", id) in flight
 
     @property
     def connected(self):
@@ -332,6 +362,227 @@ class Player:
                 json.dump({"volume": self.volume, "muted": self.muted}, f)
             os.replace(tmp, path)
 
+    # -- lyrics: the language (subtitles on the video + lyrics screen) and the lyrics screen, kept in lyrics.json
+    def _lyrics_file(self):
+        return os.path.join(self.cfg.state_dir, "lyrics.json") if self.cfg.state_dir else None
+
+    def load_lyrics_settings(self):
+        path = self._lyrics_file()
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if data.get("lang") in dict(lyricsview.LANGS):
+                self.lyrics_lang = data["lang"]
+            self.lyrics_on = bool(data.get("screen"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def save_lyrics_settings(self):
+        path = self._lyrics_file()
+        if not path:
+            return
+        with contextlib.suppress(OSError):
+            os.makedirs(self.cfg.state_dir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"lang": self.lyrics_lang, "screen": self.lyrics_on}, f)
+            os.replace(tmp, path)
+
+    async def set_lyrics_lang(self, lang):
+        """Menu: Lyrics Off / Auto / English / Croatian (the subtitles on the video and the lyrics screen follow)."""
+        if lang not in dict(lyricsview.LANGS) or lang == self.lyrics_lang:
+            return
+        self.lyrics_lang = lang
+        self.save_lyrics_settings()
+        self.view.set_lang(lang)
+        self.log(f"lyrics language {lang}")
+        await self.apply_subs()
+        self.lyrics_drawn = None
+        await self.draw_lyrics()
+
+    async def set_lyrics_on(self, on):
+        """Menu: the lyrics screen on / off (the video keeps playing underneath)."""
+        on = bool(on)
+        if on == self.lyrics_on:
+            return
+        self.lyrics_on = on
+        self.save_lyrics_settings()
+        self.log(f"lyrics screen {'on' if on else 'off'}")
+        self.want_data(self.item)
+        await self.apply_lyrics_screen()
+
+    def current_palette(self):
+        it = self.item or (self.state or {}).get("current") or {}
+        return self.palettes.get(it.get("id")) or palette_mod.for_item(it.get("id"))
+
+    def accent(self):
+        """The cover's accent colour (menu, lyrics screen)."""
+        return self.current_palette().vibrant
+
+    def backdrop_base(self):
+        return self.current_palette().base
+
+    async def apply_subs(self, tracks=None):
+        """The video's lyrics (subtitle) track in the chosen language, hidden while the lyrics screen is on."""
+        mpv, it = self.mpv, self.item
+        if not mpv or not it or not self.file_loaded:
+            return
+        try:
+            if tracks is None:
+                tracks = await mpv.get_property("track-list", []) or []
+            count = sum(1 for t in tracks if t.get("type") == "sub")
+            sid = lyricsview.sub_id(it, self.lyrics_lang)
+            if sid is not None and sid > count:
+                sid = None
+            await mpv.set_property("sid", sid if sid is not None else "no")
+            await mpv.set_property("sub-visibility", not self.lyrics_on)
+        except MpvError as e:
+            log(f"subtitles: {e}")
+
+    def want_data(self, item):
+        """Cover colours for every item (menu accent, lyrics backdrop); the lyrics while the lyrics screen is on."""
+        if not item:
+            return
+        iid = item.get("id")
+        if iid not in self.palettes:
+            if not item.get("art"):
+                self.palettes[iid] = palette_mod.for_item(iid)
+            elif self.http is not None and ("art", iid) not in self.fetching:
+                self.fetching.add(("art", iid))
+                asyncio.ensure_future(self._fetch_art(iid))
+        v = self.view
+        if self.lyrics_on and v.item is not None and v.item.get("id") == iid and v.tracks is None:
+            if not (item.get("lyr") or 0):
+                v.set_lyrics(iid, [])
+            elif self.http is not None and ("lyrics", iid) not in self.fetching:
+                self.fetching.add(("lyrics", iid))
+                asyncio.ensure_future(self._fetch_lyrics(iid))
+
+    async def _fetch_art(self, iid):
+        pal = None
+        try:
+            data = await self.fetch_bytes(f"/art/{iid}")
+            pal = await asyncio.get_running_loop().run_in_executor(None, palette_mod.extract, data)
+        except Exception as e:  # no art / server away: the art-free colours
+            log(f"cover colours {iid}: {e!r}")
+        finally:
+            self.fetching.discard(("art", iid))
+        self.palettes[iid] = pal or palette_mod.for_item(iid)
+        while len(self.palettes) > 40:
+            self.palettes.pop(next(iter(self.palettes)))
+        if (self.item or {}).get("id") == iid:
+            if self.view.item is not None and self.view.item.get("id") == iid:
+                self.view.palette = self.palettes[iid]
+            if self.lyrics_on:
+                await self.apply_lyrics_screen()
+            if self.menu.open:
+                await self.draw_menu()
+
+    async def _fetch_lyrics(self, iid):
+        tracks = []
+        try:
+            data = await self.fetch(f"/api/lyrics/{iid}")
+            tracks = data.get("tracks") or []
+        except Exception as e:
+            log(f"lyrics {iid}: {e!r}")
+        finally:
+            self.fetching.discard(("lyrics", iid))
+        if self.view.set_lyrics(iid, tracks):
+            self.lyrics_drawn = None
+            await self.draw_lyrics()
+
+    async def _set_shader(self, text):
+        """The backdrop shader in mpv (a new file name for new contents, so mpv compiles it), or none."""
+        mpv = self.mpv
+        if text is None:
+            if self.shader_path is not None:
+                with contextlib.suppress(MpvError):
+                    await mpv.command("change-list", "glsl-shaders", "clr", "")
+                with contextlib.suppress(OSError):
+                    os.unlink(self.shader_path)
+                self.shader_path = self.shader_text = None
+            return
+        if self.shader_path is not None and self.shader_text == text:
+            return
+        if not self.shader_dir:
+            self.shader_dir = tempfile.mkdtemp(prefix="mtv-shader-")
+        self.shader_n += 1
+        path = os.path.join(self.shader_dir, f"lyrics-{self.shader_n}.glsl")
+        with open(path, "w") as f:
+            f.write(text)
+        await mpv.command("change-list", "glsl-shaders", "set", path)
+        old, self.shader_path, self.shader_text = self.shader_path, path, text
+        if old:
+            with contextlib.suppress(OSError):
+                os.unlink(old)
+
+    async def apply_lyrics_screen(self):
+        """Lyrics screen on: the shader backdrop, the video stretched over the whole screen (the shader draws on the video's
+        area; the picture is covered anyway), its subtitles hidden, the text layers. Off (or nothing loaded): all undone."""
+        mpv = self.mpv
+        if not mpv:
+            return
+        on = self.lyrics_on and self.item is not None
+        try:
+            if on:
+                if self.view.item is None or self.view.item.get("id") != self.item.get("id"):
+                    self.view.set_item(self.item)
+                self.view.palette = self.palettes.get(self.item.get("id")) or self.view.palette
+                await self._set_shader(self.view.shader())
+                if not self.aspect_set and self.display:
+                    await mpv.set_property("video-aspect-override", f"{self.display[0]}:{self.display[1]}")
+                    self.aspect_set = True
+                await mpv.set_property("sub-visibility", False)
+            else:
+                await self._set_shader(None)
+                if self.aspect_set:
+                    await mpv.set_property("video-aspect-override", "no")
+                    self.aspect_set = False
+                await mpv.set_property("sub-visibility", True)
+        except (MpvError, OSError) as e:
+            log(f"lyrics screen: {e}")
+        self.lyrics_drawn = None
+        await self.draw_lyrics()
+
+    async def draw_lyrics(self):
+        """The lyrics screen's text layer (osd-overlay 4, under the menu) and, for an item with no picture, a plain
+        background (overlay 5); redrawn when it looks different or an animation runs."""
+        mpv = self.mpv
+        if not mpv:
+            return
+        if not (self.lyrics_on and self.item is not None):
+            if self.lyrics_layer:
+                with contextlib.suppress(MpvError):
+                    await mpv.command("osd-overlay", 4, "none", "")
+                    await mpv.command("osd-overlay", 5, "none", "")
+                self.lyrics_layer = False
+            self.lyrics_drawn = None
+            return
+        now = self.mono()
+        p = mpv.props.get("time-pos") if self.file_loaded else None
+        pos = float(p) if isinstance(p, (int, float)) else self.pos
+        self.view.update(pos, now)
+        up = (self.state or {}).get("upcoming") or []
+        sig = (self.view.signature(pos, self.want_play, up), self.has_picture)
+        if sig == self.lyrics_drawn and not self.view.animating(now):
+            return
+        dur = (mpv.props.get("duration") if self.file_loaded else None) or self.item.get("duration") or 0
+        try:
+            await mpv.command("osd-overlay", 4, "ass-events", self.view.front(pos, dur, self.want_play, up, now),
+                              lyricsview.d.RES_X, lyricsview.d.RES_Y, 5)
+            if self.lyrics_drawn is None or self.lyrics_drawn[1] != self.has_picture:
+                if self.has_picture:
+                    await mpv.command("osd-overlay", 5, "none", "")
+                else:
+                    await mpv.command("osd-overlay", 5, "ass-events", self.view.solid(), lyricsview.d.RES_X,
+                                      lyricsview.d.RES_Y, 4)
+        except MpvError as e:
+            log(f"lyrics draw: {e}")
+        self.lyrics_drawn = sig
+        self.lyrics_layer = True
+
     def report_output(self):
         """Screen, sound device, volume and remote profiles to the server (web remote: volume bar, Settings -> Audio)."""
         msg = {"type": "output", "name": "TV Player", "screen": self.screen, "device": self.cfg.audio_device,
@@ -364,6 +615,7 @@ class Player:
         fps = await mpv.get_property("display-fps")
         if w and h:
             self.screen = f"{w}x{h}" + (f" @ {fps:g} Hz" if fps else "")
+            self.display = (int(w), int(h))
 
     async def set_volume(self, percent, muted):
         self.volume, self.muted = max(0, min(100, int(percent))), bool(muted)
@@ -381,6 +633,14 @@ class Player:
         async with self.http.get(self.cfg.server + path, timeout=aiohttp.ClientTimeout(total=10)) as r:
             r.raise_for_status()
             return await r.json()
+
+    async def fetch_bytes(self, path):
+        if self.http is None:
+            raise RuntimeError("not connected")
+        import aiohttp
+        async with self.http.get(self.cfg.server + path, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            r.raise_for_status()
+            return await r.read()
 
     async def draw_menu(self):
         """The menu on the screen (osd-overlay 1), or nothing when it is closed."""
@@ -413,6 +673,10 @@ class Player:
         """A (re)started mpv: replay the current item paused or playing as it was."""
         self.mpv = mpv
         self.af_text = self.applied = None
+        self.shader_path = self.shader_text = None   # a new mpv: no shader, no aspect override, no overlays
+        self.aspect_set = False
+        self.lyrics_drawn = None
+        self.lyrics_layer = False
         if self.sound is not None:
             await self._set_af(sound_chain(self.sound))
             self.applied = self.sound
@@ -428,6 +692,8 @@ class Player:
             await self.draw_notice()
         if self.saver.on:
             await self.draw_saver(True)
+        if self.lyrics_on:
+            await self.apply_lyrics_screen()
 
     def detach(self):
         self.mpv = None
@@ -469,6 +735,10 @@ class Player:
             with contextlib.suppress(MpvError):
                 await mpv.set_property("pause", not self.want_play)
         self.file_loaded = True
+        self.has_picture = any(t.get("type") == "video" for t in tracks)   # a video or a cover (album art)
+        await self.apply_subs(tracks)
+        if self.lyrics_on:
+            self.lyrics_drawn = None
         video = next((t for t in tracks if t.get("type") == "video" and not t.get("albumart")), None)
         what = f"{video.get('codec')} {video.get('demux-w')}x{video.get('demux-h')}" if video else "audio only"
         self.log(f"opened {it.get('id')} ({what}, {'playing' if self.want_play else 'paused'}), audio track "
@@ -535,13 +805,19 @@ class Player:
             if self.saver.on and self.want_play:
                 await self.wake()
             if self.item:
+                self.view.set_item(self.item)
+                self.view.palette = self.palettes.get(self.item.get("id"))
+                self.want_data(self.item)
                 await self.link.begin_item(self.item, self.want_play, from_server=True)
                 await self._load(self.pos)
+                if self.lyrics_on:
+                    await self.apply_lyrics_screen()
             else:
                 self.link.waiting = False
                 if self.mpv:
                     with contextlib.suppress(MpvError):
                         await self.mpv.command("stop")
+                await self.apply_lyrics_screen()
             self.report(force=True)
         elif t == "control":
             await self.on_control(msg)
@@ -598,6 +874,7 @@ class Player:
                 await self.link.acknowledge("stop")
                 if mpv:
                     await mpv.command("stop")
+                await self.apply_lyrics_screen()   # nothing loaded: the lyrics screen goes away (the stopped screen shows)
             elif action == "seek" and self.item:
                 self.pos = max(0.0, float(msg.get("position") or 0))
                 self.ended_for = None
@@ -729,12 +1006,8 @@ async def on_key(player, name, held):
             return
         player.send({"type": "cmd", "cmd": "next" if name == "up" else "prev"})
         await osd(player, "Next" if name == "up" else "Previous")
-    elif name in ("ch_up", "ch_down"):
-        if player.link.on:             # the sound is on the headphones: these keys are their volume
-            await osd(player, await player.volume_step(VOLUME_STEP if name == "ch_up" else -VOLUME_STEP), 1200)
-        else:
-            player.send({"type": "cmd", "cmd": "next" if name == "ch_up" else "prev"})
-            await osd(player, "Next" if name == "ch_up" else "Previous")
+    elif name in ("ch_up", "ch_down"):  # volume up / down: mpv's on HDMI, the headphones' own when the sound goes there
+        await osd(player, await player.volume_step(VOLUME_STEP if name == "ch_up" else -VOLUME_STEP), 1200)
     elif name in SEEK_KEYS:
         if not it:
             return
@@ -915,6 +1188,7 @@ async def run_server(cfg, player, stop):
                     queue = asyncio.Queue()
                     player._send = queue.put_nowait
                     player.http = http
+                    player.want_data(player.item)
                     player.log(f"mtv-player {VERSION} up (mode {cfg.mode}, interpolation "
                                f"{'on' if cfg.interpolation else 'off'}, audio {cfg.audio_device}, volume {player.volume} %)")
                     player.report_output()
@@ -948,6 +1222,25 @@ async def run_server(cfg, player, stop):
             backoff = min(RECONNECT_MAX, backoff * 2)
 
 
+LYRICS_TICK, LYRICS_FAST = 0.1, 1 / 24   # s between lyrics-screen checks; while a line scrolls / lights up
+
+
+async def run_lyrics(player, stop):
+    """Keeps the lyrics screen in step with the playback position (redraws only when it looks different, ~24 frames/s
+    while a line scrolls or lights up)."""
+    while not stop.is_set():
+        fast = False
+        try:
+            await player.draw_lyrics()
+            fast = player.lyrics_on and player.view.animating(player.mono())
+        except MpvError:
+            pass
+        except Exception as e:  # never let a drawing bug stop the loop
+            log(f"lyrics loop: {e!r}")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), LYRICS_FAST if fast else LYRICS_TICK)
+
+
 async def run_ticks(player, stop):
     while not stop.is_set():
         with contextlib.suppress(MpvError):
@@ -969,13 +1262,15 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     tasks = [asyncio.create_task(c) for c in (run_mpv(cfg, player, stop), run_server(cfg, player, stop),
-                                              run_ticks(player, stop), run_ir(cfg, player, stop),
+                                              run_ticks(player, stop), run_lyrics(player, stop), run_ir(cfg, player, stop),
                                               run_evdev(cfg, player, stop))]
     await stop.wait()  # SIGTERM / SIGINT: the server loop sits in a ws read, so cancel instead of waiting for it
     await player.remotes.shutdown()  # a learn in progress is stopped and undone first
     for t in tasks:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)  # run_mpv's finally terminates mpv
+    if player.shader_dir:
+        shutil.rmtree(player.shader_dir, ignore_errors=True)
     log("stopped")
     return 0
 

@@ -237,10 +237,13 @@ async def keys():
     await M.on_key(p, "blue", False)
     await M.on_key(p, "blue", False)
     check(not p.menu.open and p.mpv.overlays[-2:] == ["ass-events", "none"], "Blue opens and Blue closes the menu")
+    vol = p.volume
     await M.on_key(p, "ch_up", False)
     await M.on_key(p, "ch_down", False)
+    await M.on_key(p, "ch_down", False)
     cmds = [m["cmd"] for m in sent if m.get("type") == "cmd"]
-    check(cmds[-2:] == ["next", "prev"], "CH+ / CH- -> next / prev")
+    check(not [c for c in cmds if c in ("next", "prev")] and p.volume == max(0, min(100, vol + 5) - 10),
+          "CH+ / CH- = volume (no next / prev)")
     await M.on_key(p, "right", False)
     await M.on_key(p, "right", True)
     seeks = [m["position"] for m in sent if m.get("cmd") == "seek"]

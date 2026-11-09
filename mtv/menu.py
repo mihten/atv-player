@@ -1,31 +1,45 @@
-"""On-screen menu of mtv-player, drawn with mpv's osd-overlay (ASS) over the video.
+"""On-screen menu of mtv-player, drawn with mpv's osd-overlay (ASS) over the video or the lyrics screen.
 
 Pure model + renderer: Menu holds a stack of pages, key() moves / selects, render() returns ASS events. Lists come
 from the server's HTTP API through an async `fetch(path)`; commands go back through `send(msg)` (the player's
 WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left back
-one page, Blue (Menu), Back or Red closes. The Volume row (root page) is a level row: Left / Right change the volume
-(`volume.volume_step`), OK mutes (`volume.volume_mute`); `volume.volume_now()` gives (label, percent or None, muted).
-"""
-RES_X, RES_Y = 1920, 1080
-X0, Y0, X1, Y1 = 80, 70, 1160, 1010      # panel
-ROW_Y, ROW_H, ROWS = 200, 62, 12         # first row, row height, visible rows
-LABEL_MAX = 54
-STEP = 5                                 # % per press on the Volume row
-SUB_CHARS = 1.25                         # label characters given up per character of the right-hand text
+one page, Blue (Menu), Back or Red closes.
 
-BG = "&H101010&"
-BG_ALPHA = "&H30&"
-SEL = "&HC07038&"                        # BGR: a calm blue
-WHITE, GREY, DIM = "&HFFFFFF&", "&HB4B4B4&", "&H808080&"
+Row kinds (the owner's Apple TV conventions): an ACTION runs on OK; a TOGGLE (two values: Loudness, Lyrics screen,
+Shuffle) switches on OK; a CHOICE of more than two values (Lyrics language) steps with Left / Right and stops at the
+ends; a LEVEL (Volume, Boost) steps with Left / Right, OK mutes the volume. `ctl` (the player) gives the volume
+(`volume_now()`, `volume_step()`, `volume_mute()`), the lyrics language and screen (`lyrics_lang`, `set_lyrics_lang()`,
+`lyrics_on`, `set_lyrics_on()`) and the cover colours (`accent()`); Boost and Loudness are the server's sound settings
+of this session (state `sound`), changed with the `sound` command.
+
+Look: a dark rounded card tinted with the cover's colours, an eyebrow + title header (now playing on the first page),
+the selected row as a light pill with dark text (tvOS focus style), level bars, switches and ‹ value › choices drawn in
+the cover's accent colour, key hints as small chips at the bottom. Text is Inter (draw.py).
+"""
+import time
+
+import draw as d
+
+RES_X, RES_Y = d.RES_X, d.RES_Y
+X0, Y0, X1, Y1 = 72, 56, 1112, 1024     # card
+PAD = 44                                 # text inset
+ROW_Y, ROW_H, ROWS = 262, 54, 13         # first row, row height, visible rows
+STEP = 5                                 # % per press on the Volume row
+BOOST_MAX = 8
+PENDING_S = 2.0                          # a sound value just sent counts until the server's state shows it
+LANGS = [("off", "Off"), ("auto", "Auto"), ("eng", "English"), ("hrv", "Croatian")]
+DEFAULT_ACCENT = (0.45, 0.68, 1.0)
+CARD = (0.055, 0.055, 0.075)
+INK, DARK = d.WHITE, (0.07, 0.07, 0.09)
+LABEL_SIZE, SUB_SIZE = 33, 27
+VALUE_W = 380                            # room for the value / control at the right
 
 
 def esc(text):
-    """Text for an ASS event: no override blocks, no escapes, one line."""
-    s = str(text or "").replace("\\", "\\\u200b").replace("{", "\\{").replace("}", "\\}")
-    return s.replace("\r", " ").replace("\n", " ")
+    return d.esc(text)
 
 
-def clip(text, n=LABEL_MAX):
+def clip(text, n=54):
     text = str(text or "")
     return text if len(text) <= n else text[:n - 1].rstrip() + "…"
 
@@ -40,24 +54,14 @@ def item_label(it):
     return f"{it['artist']} – {title}" if it.get("artist") else title
 
 
-def fit(label, sub):
-    """Label and right-hand text sharing one row (36 px label font, 28 px sub font). A short sub (duration, count)
-    stays whole and the label gives way; a long sub (the current title next to "Play") gives way to the label."""
-    if not sub:
-        return clip(label), ""
-    need = len(label) + int(len(sub) * SUB_CHARS) + 3
-    if need <= LABEL_MAX:
-        return label, sub
-    if len(sub) <= 8:
-        return clip(label, LABEL_MAX - int(len(sub) * SUB_CHARS) - 3), sub
-    room = max(8, int((LABEL_MAX - min(len(label), LABEL_MAX // 2) - 3) / SUB_CHARS))
-    return clip(label, LABEL_MAX - int(room * SUB_CHARS) - 3), clip(sub, room)
-
-
 class Row:
-    def __init__(self, label, sub="", act=None, opens=False, closes=False, level=False):
+    def __init__(self, label, sub="", act=None, opens=False, closes=False, level=False, kind=None, value=None,
+                 vmax=None, key=None):
         self.label, self.sub, self.act, self.opens, self.closes = label, sub, act, opens, closes
-        self.level = level   # a volume row: Left / Right change it, OK mutes
+        self.level = level                        # a level row (Volume / Boost): Left / Right change it
+        self.kind = kind or ("level" if level else "opens" if opens else "action")
+        self.value, self.vmax = value, vmax       # level: value 0..vmax; toggle: bool; choice: index
+        self.key = key                            # which setting (volume, boost, loudness, lang, lyrics, shuffle)
 
 
 class Page:
@@ -69,11 +73,13 @@ class Page:
 
 
 class Menu:
-    def __init__(self, fetch, send, state=lambda: None, volume=None):
+    def __init__(self, fetch, send, state=lambda: None, volume=None, mono=time.monotonic):
         self.fetch, self.send, self.state = fetch, send, state
-        self.vol = volume
+        self.vol = volume            # the player (volume, lyrics, colours); None in tests of the plain menu
+        self.mono = mono
         self.pages = []
         self.library = None          # id -> summary, for queue titles (loaded once per open)
+        self.pending = {}            # sound key -> (value, time sent)
 
     @property
     def open(self):
@@ -83,6 +89,26 @@ class Menu:
     def page(self):
         return self.pages[-1] if self.pages else None
 
+    # -- settings shown on the first page
+    def sound(self, key):
+        """Boost / loudness: the value just sent (for PENDING_S, until the state shows it), else the server's."""
+        st = (self.state() or {}).get("sound") or {}
+        cur = st.get(key)
+        if key in self.pending:
+            value, at = self.pending[key]
+            if value == cur or self.mono() - at > PENDING_S:
+                del self.pending[key]
+            else:
+                return value
+        return cur
+
+    def send_sound(self, key, value):
+        self.pending[key] = (value, self.mono())
+        self.send({"type": "cmd", "cmd": "sound", key: value})
+
+    def _has(self, name):
+        return self.vol is not None and hasattr(self.vol, name)
+
     # -- pages
     def root(self):
         st = self.state() or {}
@@ -90,13 +116,29 @@ class Menu:
         playing = bool(st.get("playing"))
         rows = []
         if cur:
-            rows.append(Row("Pause" if playing else "Play", item_label(cur),
-                            act={"cmd": "toggle"}))  # stays open (Mihovil): the label follows the state
+            rows.append(Row("Pause" if playing else "Play", "",
+                            act={"cmd": "toggle"}))  # stays open (owner): the label follows the state; title in the header
             rows.append(Row("Stop", "screen goes black", act={"cmd": "stop"}, closes=True))
-        if self.vol is not None:
+        if self._has("volume_now"):
             label, pct, muted = self.vol.volume_now()
             rows.append(Row(label, "not connected" if pct is None else "muted" if muted else f"{pct} %",
-                            act=self.vol_action, level=True))
+                            act=self.noop, level=True, value=None if pct is None or muted else pct, vmax=100,
+                            key="volume"))
+        if isinstance(st.get("sound"), dict):
+            boost = int(self.sound("boost") or 0)
+            rows.append(Row("Boost", f"+{boost} dB" if boost else "off", act=self.noop, level=True, value=boost,
+                            vmax=BOOST_MAX, key="boost"))
+            raise_ = self.sound("loudness") == "raise"
+            rows.append(Row("Loudness", "raise quiet tracks" if raise_ else "off", act=self.noop, kind="toggle",
+                            value=raise_, key="loudness"))
+        if self._has("lyrics_lang"):
+            codes = [c for c, _ in LANGS]
+            lang = self.vol.lyrics_lang if self.vol.lyrics_lang in codes else "auto"
+            rows.append(Row("Lyrics", dict(LANGS)[lang], act=self.noop, kind="choice", value=codes.index(lang),
+                            vmax=len(LANGS) - 1, key="lang"))
+            on = bool(self.vol.lyrics_on)
+            rows.append(Row("Lyrics screen", "on" if on else "off", act=self.noop, kind="toggle", value=on,
+                            key="lyrics"))
         n = len(st.get("queue") or [])
         rows += [
             Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True),
@@ -105,13 +147,14 @@ class Menu:
             Row("Music videos", act=lambda: self.items_page("Music videos", "/api/collection/videos",
                                                               {"cmd": "play_collection", "collection": "videos"}),
                 opens=True),
-            Row("Shuffle", "on" if st.get("shuffle") else "off", act={"cmd": "shuffle"}),
+            Row("Shuffle", "on" if st.get("shuffle") else "off", act={"cmd": "shuffle"}, kind="toggle",
+                value=bool(st.get("shuffle")), key="shuffle"),
             Row("Repeat", st.get("repeat_mode") or "all", act={"cmd": "repeat"}),
         ]
         return Page("TV Player", rows)
 
-    async def vol_action(self):
-        """Placeholder act of the Volume row (it must be an action so the row is selectable); the keys are handled in key()."""
+    async def noop(self):
+        """Placeholder act of level / choice / toggle rows (they must be actions so they are selectable)."""
 
     def queue_page(self):
         async def load(page):
@@ -187,7 +230,7 @@ class Menu:
         self._scroll(page)
 
     def refresh_root(self):
-        """Server state changed (play/pause, shuffle, repeat): the root page's labels follow it."""
+        """Server state or a setting changed (play/pause, shuffle, repeat, sound, lyrics): the first page follows it."""
         if self.pages and len(self.pages) == 1:
             sel = self.pages[0].sel
             self.pages[0] = self.root()
@@ -202,6 +245,35 @@ class Menu:
             page.top = page.sel - ROWS + 1
         page.top = max(0, min(page.top, max(0, len(page.rows) - ROWS)))
 
+    async def _setting(self, row, name):
+        """Left / Right / OK on a level, choice or toggle row. True when the key was used."""
+        k = row.key
+        if row.kind == "level" and name in ("left", "right", "ok"):
+            if k == "volume" and self._has("volume_step"):
+                if name == "ok":
+                    await self.vol.volume_mute()
+                else:
+                    await self.vol.volume_step(STEP if name == "right" else -STEP)
+            elif k == "boost" and name != "ok":
+                new = max(0, min(BOOST_MAX, int(row.value or 0) + (1 if name == "right" else -1)))
+                if new != row.value:
+                    self.send_sound("boost", new)
+            return True
+        if row.kind == "choice" and name in ("left", "right"):
+            new = max(0, min(row.vmax, row.value + (1 if name == "right" else -1)))   # stops at the ends
+            if new != row.value and k == "lang" and self._has("set_lyrics_lang"):
+                await self.vol.set_lyrics_lang(LANGS[new][0])
+            return True
+        if row.kind == "toggle" and name == "ok":
+            if k == "loudness":
+                self.send_sound("loudness", "off" if row.value else "raise")
+            elif k == "lyrics" and self._has("set_lyrics_on"):
+                await self.vol.set_lyrics_on(not row.value)
+            elif isinstance(row.act, dict):
+                self.send(dict(row.act, type="cmd"))
+            return True
+        return row.kind == "choice" and name == "ok"   # OK on a choice row does nothing (owner's convention)
+
     async def key(self, name):
         """A remote key while the menu is open. Returns True when the menu changed (redraw)."""
         page = self.page
@@ -211,12 +283,8 @@ class Menu:
             self.close()
             return True
         row = page.rows[page.sel] if page.rows and not page.loading and 0 <= page.sel < len(page.rows) else None
-        if row is not None and row.level and self.vol is not None and name in ("left", "right", "ok"):
-            from_ = self.vol  # a level row: Left / Right = volume, OK = mute
-            if name == "ok":
-                await from_.volume_mute()
-            else:
-                await from_.volume_step(STEP if name == "right" else -STEP)
+        if row is not None and len(self.pages) == 1 and row.kind in ("level", "choice", "toggle") \
+                and await self._setting(row, name):
             self.refresh_root()
             return True
         if name == "left":
@@ -249,41 +317,141 @@ class Menu:
         return False
 
     # -- drawing
+    def accent(self):
+        if self._has("accent"):
+            try:
+                return self.vol.accent() or DEFAULT_ACCENT
+            except Exception:
+                return DEFAULT_ACCENT
+        return DEFAULT_ACCENT
+
+    def tint(self):
+        if self._has("backdrop_base"):
+            try:
+                base = self.vol.backdrop_base()
+                if base:
+                    return d.mix(CARD, base, 0.45)
+            except Exception:
+                pass
+        return CARD
+
+    def hint(self, row):
+        kind = row.kind if row is not None and len(self.pages) == 1 else None
+        if kind == "level":
+            keys = [("◀ ▶", "adjust")] + ([("OK", "mute")] if row.key == "volume" else [])
+        elif kind == "choice":
+            keys = [("◀ ▶", "change")]
+        elif kind == "toggle":
+            keys = [("OK", "switch")]
+        else:
+            keys = [("OK", "select")]
+        if len(self.pages) > 1:
+            keys.append(("◀", "back"))
+        keys.append(("Menu", "close"))
+        return keys
+
     def render(self):
         page = self.page
         if page is None:
             return ""
+        accent, card = self.accent(), self.tint()
         ev = []
-
-        def box(x0, y0, x1, y1, color, alpha):
-            ev.append(f"{{\\an7\\pos(0,0)\\bord0\\shad0\\1c{color}\\1a{alpha}\\p1}}"
-                      f"m {x0} {y0} l {x1} {y0} {x1} {y1} {x0} {y1}{{\\p0}}")
-
-        def text(x, y, s, size, color=WHITE, an=7, bold=False):
-            ev.append(f"{{\\an{an}\\pos({x},{y})\\fs{size}\\bord0\\shad0\\1c{color}\\b{1 if bold else 0}}}{esc(s)}")
-
-        box(X0, Y0, X1, Y1, BG, BG_ALPHA)
-        crumbs = " › ".join(p.title for p in self.pages[:-1])
-        if crumbs:
-            text(X0 + 40, Y0 + 22, clip(crumbs, 60), 26, GREY)
-        text(X0 + 40, Y0 + 56, clip(page.title, 34), 46, WHITE, bold=True)
-        if len(page.rows) > ROWS:
-            text(X1 - 40, Y0 + 66, f"{page.sel + 1} / {len(page.rows)}", 28, GREY, an=9)
+        # card with a soft shadow (stacked, no blur: cheap at 4K)
+        for g, op in ((18, 0.10), (10, 0.14), (4, 0.20)):
+            ev.append(d.rrect(X0 - g, Y0 - g + 8, X1 + g, Y1 + g + 8, 28 + g, d.BLACK, op))
+        ev.append(d.rrect(X0, Y0, X1, Y1, 28, card, 0.9))
+        # header
+        tx = X0 + PAD
+        width = X1 - X0 - 2 * PAD
+        st = self.state() or {}
+        cur = st.get("current") or {}
+        if len(self.pages) == 1:
+            eyebrow = "TV PLAYER  ·  " + ("NOW PLAYING" if st.get("playing") else "PAUSED" if cur else "NOTHING PLAYING")
+            title = (cur.get("title") or "TV Player") if cur else "TV Player"
+            subtitle = cur.get("artist") or ""
+        else:
+            eyebrow = "  ›  ".join(p.title for p in self.pages[:-1]).upper()
+            title, subtitle = page.title, ""
+        ev.append(d.text(tx, Y0 + 38, d.ellipsize(eyebrow, 20, width, 700, 4), 20, accent, 1, 700, spacing=4))
+        count = f"{page.sel + 1} / {len(page.rows)}" if len(page.rows) > ROWS else ""
+        cw = d.width(count, 24, 500) + 20 if count else 0
+        ev.append(d.text(tx, Y0 + 72, d.ellipsize(title, 44, width - cw, 800), 44, INK, 1, 800))
+        if subtitle:
+            ev.append(d.text(tx, Y0 + 128, d.ellipsize(subtitle, 27, width, 500), 27, INK, 0.6, 500))
+        if count:
+            ev.append(d.text(X1 - PAD, Y0 + 86, count, 24, INK, 0.5, 500, an=9))
+        ev.append(d.rect(tx, ROW_Y - 22, X1 - PAD, ROW_Y - 20, INK, 0.10))
         if page.loading:
-            text(X0 + 40, ROW_Y + 10, "Loading…", 36, GREY)
+            ev.append(d.text(tx, ROW_Y + 10, "Loading…", LABEL_SIZE, INK, 0.5, 500))
+        # rows
         for n, row in enumerate(page.rows[page.top:page.top + ROWS]):
             i = page.top + n
-            y = ROW_Y + n * ROW_H
-            if i == page.sel:
-                box(X0 + 16, y - 4, X1 - 16, y + ROW_H - 10, SEL, "&H00&")
-            label, sub = fit(row.label + ("   ›" if row.opens else ""), row.sub)
-            text(X0 + 40, y + 6, label, 36, WHITE if row.act else GREY)
-            if sub:
-                text(X1 - 40, y + 10, sub, 28, GREY if i != page.sel else WHITE, an=9)
+            self._row(ev, row, ROW_Y + n * ROW_H, i == page.sel, accent)
+        # scroll bar
+        if len(page.rows) > ROWS:
+            top, bottom = ROW_Y, ROW_Y + ROWS * ROW_H - 8
+            ev.append(d.rrect(X1 - 18, top, X1 - 13, bottom, 2.5, INK, 0.12))
+            h = max(40, (bottom - top) * ROWS / len(page.rows))
+            y = top + (bottom - top - h) * page.top / max(1, len(page.rows) - ROWS)
+            ev.append(d.rrect(X1 - 18, y, X1 - 13, y + h, 2.5, INK, 0.55))
+        # key hints
         row = page.rows[page.sel] if page.rows and 0 <= page.sel < len(page.rows) else None
-        if row is not None and row.level:
-            hint = "◀ ▶ volume   OK mute   Menu / Back close"
-        else:
-            hint = "OK select   ◀ previous page   Menu / Back close" if len(self.pages) > 1 else "OK select   Menu / Back close"
-        text(X0 + 40, Y1 - 46, hint, 26, DIM)
+        x, y = tx, Y1 - 50
+        for key, what in self.hint(row):
+            kw = d.width(key, 19, 700) + 22
+            ev.append(d.rrect(x, y, x + kw, y + 32, 8, INK, 0.16))
+            ev.append(d.text(x + kw / 2, y + 16, key, 19, INK, 0.9, 700, an=5))
+            ev.append(d.text(x + kw + 10, y + 16, what, 22, INK, 0.55, 500, an=4))
+            x += kw + 10 + d.width(what, 22, 500) + 28
         return "\n".join(ev)
+
+    def _row(self, ev, row, y, selected, accent):
+        x0, x1 = X0 + 20, X1 - 30
+        mid = y + (ROW_H - 8) / 2
+        if selected:
+            ev.append(d.rrect(x0, y, x1, y + ROW_H - 8, 14, (0.96, 0.96, 0.97), 1))
+        ink = DARK if selected else INK
+        active = row.act is not None
+        right = x1 - 22
+        # right-hand side: control / value
+        sub = row.sub
+        if row.kind == "level" and row.vmax:
+            bw = 170
+            bx = right - bw
+            ev.append(d.rrect(bx, mid - 4, right, mid + 4, 4, ink, 0.18))
+            if row.value:
+                fw = max(8, bw * min(1.0, row.value / row.vmax))
+                ev.append(d.rrect(bx, mid - 4, bx + fw, mid + 4, 4, DARK if selected else accent, 0.85 if selected else 1))
+            right = bx - 18
+        elif row.kind == "toggle":
+            if row.key != "loudness":   # the switch says on / off; only Loudness names what "on" does
+                sub = ""
+            sw, sh = 60, 32
+            sx = right - sw
+            on = bool(row.value)
+            track = (accent if not selected else DARK) if on else ink
+            ev.append(d.rrect(sx, mid - sh / 2, right, mid + sh / 2, sh / 2, track, 0.9 if on else 0.22))
+            kx = right - sh / 2 if on else sx + sh / 2
+            ev.append(d.circle(kx, mid, sh / 2 - 4, d.WHITE, 1))
+            right = sx - 18
+        elif row.kind == "choice":
+            lo, hi = row.value > 0, row.value < (row.vmax or 0)
+            vw = d.width(sub, SUB_SIZE, 600)
+            ev.append(d.text(right, mid, "›", 34, ink, 0.8 if hi else 0.2, 600, an=6))
+            ev.append(d.text(right - 30, mid, sub, SUB_SIZE, ink, 0.9, 600, an=6))
+            ev.append(d.text(right - 30 - vw - 14, mid, "‹", 34, ink, 0.8 if lo else 0.2, 600, an=6))
+            sub = ""
+            right -= 30 + vw + 40
+        elif row.kind == "opens":
+            ev.append(d.text(right, mid, "›", 36, ink, 0.6, 600, an=6))
+            right -= 30
+        label_room = right - (x0 + 24)
+        if sub:
+            sub_w = min(d.width(sub, SUB_SIZE, 500), max(90, label_room * (0.25 if d.width(row.label, LABEL_SIZE, 500)
+                                                                               > label_room * 0.6 else 0.6)))
+            text_sub = d.ellipsize(sub, SUB_SIZE, sub_w, 500)
+            ev.append(d.text(right, mid, text_sub, SUB_SIZE, ink, 0.6 if not selected else 0.7, 500, an=6))
+            label_room -= d.width(text_sub, SUB_SIZE, 500) + 24
+        weight = 600 if selected else 500
+        label = d.ellipsize(row.label, LABEL_SIZE, max(60, label_room), weight)
+        ev.append(d.text(x0 + 24, mid, label, LABEL_SIZE, ink, (1 if selected else 0.92) if active else 0.45, weight, an=4))

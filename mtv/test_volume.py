@@ -65,10 +65,14 @@ async def main():
         texts.append(text)
     M.osd = osd
 
-    # ---- HDMI sound: the CH keys stay next / previous
+    # ---- HDMI sound: the CH keys are mpv's volume (0.12.0; they were next / previous before)
     await M.on_key(p, "ch_up", False)
+    check(p.volume == 65 and mpv.sets("volume")[-1] == 65 and not cmds(sent) and texts[-1] == "Volume 65 %",
+          f"HDMI: CH+ = volume +5 % (65), no queue command, the screen says so ({texts[-1]})")
     await M.on_key(p, "ch_down", False)
-    check(cmds(sent) == ["next", "prev"] and not volumes(sent) and p.volume == 60, "HDMI: CH+ / CH- = next / previous, volume untouched")
+    await M.on_key(p, "ch_down", False)
+    check(p.volume == 55 and not cmds(sent) and not volumes(sent), "HDMI: CH- x2 = 55 %, nothing sent to the headphones")
+    await M.on_key(p, "ch_up", False)
 
     # ---- the menu's Volume row (HDMI): mpv's volume
     await p.menu.show()
@@ -77,7 +81,9 @@ async def main():
     vrow = p.menu.page.rows[2]
     check(vrow.sub == "60 %" and vrow.level, "the row shows 60 % and is a level row")
     p.menu.page.sel = 2
-    check("◀ ▶ volume" in p.menu.render() and "OK mute" in p.menu.render(), "on the row the hint says: left/right volume, OK mute")
+    drawn = p.menu.render()
+    check("}◀ ▶" in drawn and "}adjust" in drawn and "}OK" in drawn and "}mute" in drawn,
+          "on the row the hint chips say: ◀ ▶ adjust, OK mute")
     await M.on_key(p, "right", False)
     check(p.volume == 65 and mpv.sets("volume")[-1] == 65 and p.menu.page.rows[2].sub == "65 %", "Right: +5 %, mpv volume set, the row follows")
     check(p.menu.open and not cmds(sent)[2:], "the menu stays open and no queue command is sent")
@@ -155,11 +161,12 @@ async def main():
     check(not volumes(sent), "menu: nothing sent while they are away")
     p.menu.close()
 
-    # ---- back to HDMI: the CH keys are next / previous again
+    # ---- back to HDMI: the CH keys are mpv's volume again
     p.link.on = False
     sent.clear()
+    before = p.volume
     await M.on_key(p, "ch_up", False)
-    check(cmds(sent) == ["next"], "HDMI again: CH+ = next")
+    check(not cmds(sent) and not volumes(sent) and p.volume == min(100, before + 5), "HDMI again: CH+ = mpv volume, no 'next'")
 
     # ---- the screensaver: a volume key only wakes it
     p.link.on = True

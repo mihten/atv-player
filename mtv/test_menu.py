@@ -54,7 +54,9 @@ async def main():
     labels = [r.label for r in m.page.rows]
     check(labels == ["Pause", "Stop", "Queue", "Playlists", "For you", "Music videos", "Shuffle", "Repeat"],
           f"root rows ({labels})")
-    check(m.page.rows[0].sub == "Artist 1 – Song 1" and m.page.rows[2].sub == "3 items", "root subs: current, queue size")
+    check(m.page.rows[0].sub == "" and m.page.rows[2].sub == "3 items", "root subs: none on Play (title in the header), queue size")
+    drawn = m.render()
+    check("}Song 1" in drawn and "}Artist 1" in drawn and "NOW PLAYING" in drawn, "header: now playing, title, artist")
 
     # ---- Play/Pause row: toggle and close
     await m.key("ok")
@@ -126,16 +128,18 @@ async def main():
     await m.key("ok")
     page = m.page
     await m.key("ch_down")
-    check(page.sel == 12 and page.top == 1, f"CH- pages down 12 rows, window follows (sel {page.sel}, top {page.top})")
+    check(page.sel == Mn.ROWS and page.top == 1, f"CH- pages down one screen, window follows (sel {page.sel}, top {page.top})")
     await m.key("ch_down")
     await m.key("ch_down")
     check(page.sel == 31 and page.top == 32 - Mn.ROWS, "paging stops at the last row")
     await m.key("ch_up")
-    check(page.sel == 19 and page.top == 19, "CH+ pages up")
+    check(page.sel == 31 - Mn.ROWS and page.top == 31 - Mn.ROWS, "CH+ pages up")
     ass = m.render()
-    check(f"20 / 32" in ass and "Playlists › TV Player" not in ass and "TV Player › Playlists" in ass,
-          "render: position counter, breadcrumb")
-    check(ass.count("\\p1") == 2, "render: panel + one selection box")
+    check(f"{32 - Mn.ROWS} / 32" in ass and "TV PLAYER  ›  PLAYLISTS" in ass and "}Talent" in ass,
+          "render: position counter, breadcrumb (eyebrow), page title")
+    pill = Mn.d.bgr((0.96, 0.96, 0.97))
+    check(ass.count(pill) == 1, "render: exactly one selection pill")
+    check(ass.count("\\p1") >= 6, "render: card, shadow, pill, scroll bar, key chips are shapes")
 
     # ---- back / close
     await m.key("left")
@@ -157,7 +161,7 @@ async def main():
     await m.key("back")
     check(not m.open, "Back closes from any depth")
     await m.show()
-    check("Menu / Back close" in m.render(), "the hint names Menu / Back")
+    check("}Menu" in m.render() and "}close" in m.render(), "the key hints name Menu: close")
 
     # ---- For you: start_id; empty list; music videos
     await m.show()
@@ -193,16 +197,16 @@ async def main():
 
     # ---- escaping
     check(Mn.esc("a{\\b}c\nd") == "a\\{\\\u200bb\\}c d", "ASS escaping of braces, backslash, newline")
-    check(Mn.clip("x" * 70).endswith("…") and len(Mn.clip("x" * 70)) == Mn.LABEL_MAX, "long labels clipped")
+    check(Mn.clip("x" * 70).endswith("…") and len(Mn.clip("x" * 70)) == 54, "long playlist names clipped")
     long = Mn.Menu(fetch, sent.append, lambda: state)
-    long.pages = [Mn.Page("T", [Mn.Row("y" * 80, "12:34", act={"cmd": "x"}), Mn.Row("z" * 80, act={"cmd": "x"})])]
+    long.pages = [Mn.Page("T", [Mn.Row("y" * 80, "12:34", act={"cmd": "x"}), Mn.Row("z" * 80, act={"cmd": "x"}),
+                               Mn.Row("Play", "x" * 90, act={"cmd": "x"})])]
     drawn = long.render()
-    check(Mn.fit("Play", "Dua Lipa – Training Season (Royal Albert Hall live 2026 version)")[0] == "Play"
-          and Mn.fit("Play", "x" * 70)[1].endswith("…"), "short label + long sub: label whole, sub clipped")
-    lab, sub = Mn.fit("Queue", "31 items")
-    check((lab, sub) == ("Queue", "31 items"), "both fit: unchanged")
-    check("y" * (Mn.LABEL_MAX - 10) in drawn and "y" * (Mn.LABEL_MAX - 9) not in drawn and "z" * (Mn.LABEL_MAX - 1) in drawn,
-          "a label next to a duration is clipped shorter than one without")
+    import re
+    run = lambda ch: max((len(m_) for m_ in re.findall(ch + "+", drawn)), default=0)
+    check("y" * 10 in drawn and "…" in drawn and run("y") < run("z") < 80,
+          f"labels are cut to the row width, shorter next to a duration (y {run('y')} < z {run('z')})")
+    check("}12:34" in drawn and run("x") < 90 and "}Play" in drawn, "a duration stays whole; a long value gives way, the label stays")
     check("{Spotovi}" not in Mn.Menu(fetch, sent.append, lambda: state).render(), "closed menu renders nothing")
     m2 = Mn.Menu(fetch, sent.append, lambda: state)
     await m2.show()

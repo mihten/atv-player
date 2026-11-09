@@ -29,11 +29,12 @@ KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("down", "Down", "menu down; previous video", False),
         ("left", "Left", "menu back; back 10 seconds", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
-        ("pageup", "Next", "next video, volume up on headphones; page down in the menu", True),
-        ("pagedown", "Previous", "previous video, volume down on headphones; page up in the menu", True),
+        ("pageup", "Volume up", "volume up (TV or headphones); page down in the menu", True),
+        ("pagedown", "Volume down", "volume down (TV or headphones); page up in the menu", True),
         ("escape", "Back", "closes the menu", True),
         ("F1", "Stop", "stops playback; the screen goes black", True)]
 FUNCTIONS = [k[1] for k in KEYS]
+RENAMED = {"Next": "Volume up", "Previous": "Volume down"}   # 0.12.0: CH+ / CH- became the volume keys (same buttons)
 LABEL_MAX = 30            # characters of a button name typed on the phone
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,29}$")
 TIMEOUT = 40.0            # s to wait for one press
@@ -193,7 +194,10 @@ class Remotes:
                 val = json.load(f)
         except (OSError, ValueError):
             return {}
-        return {k: v for k, v in val.items() if k in FUNCTIONS and isinstance(v, str) and v} if isinstance(val, dict) else {}
+        if not isinstance(val, dict):
+            return {}
+        val = {RENAMED.get(k, k): v for k, v in val.items()}
+        return {k: v for k, v in val.items() if k in FUNCTIONS and isinstance(v, str) and v}
 
     def details(self):
         """Per profile: the functions that have a button, and the names given to them (web remote overview)."""
