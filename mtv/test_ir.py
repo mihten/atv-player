@@ -289,7 +289,7 @@ def evdev():
     check([g[0] for g in got] == ["ch_up"], "held PageUp (CH+): acts once")
     got.clear()
     k.feed(ev(0, 0, etype=0) + ev(59, 1) + ev(59, 0) + ev(61, 1) + ev(999, 1) + ev(999, 0))
-    check([g[0] for g in got] == ["red", "yellow"], "sync events and unmapped codes ignored; F1 = red, F3 = yellow")
+    check([g[0] for g in got] == ["stop", "yellow"], "sync events and unmapped codes ignored; F1 = stop, F3 = yellow")
     got.clear()
     data = ev(108, 1) + ev(108, 0)
     for i in range(0, len(data), 5):  # split mid-event

@@ -211,7 +211,7 @@ async def main():
     await p2.attach(m2)
     outs = [m for m in sent2 if m.get("type") == "output"]
     check(outs and outs[-1] == {"type": "output", "name": "TV Player", "screen": "3840x2160 @ 60 Hz",
-                                "device": "alsa/hdmi", "volume": 60, "muted": False, "version": M.VERSION},
+                                "device": "alsa/hdmi", "volume": 60, "muted": False, "version": M.VERSION, "sound": "hdmi"},
           f"attach reports the output ({outs[-1:] })")
     await p2.handle({"type": "volume", "percent": 35.4, "muted": False})
     check(m2.sets("volume")[-1] == 35 and m2.sets("mute")[-1] is False, "volume message -> mpv volume 35")

@@ -246,6 +246,9 @@ textarea.set-in { min-height: 96px; resize: vertical; font-family: ui-monospace,
 .set-btns .grow { flex: 1; }
 .set-err { color: #ff8a8a; font-size: 12.5px; }
 .set-hint { color: var(--ink3); font-size: 12px; }
+.set-hint.set-bad { color: #ff8a8a; }
+.set-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.set-seg .pill { justify-content: center; }
 .set-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; font-size: 13px; color: var(--ink2); padding: 2px 2px 4px; }
 .set-kv b { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
 .set-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink3); flex: none; }
@@ -565,6 +568,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <button class="tb sm" id="shuf" title="Shuffle"></button>
       <button class="tb" data-cmd="prev" id="prevBtn" title="Previous"></button>
       <button class="tb play" id="pp" data-cmd="toggle" title="Play / pause"></button>
+      <button class="tb" data-cmd="stop" id="stopBtn" title="Stop: the TV Player's screen goes black, Play starts the item again" style="display:none"></button>
       <button class="tb" data-cmd="next" id="nextBtn" title="Next"></button>
       <button class="tb sm" id="rep" title="Repeat"></button>
       <button class="tb sm" id="shot" title="Screenshot of the Apple TV screen"></button>
@@ -640,6 +644,7 @@ const ICONS = {
   heart: F(HEART), heartO: S(HEART, 2),
   speaker: F("M4 9.2h3.4L12 5.1v13.8l-4.6-4.1H4z") + S("M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.7 7.7 0 0 1 0 11", 1.9),
   speakerX: F("M4 9.2h3.4L12 5.1v13.8l-4.6-4.1H4z") + S("M15.5 9.5l5 5M20.5 9.5l-5 5", 1.9),
+  stop: F("M7.5 6h9a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 16.5v-9A1.5 1.5 0 0 1 7.5 6z"),
 };
 /** Swap a button's icon only when it changes. */
 const setIcon = (el, name) => { if (el.dataset.icon !== name) { el.dataset.icon = name; el.innerHTML = ic(name); } };
@@ -862,7 +867,11 @@ function versionsSheet() {
 const vol = { dragUntil: 0, last: 0, timer: null, pending: null };
 function volOut(s = st) {
   if (!s) return null;
-  if (s.session === "mtv") return s.output && s.output.volume != null ? s.output : null;  // the TV Player's own volume
+  if (s.session === "mtv") {
+    const k = s.sink;   // its sound goes to the headphones: their own volume (none while they are away); else its HDMI volume
+    if (k && k.route) return k.output && k.output.ready ? k.output : null;
+    return s.output && s.output.volume != null ? s.output : null;
+  }
   return s.sink && s.sink.route && s.sink.output && s.sink.output.ready ? s.sink.output : null;
 }
 function drawVolume(s) {
@@ -870,7 +879,7 @@ function drawVolume(s) {
   const show = !!(out && out.volume != null);
   $("vol").hidden = !show;
   if (!show) return;
-  $("vol").title = s.session === "mtv" ? "TV Player volume (the TV's own volume is separate)" : "atv-audio volume (the headphones' own volume)";
+  $("vol").title = s.session === "mtv" && !(s.sink && s.sink.route) ? "TV Player volume (the TV's own volume is separate)" : "atv-audio volume (the headphones' own volume)";
   $("vol").classList.toggle("muted", !!out.muted);
   setIcon($("volMute"), out.muted ? "speakerX" : "speaker");
   $("volMute").classList.toggle("on", !out.muted);
@@ -1035,7 +1044,7 @@ function codecLabel(c) {
 function boxStatus(s) {
   if (!s.players) return "Web Player not running";
   const k = s.sink || {}, o = k.output;
-  if (k.in_use_by_tv) return "Web Player · sound in use by the Apple TV";
+  if (k.in_use_by_tv) return `Web Player · sound in use by the ${k.in_use_by || "Apple TV"}`;
   if (!o) return "Web Player · no sound output";
   if (!o.ready) return `Web Player · ${o.name || "output"} not connected`;
   return `Web Player · ${o.name}${o.codec ? ` · ${codecLabel(o.codec)}` : ""}`;
@@ -1069,7 +1078,9 @@ function follow() {
 }
 
 /** 📷 takes a screenshot of the Apple TV screen: only meaningful on the Apple TV queue. */
-function showShot(which) { $("shot").style.display = which === "tv" ? "" : "none"; }
+function showShot(which) { $("shot").style.display = which === "tv" ? "" : "none"; showStop(which); }
+/** Stop is the TV Player's: its screen goes black (the other players only pause). */
+function showStop(which) { $("stopBtn").style.display = which === "mtv" ? "" : "none"; }
 
 function switchSession(next) {
   session = next;
@@ -1681,7 +1692,7 @@ async function audioSheet() {
   const draw = async () => {
     if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-audio-sheet]")) { clearInterval(audioPoll); audioPoll = null; return; }
     let s, m; try { s = await (await fetch("/api/state?session=box")).json(); m = await (await fetch("/api/state?session=mtv")).json(); } catch { return; }
-    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks, m.players, m.output, rmtOpen]);
+    const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks, m.players, m.output, m.sink, rmtOpen, (st && st.session) || session]);
     if (key === lastKey) return;
     lastKey = key;
     const outs = (a.outputs || []).map((o) => `<option value="${esc(o.key)}"${o.default ? " selected" : ""}>${esc(o.name)}${o.codec ? ` (${esc(codecLabel(o.codec))})` : ""}</option>`).join("");
@@ -1696,23 +1707,38 @@ async function audioSheet() {
         `<button class="ib" data-a="forget" data-addr="${esc(d.address)}" title="Forget">${ic("trash")}</button>`
         : `<button class="pill primary" data-a="pair" data-addr="${esc(d.address)}">Pair</button>`) + `</div>`).join("");
     const progs = k.sinks || [];
-    const progRows = progs.length > 1 ? sec("Sound goes to") + progs.map((p) => `<div class="set-row"><span class="set-dot${p.ready ? " on" : ""}"></span>` +
+    const progRows = progs.length > 1 ? sec("Headphone adapter") + progs.map((p) => `<div class="set-row"><span class="set-dot${p.ready ? " on" : ""}"></span>` +
       `<div class="set-main"><div class="set-t">${esc(p.name)}${p.codec ? ` · ${esc(codecLabel(p.codec))}` : ""}</div><div class="set-s">${esc(p.id)}</div></div>` +
       (p.active ? `<span class="set-s">In use</span>` : `<button class="pill" data-a="use" data-sink="${esc(p.id)}">Use</button>`) + `</div>`).join("") +
       `<div class="set-btns"><button class="pill" data-a="abtest">${ic("speaker")} Blind test</button><span class="grow"></span></div>` : "";
-    const mo = m.output || {};
-    const tvp = sec("TV Player") + `<div class="set-row"><span class="set-dot${m.players ? " on" : ""}"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div>` +
-      `<div class="set-s">${m.players ? [mo.screen, mo.volume != null ? `volume ${mo.volume} %${mo.muted ? " (muted)" : ""}` : ""].filter(Boolean).map(esc).join(" · ") || "Running" : "Not running"}</div></div>` +
-      `<span class="set-s">${m.players ? "Running" : ""}</span></div>` +
-      (m.players ? `<div class="set-hint">Sound goes out over HDMI. The volume bar appears on the TV Player's page; the TV's own volume is separate.</div>` : "") + remoteSection(m);
-    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">Audio</div>` + tvp + sec("atv-audio") + progRows +
+    // which page this sheet belongs to: the queue the page controls (Apple TV, iPhone, Web Player, TV Player)
+    const sess = (st && st.session) || session;
+    const sessName = ((sessionList || []).find((x) => x.session === sess) || {}).name || "";
+    const mo = m.output || {}, mk = m.sink || {};
+    const hpOn = mo.sound === "headphones", hpReady = !!(mk.output && mk.output.ready);
+    const seg = (out, label, on) => `<button class="pill${on ? " primary" : ""}" data-a="mtv-sound" data-out="${out}">${label}</button>`;
+    const tvp = !m.players ? sec("TV Player") + `<div class="set-row"><span class="set-dot"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div><div class="set-s">Not running</div></div></div>` :
+      sec("TV Player") + `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div>` +
+      `<div class="set-s">${esc(mo.screen || "Running")}</div></div></div>` +
+      sec("Sound goes to") + `<div class="set-seg">${seg("hdmi", "HDMI · TV or soundbar", !hpOn)}${seg("headphones", "Headphones", hpOn)}</div>` +
+      `<div class="set-hint${hpOn && !hpReady ? " set-bad" : ""}">${hpOn ? (hpReady ? `Playing on ${esc(mk.output.name || "the headphones")}${mk.output.codec ? ` · ${esc(codecLabel(mk.output.codec))}` : ""}. The volume bar is the headphones' own volume.`
+        : "The headphones are not connected: playback pauses with a notice. Connect them below.") : "The volume bar is the TV Player's own volume; the TV's or the soundbar's volume is separate."}</div>` +
+      remoteSection(m);
+    const intro = sess === "mtv" ? tvp
+      : sess === "phone" ? `<div class="set-hint">The iPhone plays on the phone itself (or CarPlay): nothing to set here.</div>`
+      : sess === "tv" ? `<div class="set-hint">The Apple TV chooses its sound itself: Settings › Sound › Sound output. With atv-audio it plays on the headphones below.</div>`
+      : `<div class="set-hint">The Web Player always plays on the headphones below.</div>`;
+    const heads = sess === "phone" ? "" : sec("Headphones · atv-audio") +
       (!k.connected ? `<div class="set-hint">${progs.length ? "Switching…" : "atv-audio is not running."}</div>` :
-        (a.can_outputs ? sec("Sound output") + `<select class="pill" id="aOut" style="max-width:none" aria-label="Sound output">${outs}</select>` : "") +
-        sec("Headphones") + (dg ? dongle : a.can_bluetooth ? (devs || `<div class="set-hint">No headphones paired yet.</div>`) +
+        `<div class="set-hint">${dg ? "Headphones on the atv-audio server's USB dongle." : "Bluetooth headphones paired with the atv-audio server (its own adapter, not the TV Player's)."} The Apple TV, the Web Player and the TV Player play on them when their sound is set to atv-audio.</div>` +
+        progRows +
+        (dg ? dongle : a.can_bluetooth ? (devs || `<div class="set-hint">No headphones paired yet.</div>`) +
           `<div class="set-btns"><button class="pill" data-a="scan"${a.scanning ? " disabled" : ""}>${a.scanning ? "Looking…" : "Find headphones"}</button><span class="grow"></span></div>` +
-          `<div class="set-hint">${esc(a.busy || (a.scanning ? "Put the headphones in pairing mode." : ""))}</div>`
+          `<div class="set-hint">${esc(a.busy || (a.scanning ? "Put the headphones in pairing mode." : "New headphones: put them in pairing mode, then Find headphones."))}</div>`
           : `<div class="set-hint">Headphone control is not available on this atv-audio.</div>`) +
-        (a.error ? `<div class="set-err">${esc(a.error)}</div>` : "")) +
+        ((a.can_outputs && (a.outputs || []).length > 1) ? sec("Sound output") + `<select class="pill" id="aOut" style="max-width:none" aria-label="Sound output">${outs}</select>` : "") +
+        (a.error ? `<div class="set-err">${esc(a.error)}</div>` : ""));
+    $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">Audio${sessName ? ` · ${esc(sessName)}` : ""}</div>` + intro + heads +
       `<button class="opt cancel" data-a="back">Back</button>`;
     const sel = $("aOut"); if (sel) sel.onchange = () => audioCmd({ op: "set_output", output: sel.value });
   };
@@ -1736,6 +1762,10 @@ async function audioSheet() {
       if (op === "learn") { nn = (prompt("Name for the new remote (letters, digits, space, - _):", "") || "").trim(); if (!nn) return; }
       b.disabled = true;
       return sapi("POST", "/api/mtv-remote", noName ? { op } : { op, name: nn }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
+    }
+    if (b.dataset.a === "mtv-sound") {   // the TV Player's sound: HDMI or the atv-audio headphones
+      b.disabled = true;
+      return sapi("POST", "/api/mtv-sound", { output: b.dataset.out }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
     }
     if (b.dataset.a === "use") { b.disabled = true; toast("Moving the headphones…"); return audioCmd({ op: "set_sink", sink: b.dataset.sink }); }
     if (b.dataset.a === "forget" && !confirm("Forget these headphones? They have to be paired again.")) return;
@@ -2122,7 +2152,7 @@ $("shot").onclick = async () => {
 
 // static icons
 $("prevBtn").innerHTML = ic("prev"); $("nextBtn").innerHTML = ic("next"); $("pp").innerHTML = ic("play"); $("miniPP").innerHTML = ic("play"); $("miniNext").innerHTML = ic("next");
-$("shuf").innerHTML = ic("shuffle"); $("rep").innerHTML = ic("repeat"); $("shot").innerHTML = ic("camera"); $("lookBtn").innerHTML = ic("look"); $("rescan").innerHTML = rescanLabel(false);
+$("shuf").innerHTML = ic("shuffle"); $("rep").innerHTML = ic("repeat"); $("shot").innerHTML = ic("camera"); $("stopBtn").innerHTML = ic("stop"); $("lookBtn").innerHTML = ic("look"); $("rescan").innerHTML = rescanLabel(false);
 document.querySelector(".shufI").outerHTML = ic("shuffle"); document.querySelector(".noteI").outerHTML = ic("note"); document.querySelector(".filmI").outerHTML = ic("film");
 $("artPh").innerHTML = ic("note");
 // phone: mini player at the bottom once the big player card has scrolled away

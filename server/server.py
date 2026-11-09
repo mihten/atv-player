@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.25.1"
+VERSION = "0.26.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -309,6 +309,8 @@ class Session:
         # the next Play
         self.sound = dict(box_sound.DEFAULT)
         self.notice = None
+        # a Stop (TV Player): the player holds nothing; the next Play loads the current item again, from the start
+        self.stopped = False
 
     @property
     def players(self):
@@ -316,8 +318,9 @@ class Session:
 
     @property
     def listeners(self):
-        """Players plus the session's sink: everything that follows load/control/state."""
-        sink = SINKS.get(self.kind)
+        """Players plus the session's sink: everything that follows load/control/state. The sink follows ONE session:
+        the Apple TV's, or the TV Player's while its sound is routed to the headphones (sink_ws)."""
+        sink = sink_ws(self.kind)
         return self.players + ([sink] if sink is not None else [])
 
     @property
@@ -341,7 +344,8 @@ class Session:
             "current": full(cur) if cur else None, "upcoming": upcoming,
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
             "server_name": server_name(), "disk": DISK,
-            "sink": sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box" else None,
+            "sink": (sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box"
+                     else mtv_sink_state() if self.kind == "mtv" else None),
             **(box_extra(self) if self.kind in SERVER_SOUND else {}),
             **({"output": mtv_output(self)} if self.kind == "mtv" else {}),
         }
@@ -793,7 +797,7 @@ async def broadcast_state(s):
     for ws in s.listeners + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
         await send(ws, msg)
     prefetch_copies(s)
-    if s.kind == "tv" and tv_owns_output():
+    if s is sink_owner() and tv_owns_output():
         await box_yield_to_tv()
     # Remotes watching ANOTHER queue only get who is connected/playing, so a web page in "Auto" mode
     # can follow whichever app starts playing.
@@ -881,23 +885,58 @@ def clean_audio_info(data):
 # `button` messages) act on the session that owns the output: the TV while its sound goes to atv-audio, else the box.
 
 IN_USE_NOTICE = "atv-audio is in use by the Apple TV: paused"
+IN_USE_NOTICE_MTV = "atv-audio is in use by the TV Player: paused"
 BOX_CURVES = {v: box_sound.curve(v) for v, _ in box_sound.choices() if v not in ("off", "custom")}  # editor: start from
 
 
+def mtv_routed():
+    """The TV Player's sound goes to the atv-audio headphones (its last route message) and its player is connected."""
+    return bool((SINK_RELAY.get("mtv", {}).get("route") or {}).get("sink")) and bool(SESSIONS["mtv"].players)
+
+
+def sink_owner():
+    """The session that feeds the sink's TV input. The TV Player while its sound is routed there (chosen on purpose in
+    Settings > Audio), else the Apple TV's session: one output, one source."""
+    return SESSIONS["mtv"] if mtv_routed() else SESSIONS["tv"]
+
+
+def sink_ws(kind):
+    """The sink that follows session `kind` (None: it does not follow that session now)."""
+    if kind == "mtv":
+        return SINKS.get("tv") if mtv_routed() else None
+    if kind == "tv" and mtv_routed():
+        return None
+    return SINKS.get(kind)
+
+
 def tv_routed():
-    return bool((SINK_RELAY.get("tv", {}).get("route") or {}).get("sink")) and bool(SESSIONS["tv"].players)
+    """The sink's TV input is in use: the owning session's sound goes to atv-audio."""
+    s = sink_owner()
+    return bool((SINK_RELAY.get(s.kind, {}).get("route") or {}).get("sink")) and bool(s.players)
 
 
 def tv_owns_output():
-    """The TV plays (or is starting) with its sound on atv-audio."""
-    tv = SESSIONS["tv"]
-    return tv_routed() and (tv.playing or tv.want_play)
+    """The Apple TV or the TV Player plays (or is starting) with its sound on atv-audio."""
+    s = sink_owner()
+    return tv_routed() and (s.playing or s.want_play)
+
+
+def in_use_notice():
+    return IN_USE_NOTICE if sink_owner().kind == "tv" else IN_USE_NOTICE_MTV
 
 
 def box_sink_state():
     """The box always plays through the sink: its status in the box state (route = it is the box's output)."""
     st = sink_state("tv")
-    return dict(st, route=st["connected"], in_use_by_tv=tv_owns_output())
+    return dict(st, route=st["connected"], in_use_by_tv=tv_owns_output(), in_use_by=KIND_NAMES[sink_owner().kind])
+
+
+def mtv_sink_state():
+    """The TV Player's view of the headphones: the sink and its output; route = its sound goes there. None: no sink."""
+    if SINKS.get("tv") is None:
+        return None
+    st = sink_state("tv")
+    return {"connected": True, "name": st["name"], "output": st["output"], "route": mtv_routed()}
 
 
 def box_extra(s):
@@ -912,6 +951,9 @@ async def box_send_sound(s):
         msg = box_sound.message(s.sound, s.current)
         for ws in s.players:
             await send(ws, msg)
+        sink = SINKS.get("tv") if s.kind == "mtv" and mtv_routed() else None
+        if sink is not None:   # the headphones' equalizer / gain / limiter: the sink applies them
+            await send(sink, msg)
 
 
 async def box_notice(s, text):
@@ -926,16 +968,16 @@ async def box_yield_to_tv():
     if box.want_play or box.playing:
         box.want_play = box.playing = False
         await to_players(box, {"type": "control", "action": "pause"})
-        await box_notice(box, IN_USE_NOTICE)
+        await box_notice(box, in_use_notice())
 
 
 def owner_session(asked=None):
     """Session the headphone buttons act on: the sink names the one that holds its output; checked here."""
     if asked == "tv" and tv_routed():
-        return SESSIONS["tv"]
+        return sink_owner()
     if asked == "box" and SESSIONS["box"].players:
         return SESSIONS["box"]
-    return SESSIONS["tv"] if tv_routed() else SESSIONS["box"]
+    return sink_owner() if tv_routed() else SESSIONS["box"]
 
 
 def live_position(s):
@@ -977,7 +1019,8 @@ def clean_mtv_output(data):
     except (TypeError, ValueError, AttributeError, OverflowError):
         volume = None
     out = {"name": s(data.get("name"), 60), "screen": s(data.get("screen"), 60), "device": s(data.get("device"), 120),
-           "volume": volume, "muted": bool(data.get("muted")), "version": s(data.get("version"), 20)}
+           "volume": volume, "muted": bool(data.get("muted")), "version": s(data.get("version"), 20),
+           "sound": "headphones" if data.get("sound") == "headphones" else "hdmi"}
     remote = clean_mtv_remote(data.get("remote"))
     if remote is not None:  # only a player whose receiver can learn buttons (Flirc) reports it
         out["remote"] = remote
@@ -1055,6 +1098,56 @@ def clean_output(out):
     return clean
 
 
+SINK_CLOCK_STATES = ("playing", "paused", "stalled", "ended")
+
+
+def clean_mtv_sink_msg(data):
+    """route / lip_sync / clock from the TV Player's player, typed and bounded, or None."""
+    kind = data.get("type")
+    try:
+        if kind == "route":
+            return {"type": "route", "sink": bool(data.get("sink"))}
+        if kind == "lip_sync":
+            return {"type": "lip_sync", "ms": max(-200, min(400, int(data.get("ms"))))}
+        if kind == "clock" and data.get("state") in SINK_CLOCK_STATES:
+            return {"type": "clock", "item": int(data.get("item")), "position": max(0.0, float(data.get("position"))),
+                    "at": float(data.get("at")), "state": data["state"]}
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+async def mtv_to_sink(s, data):
+    """The TV Player's route / lip sync / clock for the atv-audio sink: kept for a later bind, sent only while the TV
+    Player owns the sink. A route that changes the owner replays the whole state of the new owner into the sink."""
+    msg = clean_mtv_sink_msg(data)
+    if msg is None:
+        return
+    before = sink_owner()
+    SINK_RELAY.setdefault("mtv", {})[msg["type"]] = msg
+    after = sink_owner()
+    if msg["type"] == "route" and before is not after:
+        log.info("sink: now follows %s", KIND_NAMES[after.kind])
+        await sink_bind(after)
+    elif after is s:
+        sink = SINKS.get("tv")
+        if sink is not None:
+            await send(sink, msg)
+    if msg["type"] == "route":
+        await broadcast_state(SESSIONS["tv"])
+        await broadcast_state(s)  # the web remote's volume slider follows the route
+        await broadcast_state(SESSIONS["box"])
+
+
+async def sink_volume(vol):
+    """The headphones' own volume (the sink's output): kept for a reconnecting sink, sent to it."""
+    msg = {"type": "volume", **vol}
+    SINK_RELAY.setdefault("tv", {})["volume"] = msg
+    sink = SINKS.get("tv")
+    if sink is not None:
+        await send(sink, msg)
+
+
 def pong(data):
     return {"type": "pong", "n": data.get("n"), "t": time.monotonic()}
 
@@ -1084,6 +1177,37 @@ async def sink_connected(s, ws, sid="atv-audio"):
         await broadcast_state(SESSIONS["box"])
 
 
+async def sink_bind(owner):
+    """Replay session `owner`'s state into the active sink, as on a fresh connect: the sink follows ONE session at a
+    time (the Apple TV's, or the TV Player's while its sound is routed to the headphones). Its state, the current item
+    (or none) and what the TV side keeps for it: route, sound, lip sync, clock; the volume belongs to the output."""
+    ws = SINKS.get("tv")
+    if ws is None:
+        return
+    await send(ws, {"type": "state", "state": owner.to_dict()})
+    if owner.current and file_exists(owner.current):
+        await send(ws, load_message(owner, owner.want_play, owner.position))
+    else:
+        await send(ws, {"type": "load", "item": None, "position": 0, "autoplay": False, "present": False})
+    relay = SINK_RELAY.get(owner.kind, {})
+    if "route" not in relay:
+        await send(ws, {"type": "route", "sink": False})
+    for kind in RELAY_TYPES:
+        if kind == "sound" and owner.kind == "mtv":  # the server makes the TV Player's sound message
+            await send(ws, box_sound.message(owner.sound, owner.current))
+            continue
+        last = SINK_RELAY.get("tv" if kind == "volume" else owner.kind, {}).get(kind)
+        if last is not None:
+            await send(ws, last)
+    PREFETCHED.pop(owner.kind, None)  # queue copies for what plays now
+
+
+async def mtv_follow_sink():
+    """The sink changed (connected, gone, its output ready / lost): the TV Player's state carries it to the player."""
+    if SESSIONS["mtv"].players:
+        await broadcast_state(SESSIONS["mtv"])
+
+
 async def sink_activate(s, sid):
     """Make the connected sink `sid` THE sink (SINKS["tv"]) and replay what it needs, as on a fresh connect."""
     ws = SINK_POOL[sid]["ws"]
@@ -1102,16 +1226,10 @@ async def sink_activate(s, sid):
     box_ws = BOX_OF.get(sid)
     if box_ws is not None and box_ws not in PLAYERS:
         await box_player_join(box_ws)
-    await send(ws, {"type": "state", "state": s.to_dict()})
-    if s.current and file_exists(s.current):
-        await send(ws, load_message(s, s.want_play, s.position))
-    for kind in RELAY_TYPES:
-        last = SINK_RELAY.get(s.kind, {}).get(kind)
-        if last is not None:
-            await send(ws, last)
-    PREFETCHED.pop(s.kind, None)  # queue copies for what plays now
+    await sink_bind(sink_owner())
     await send(ws, {"type": "standby", "on": False})  # active: it takes the headphones (after the replay above)
     await broadcast_state(s)
+    await mtv_follow_sink()
 
 
 async def sink_message(s, ws, data):
@@ -1148,8 +1266,9 @@ async def sink_message(s, ws, data):
             SINK_LOGGED[s.kind] = line
             log.info("sink[%s]: %s, output %s", s.kind, SINK_INFO[s.kind]["name"], line)
         await broadcast_state(s)
+        await mtv_follow_sink()
     elif kind == "ready":
-        await asyncio.gather(*(send(p, {"type": "sink_ready", "id": data.get("item")}) for p in s.players))
+        await asyncio.gather(*(send(p, {"type": "sink_ready", "id": data.get("item")}) for p in sink_owner().players))
     elif kind == "log":
         log.info("sink[%s]: %s", s.kind, str(data.get("message"))[:1500])
     elif kind == "button":
@@ -1167,7 +1286,7 @@ async def relay_to_sink(s, data):
     """TV player -> sink: remembered for the next sink connect, forwarded unchanged."""
     SINK_RELAY.setdefault(s.kind, {})[data["type"]] = data
     sink = SINKS.get(s.kind)
-    if sink is not None:
+    if sink is not None and s is sink_owner():  # while the TV Player owns the sink the Apple TV's messages only wait
         await send(sink, data)
 
 
@@ -1615,7 +1734,7 @@ async def copy_worker():
 def prefetch_copies(s):
     """While a sink is connected to the session (or the box player to its own): copies for the current item and
     the next 3 (queue order)."""
-    if (SINKS.get(s.kind) is None and not (s.kind == "box" and s.players)) or s.index < 0:
+    if (sink_ws(s.kind) is None and not (s.kind == "box" and s.players)) or s.index < 0:
         return
     ahead = tuple(s.queue[s.index:s.index + PREFETCH])
     if PREFETCHED.get(s.kind) == ahead:
@@ -1665,9 +1784,10 @@ async def start_current(s, position=0.0, autoplay=True, present=False, noted=Non
     if s.kind == "box" and autoplay:
         if tv_owns_output():
             autoplay = False
-            s.notice = {"text": IN_USE_NOTICE, "at": time.time()}
+            s.notice = {"text": in_use_notice(), "at": time.time()}
         else:
             s.notice = None
+    s.stopped = False
     s.position, s.position_at = position, time.time()
     s.duration = (s.current or {}).get("duration") or 0.0
     s.want_play = autoplay
@@ -1908,10 +2028,19 @@ async def handle_cmd(s, msg):
         if 0 <= idx < len(s.queue):
             s.index = idx
             await start_current(s, present=True)
+    elif cmd == "stop" and s.kind == "mtv":   # the picture goes away; the current item stays, Play starts it again
+        s.stopped = True
+        s.position, s.position_at = 0.0, time.time()
+        s.notice = None
+        s.save()
+        await stop_playback(s)
     elif cmd in ("toggle", "play", "pause"):
         if cmd == "play" or (cmd == "toggle" and not s.playing):
             if s.kind == "box" and tv_owns_output():
-                await box_notice(s, IN_USE_NOTICE)
+                await box_notice(s, in_use_notice())
+                return
+            if s.stopped and s.current is not None:  # after a Stop the player holds nothing: load it again, from 0:00
+                await start_current(s)
                 return
             if s.kind in SERVER_SOUND:
                 s.notice = None
@@ -2023,17 +2152,22 @@ async def on_message(s, data, role, ws=None):
         await handle_cmd(s, data)
     elif kind == "ping" and ws is not None:
         await send(ws, pong(data))
-    elif kind == "volume" and role == "remote" and s.kind == "mtv":  # web remote: the TV Player's own volume
+    elif kind == "volume" and role == "remote" and s.kind == "mtv":  # web remote: the TV Player's volume
         vol = clean_volume(data)
         if vol is not None:
-            await to_players(s, {"type": "volume", **vol})
+            if mtv_routed():  # its sound is on the headphones: their own volume (the sink's output)
+                await sink_volume(vol)
+            else:
+                await to_players(s, {"type": "volume", **vol})
+    elif role == "player" and s.kind == "mtv" and kind in ("route", "lip_sync", "clock"):
+        await mtv_to_sink(s, data)
     elif role == "player" and kind == "output" and s.kind == "mtv":  # screen, sound device, volume as it is now
         MTV_OUT[ws] = clean_mtv_output(data)
         await broadcast_state(s)
     elif kind == "volume" and role in ("player", "remote") and s.kind in ("tv", "box"):  # TV quick panel, web remote
         vol = clean_volume(data)
         if vol is not None:
-            await relay_to_sink(SESSIONS["tv"], {"type": "volume", **vol})  # one output: the sink of both
+            await sink_volume(vol)  # one output: the sink of both
     elif role == "player" and kind == "notice" and s.kind in SERVER_SOUND:  # e.g. the headphones went away: paused
         s.want_play = False
         await box_notice(s, str(data.get("text") or "")[:200])
@@ -2159,6 +2293,7 @@ async def ws_handler(request):
                 PREFETCHED.pop(s.kind, None)
             await broadcast_state(s)
             await broadcast_state(SESSIONS["box"])
+            await mtv_follow_sink()
         elif role == "player":
             bsid = BOX_SINK.pop(ws, None)
             if bsid is not None and BOX_OF.get(bsid) is ws:
@@ -2173,6 +2308,11 @@ async def ws_handler(request):
                 s.save()
                 if s.kind == "tv":  # the TV plays its own sound again: silence the sink now, and on its next connect
                     await relay_to_sink(s, {"type": "route", "sink": False})
+                if s.kind == "mtv":  # the TV Player is gone: its headphones route with it, the sink follows the TV again
+                    was = (SINK_RELAY.get("mtv", {}).get("route") or {}).get("sink")
+                    SINK_RELAY.pop("mtv", None)
+                    if was:
+                        await sink_bind(sink_owner())
             await broadcast_all()
         else:
             REMOTES.pop(ws, None)
@@ -3604,6 +3744,27 @@ async def api_mtv_remote(request):
     return web.json_response({"ok": True})
 
 
+async def api_mtv_sound(request):
+    """Web remote -> the TV Player: where its sound goes, `hdmi` or the atv-audio `headphones`. The player keeps the
+    choice, mutes mpv and routes the sound (route / clock messages); it answers through state.output.sound."""
+    need_admin(request)
+    body = await _json_body(request)
+    mode = body.get("output")
+    if mode not in ("hdmi", "headphones"):
+        raise web.HTTPBadRequest(text="output must be hdmi or headphones")
+    s = SESSIONS["mtv"]
+    if not s.players:
+        raise web.HTTPServiceUnavailable(text="the TV Player is not running")
+    tv = SESSIONS["tv"]
+    tv_on_sink = bool((SINK_RELAY.get("tv", {}).get("route") or {}).get("sink")) and bool(tv.players)
+    if mode == "headphones" and tv_on_sink and (tv.playing or tv.want_play):
+        raise web.HTTPConflict(text="atv-audio is in use by the Apple TV")
+    log.info("tv player sound: %s (web remote)", mode)
+    for ws in s.players:
+        await send(ws, {"type": "sound_out", "mode": mode})
+    return web.json_response({"ok": True})
+
+
 def advertised_ip():
     """Address the apps should use: ATV_ADVERTISE_IP, else the source address of the default route
     (UDP connect sends no packet)."""
@@ -3715,6 +3876,7 @@ def make_app():
     app.router.add_post("/api/backup", api_backup_restore)
     app.router.add_post("/api/atv-audio", api_atv_audio)
     app.router.add_post("/api/mtv-remote", api_mtv_remote)
+    app.router.add_post("/api/mtv-sound", api_mtv_sound)
     app.router.add_get("/api/abtest", api_abtest)
     app.router.add_post("/api/abtest", api_abtest)
     app.router.add_get("/api/loudness", api_loudness)

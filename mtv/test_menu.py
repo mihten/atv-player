@@ -52,9 +52,9 @@ async def main():
     check(not m.open and m.render() == "", "closed: nothing drawn")
     await m.show()
     labels = [r.label for r in m.page.rows]
-    check(labels == ["Pause", "Queue", "Playlists", "For you", "Music videos", "Shuffle", "Repeat"],
+    check(labels == ["Pause", "Stop", "Queue", "Playlists", "For you", "Music videos", "Shuffle", "Repeat"],
           f"root rows ({labels})")
-    check(m.page.rows[0].sub == "Artist 1 – Song 1" and m.page.rows[1].sub == "3 items", "root subs: current, queue size")
+    check(m.page.rows[0].sub == "Artist 1 – Song 1" and m.page.rows[2].sub == "3 items", "root subs: current, queue size")
 
     # ---- Play/Pause row: toggle and close
     await m.key("ok")
@@ -63,21 +63,30 @@ async def main():
     m.refresh_root()
     check(m.page.rows[0].label == "Play" and m.page.sel == 0, "paused state -> 'Play', still selected")
 
+    # ---- Stop row: stop and close (the screen goes black)
+    m.page.sel = 1
+    await m.key("ok")
+    check(sent[-1] == {"cmd": "stop", "type": "cmd"} and not m.open, "Stop row -> stop, menu closes")
+    await m.show()
+    state["playing"] = False
+    m.refresh_root()
+    m.page.sel = 0
+
     # ---- wrap, shuffle / repeat stay open, root follows state
     await m.key("up")
-    check(m.page.sel == 6, "Up on the first row wraps to the last")
+    check(m.page.sel == 7, "Up on the first row wraps to the last")
     await m.key("ok")
     check(sent[-1] == {"cmd": "repeat", "type": "cmd"} and m.open, "Repeat row: command, menu stays open")
     state["repeat_mode"] = "one"
     m.refresh_root()
-    check(m.page.rows[6].sub == "one" and m.page.sel == 6, "state change refreshes the root, selection kept")
+    check(m.page.rows[7].sub == "one" and m.page.sel == 7, "state change refreshes the root, selection kept")
     await m.key("down")
     check(m.page.sel == 0, "Down on the last row wraps to the first")
     check(await m.key("right") is False and m.open, "Right on an action row does nothing")
     check(await m.key("left") is False and m.open, "Left on the root does nothing")
 
     # ---- queue: titles from the library, current marked and selected, jump closes
-    m.page.sel = 1
+    m.page.sel = 2
     await m.key("right")
     check(m.page.title == "Queue" and calls[-1] == "/api/library", "Right opens Queue (library fetched)")
     check([r.label for r in m.page.rows] == ["Artist 0 – Song 0", "▶ Artist 1 – Song 1", "Artist 2 – Song 2"]
@@ -88,7 +97,7 @@ async def main():
 
     # ---- playlists -> items: play all, shuffle, by index (a playlist may list an item twice)
     await m.show()
-    m.page.sel = 2
+    m.page.sel = 3
     await m.key("ok")
     check(m.page.title == "Playlists" and [r.label for r in m.page.rows] == ["Fav {Spotovi}", "Talent"], "playlists")
     await m.key("ok")
@@ -100,7 +109,7 @@ async def main():
     check(sent[-1] == {"cmd": "play_collection", "collection": "playlist", "playlist": 5, "shuffle": True, "type": "cmd"},
           "Shuffle all -> play_collection shuffle")
     await m.show()
-    m.page.sel = 2
+    m.page.sel = 3
     await m.key("ok")
     await m.key("down")
     await m.key("ok")  # Talent: 30 items
@@ -111,7 +120,7 @@ async def main():
 
     # ---- paging + scroll window on a long list
     await m.show()
-    m.page.sel = 2
+    m.page.sel = 3
     await m.key("ok")
     await m.key("down")
     await m.key("ok")
@@ -134,12 +143,12 @@ async def main():
     await m.key("red")
     check(not m.open, "Red closes from any depth")
     await m.show()
-    m.page.sel = 2
+    m.page.sel = 3
     await m.key("ok")
     await m.key("blue")
     check(not m.open, "Blue closes from any depth")
     await m.show()
-    m.page.sel = 2
+    m.page.sel = 3
     await m.key("ok")
     depth = len(m.pages)
     await m.key("left")
@@ -152,7 +161,7 @@ async def main():
 
     # ---- For you: start_id; empty list; music videos
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 4
     await m.key("ok")
     check([r.label for r in m.page.rows] == ["Loved", "Recently added"], "For you lists")
     await m.key("ok")
@@ -161,13 +170,13 @@ async def main():
     check(sent[-1] == {"cmd": "play_collection", "collection": "loved", "start_id": 301, "type": "cmd"},
           "auto list item -> start_id")
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 4
     await m.key("ok")
     await m.key("down")
     await m.key("ok")
     check([r.label for r in m.page.rows] == ["Empty"] and await m.key("ok") is False, "empty list: one inert row")
     await m.show()
-    m.page.sel = 4
+    m.page.sel = 5
     await m.key("ok")
     await m.key("ok")
     check(sent[-1] == {"cmd": "play_collection", "collection": "videos", "type": "cmd"}, "Music videos -> Play all")

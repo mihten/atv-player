@@ -33,11 +33,19 @@ Environment:
   MTV_IR_DEBUG       1: log every decoded IR frame with its time (press, repeat, other remotes) to the journal
   MTV_FLIRC_UTIL     flirc_util binary (default: PATH or /usr/local/bin); with MTV_KEYS_DEVICE the web remote
                      (Settings > Audio > TV Player > Remote) can learn, switch and delete remote profiles (remotes.py)
+  MTV_SAVER_AFTER    s paused / stopped / idle before the screensaver (black, the name moving around; default 300)
+  MTV_SAVER_MOVE     s between two jumps of the screensaver text (default 180)
+  MTV_LIP_SYNC       ms the headphones play earlier than the picture (default -100, the Apple TV's default)
 
-Remote keys (ir.py names), menu closed: OK = play / pause, Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
+Sound: HDMI (default) or the atv-audio headphones, chosen on the web remote (Settings > Audio): mpv is muted, the
+server's atv-audio sink plays the same file and follows this player's clock (sinklink.py).
+
+Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black; Play starts the item again),
+Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
 Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
 move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close. A held key counts as one press (arrows
-repeat while held). The menu's first row is Play / Pause (the menu stays open).
+repeat while held). The menu's first row is Play / Pause (the menu stays open). While the screensaver is on, any key only
+closes it.
 
 Run: python3 mtv_player.py
 """
@@ -62,8 +70,10 @@ from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  
 import ir  # noqa: E402
 import menu as menu_mod  # noqa: E402
 import remotes as remotes_mod  # noqa: E402
+import saver as saver_mod  # noqa: E402
+import sinklink  # noqa: E402
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 TICK = 0.25
 RECONNECT_MAX = 30.0
@@ -107,6 +117,15 @@ class Config:
             self.ir_address = ir.DEFAULT_ADDRESS
         self.ir_keys = ir.parse_keys(env.get("MTV_IR_KEYS"))
         self.ir_debug = flag(env.get("MTV_IR_DEBUG"), default=False)
+
+        def num(name, default, lo, hi):
+            try:
+                return max(lo, min(hi, float(env.get(name) or default)))
+            except ValueError:
+                return default
+        self.saver_after = num("MTV_SAVER_AFTER", saver_mod.AFTER, 5.0, 86400.0)
+        self.saver_move = num("MTV_SAVER_MOVE", saver_mod.MOVE, 5.0, 86400.0)
+        self.lip_sync = int(num("MTV_LIP_SYNC", sinklink.LIP_DEFAULT, -200, 400))
 
     @property
     def can_learn(self):
@@ -171,6 +190,79 @@ class Player:
         self.last_key_at = -1e9      # monotonic time of the last key event from the keyboard receiver (Flirc)
         self.remotes = remotes_mod.Remotes(cfg.flirc_util, cfg.state_dir or tempfile.gettempdir(), self.remotes_changed,
                                            self.log, quiet_for=lambda: self.mono() - self.last_key_at)
+        self.link = sinklink.SinkLink(self)   # the sound on the atv-audio headphones (chosen on the web remote)
+        self.link.lip_ms = cfg.lip_sync
+        self.saver = saver_mod.Saver(mono, after=cfg.saver_after, move=cfg.saver_move)
+
+    @property
+    def connected(self):
+        """The server socket is open."""
+        return self._send is not None
+
+    @property
+    def mpv_muted(self):
+        """mpv's own sound is off when the user muted it or the headphones play the sound."""
+        return bool(self.muted or self.link.on)
+
+    async def apply_mute(self):
+        if self.mpv:
+            with contextlib.suppress(MpvError):
+                await self.mpv.set_property("mute", self.mpv_muted)
+
+    async def local_pause(self, why):
+        """Pause here and tell the server (its play state follows; the sink pauses with it)."""
+        self.want_play = False
+        if self.mpv:
+            with contextlib.suppress(MpvError):
+                await self.mpv.set_property("pause", True)
+        self.send({"type": "cmd", "cmd": "pause"})
+        self.report(force=True)
+
+    async def draw_notice(self):
+        """The notice that stays until Play (osd-overlay 2), or nothing."""
+        mpv = self.mpv
+        if not mpv:
+            return
+        try:
+            if self.link.notice:
+                await mpv.command("osd-overlay", 2, "ass-events", notice_events(self.link.notice), 1920, 1080, 30)
+            else:
+                await mpv.command("osd-overlay", 2, "none", "")
+        except MpvError as e:
+            log(f"notice draw: {e}")
+
+    # -- screensaver
+    def busy(self):
+        """Something is going on: playing (or starting), a menu or a learn screen open."""
+        return bool(self.menu.open or self.remotes.active_screen or (self.item and self.want_play))
+
+    async def saver_tick(self):
+        what = self.saver.tick(self.busy())
+        if what is None:
+            return
+        if what != "move":
+            log(f"screensaver {'on' if what == 'show' else 'off (activity)'}")
+        await self.draw_saver(what != "hide")
+
+    async def draw_saver(self, on):
+        mpv = self.mpv
+        if not mpv:
+            return
+        try:
+            if on:
+                await mpv.command("osd-overlay", 3, "ass-events", self.saver.render(), saver_mod.RES_X, saver_mod.RES_Y, 40)
+            else:
+                await mpv.command("osd-overlay", 3, "none", "")
+        except MpvError as e:
+            log(f"screensaver draw: {e}")
+
+    async def wake(self):
+        """A key: closes the screensaver and does nothing else. True when it was on."""
+        if self.saver.wake():
+            log("screensaver off (key)")
+            await self.draw_saver(False)
+            return True
+        return False
 
     # -- volume: mpv's own (software) volume; the TV / soundbar volume is separate
     def _volume_file(self):
@@ -202,7 +294,8 @@ class Player:
     def report_output(self):
         """Screen, sound device, volume and remote profiles to the server (web remote: volume bar, Settings -> Audio)."""
         msg = {"type": "output", "name": "TV Player", "screen": self.screen, "device": self.cfg.audio_device,
-               "volume": self.volume, "muted": self.muted, "version": VERSION}
+               "volume": self.volume, "muted": self.muted, "version": VERSION,
+               "sound": "headphones" if self.link.on else "hdmi"}
         if self.cfg.can_learn:  # a receiver whose buttons can be learned (Flirc + flirc_util)
             msg["remote"] = dict(self.remotes.summary(), can=True)
         self.send(msg)
@@ -237,7 +330,7 @@ class Player:
         if self.mpv:
             with contextlib.suppress(MpvError):
                 await self.mpv.set_property("volume", self.volume)
-                await self.mpv.set_property("mute", self.muted)
+            await self.apply_mute()
         self.report_output()
 
     async def fetch(self, path):
@@ -283,11 +376,17 @@ class Player:
             await self._set_af(sound_chain(self.sound))
             self.applied = self.sound
         if self.item:
+            await self.link.begin_item(self.item, self.want_play, from_server=False)
             await self._load(self.pos)
+        await self.apply_mute()
         await self.read_screen()
         self.report_output()
         if self.menu.open:
             await self.draw_menu()
+        if self.link.notice:
+            await self.draw_notice()
+        if self.saver.on:
+            await self.draw_saver(True)
 
     def detach(self):
         self.mpv = None
@@ -324,7 +423,8 @@ class Player:
                 await mpv.set_property("aid", aid)
         if self.item is not it or self.mpv is not mpv:
             return
-        if mpv.props.get("pause") is not None and mpv.props.get("pause") == self.want_play:  # belt and braces
+        if mpv.props.get("pause") is not None and mpv.props.get("pause") == self.want_play \
+                and not self.link.waiting:  # belt and braces (not while the start waits for the headphones)
             with contextlib.suppress(MpvError):
                 await mpv.set_property("pause", not self.want_play)
         self.file_loaded = True
@@ -373,7 +473,7 @@ class Player:
                 await self._set_af(sound_chain(self.sound))
                 self.applied = self.sound
             # start / pause as per-file options of this load (mpv 0.38+: flags, index, options): nothing global to race
-            opts = f"start={max(0.0, position):.3f},pause={'no' if self.want_play else 'yes'}"
+            opts = f"start={max(0.0, position):.3f},pause={'no' if self.want_play and not self.link.waiting else 'yes'}"
             reply = await mpv.command("loadfile", self.cfg.media_url(it["id"]), "replace", -1, opts)
         except MpvError as e:
             self.log(f"load {it.get('id')} failed: {e}")
@@ -390,11 +490,16 @@ class Player:
             self.pos = float(msg.get("position") or 0)
             self.want_play = bool(msg.get("autoplay")) and bool(self.item)
             self.loads += 1
+            if self.saver.on and self.want_play:
+                await self.wake()
             if self.item:
+                await self.link.begin_item(self.item, self.want_play, from_server=True)
                 await self._load(self.pos)
-            elif self.mpv:
-                with contextlib.suppress(MpvError):
-                    await self.mpv.command("stop")
+            else:
+                self.link.waiting = False
+                if self.mpv:
+                    with contextlib.suppress(MpvError):
+                        await self.mpv.command("stop")
             self.report(force=True)
         elif t == "control":
             await self.on_control(msg)
@@ -403,6 +508,12 @@ class Player:
             await self.apply_sound()
         elif t == "remote":
             await self.remote_command(msg)
+        elif t == "sound_out":      # web remote: HDMI or the atv-audio headphones
+            await self.link.set_on(msg.get("mode") == "headphones")
+        elif t == "sink_ready":
+            await self.link.ready(msg.get("id"))
+        elif t == "pong":
+            self.link.pong(msg)
         elif t == "volume":
             try:
                 await self.set_volume(float(msg.get("percent")), msg.get("muted"))
@@ -410,6 +521,8 @@ class Player:
                 pass
         elif t == "state" and isinstance(msg.get("state"), dict):
             self.state = msg["state"]
+            old, self.link.sink = self.link.sink, self.state.get("sink")
+            await self.link.state_changed(old, self.link.sink)
             if self.menu.open and len(self.menu.pages) == 1:
                 self.menu.refresh_root()
                 await self.draw_menu()
@@ -420,6 +533,9 @@ class Player:
             action = "pause" if self.want_play else "play"
         try:
             if action == "play" and self.item:
+                if await self.link.hold_play():   # the headphones are missing: the notice instead of starting
+                    return
+                await self.link.acknowledge("play")
                 self.want_play = True
                 if mpv and mpv.props.get("eof-reached"):  # Play on an ended item: from the start
                     self.ended_for = None
@@ -433,11 +549,16 @@ class Player:
             elif action == "stop":
                 self.want_play = False
                 self.item = None
+                self.pos = 0.0
+                self.file_loaded = False
+                self.link.waiting = False
+                await self.link.acknowledge("stop")
                 if mpv:
                     await mpv.command("stop")
             elif action == "seek" and self.item:
                 self.pos = max(0.0, float(msg.get("position") or 0))
                 self.ended_for = None
+                self.link.note_seek()
                 if mpv and self.file_loaded:
                     await mpv.command("seek", self.pos, "absolute")
                 elif mpv:
@@ -448,6 +569,8 @@ class Player:
 
     # -- periodic
     async def tick(self):
+        await self.link.tick()
+        await self.saver_tick()
         mpv, it = self.mpv, self.item
         if not it:
             return
@@ -493,6 +616,18 @@ def clock(sec):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def notice_events(text):
+    """ASS events of the notice (bottom of the screen): a dark box and the text, wrapped at ~60 characters."""
+    import textwrap
+    lines = textwrap.wrap(str(text), 60)[:3] or [""]
+    h = 40 + 56 * len(lines)
+    y0 = 960 - h
+    ev = [f"{{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H101010&\\1a&H10&\\p1}}m 300 {y0} l 1620 {y0} 1620 960 300 960{{\\p0}}"]
+    for n, line in enumerate(lines):
+        ev.append(f"{{\\an5\\pos(960,{y0 + 20 + 28 + 56 * n})\\fs40\\bord0\\shad0\\1c&H80C0FF&}}{menu_mod.esc(line)}")
+    return "\n".join(ev)
+
+
 async def osd(player, text, ms=1500):
     if player.mpv:
         with contextlib.suppress(MpvError):
@@ -501,10 +636,28 @@ async def osd(player, text, ms=1500):
 
 async def on_key(player, name, held):
     """A remote key: the menu's while it is open; else a server command (the server owns the queue and sends the
-    control back to this player)."""
+    control back to this player). While the screensaver is on a key only closes it."""
+    if await player.wake():
+        player.log(f"key {name}: woke the screensaver")
+        return
+    if held and player.saver.recently_woke():   # the rest of the held key that woke it
+        return
     if player.remotes.active_screen:   # learning a remote: the Flirc takes the presses; other keys do not count
         if await player.remotes.key(name):
             await player.draw_menu()
+        return
+    if name == "stop":                 # Stop works with the menu open too (and closes it)
+        if not player._send:
+            await osd(player, "Not connected to the server")
+            return
+        if player.menu.open:
+            player.menu.close()
+            await player.draw_menu()
+        if player.item:
+            player.send({"type": "cmd", "cmd": "stop"})
+            player.log("key stop")
+        else:
+            await osd(player, "Nothing to stop")
         return
     if player.menu.open:
         if await player.menu.key(name):
@@ -522,10 +675,10 @@ async def on_key(player, name, held):
         return
     it = player.item
     if name == "ok":
-        if not it:
+        if not it and not (player.state or {}).get("current"):
             await osd(player, "Nothing to play")
             return
-        playing = player.want_play
+        playing = player.want_play    # after Stop the player holds no item: the server restarts the current one
         player.send({"type": "cmd", "cmd": "toggle"})
         await osd(player, "Pause" if playing else "Play")
     elif name in ("ch_up", "ch_down"):
@@ -661,7 +814,7 @@ async def _mpv_loop(cfg, player, stop, sock):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(sock)
         started = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(*mpv_args(cfg, sock, player.volume, player.muted))
+        proc = await asyncio.create_subprocess_exec(*mpv_args(cfg, sock, player.volume, player.mpv_muted))
         ipc = MpvObserver(on_event=player.on_mpv_event)
         try:
             for _ in range(100):
@@ -714,6 +867,8 @@ async def run_server(cfg, player, stop):
                     player.log(f"mtv-player {VERSION} up (mode {cfg.mode}, interpolation "
                                f"{'on' if cfg.interpolation else 'off'}, audio {cfg.audio_device}, volume {player.volume} %)")
                     player.report_output()
+                    player.link.reset_link()
+                    player.link.send_config()
 
                     async def writer():
                         while True:
@@ -730,6 +885,8 @@ async def run_server(cfg, player, stop):
                         wtask.cancel()
                         player._send = None
                         player.http = None
+                        with contextlib.suppress(Exception):
+                            await player.link.connection_lost()
             except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
                 log(f"server: {e!r}")
             if stop.is_set():

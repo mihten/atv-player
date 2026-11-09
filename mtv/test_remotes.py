@@ -147,13 +147,13 @@ async def main():
     check(r.busy and r.summary()["progress"]["state"] == "learning", "summary: learning")
     await r.task
     keys = [c[1] for c in u.calls if c[0] == "record"]
-    check(keys == ALL and N == 9, f"recorded {len(keys)} functions in order")
-    check([k[1] for k in R.KEYS] == ["Play / Pause", "Menu", "Up", "Down", "Left", "Right", "Next", "Previous", "Back"], "the functions asked for: no digits, no colours")
+    check(keys == ALL and N == 10, f"recorded {len(keys)} functions in order")
+    check([k[1] for k in R.KEYS] == ["Play / Pause", "Menu", "Up", "Down", "Left", "Right", "Next", "Previous", "Back", "Stop"], "the functions asked for: no digits, no colours")
     check(not any(len(k[1]) > 12 for k in R.KEYS), "labels fit the server's 12 characters")
     check(u.calls[0][0] == "saveconfig" and u.calls[1] == ("format",), "current table saved before the format")
     check(r.profiles() == ["Cambridge"] and r.active == "Cambridge", "profile saved and active")
     check(json.load(open(os.path.join(r.dir, "Cambridge.fcfg"))) == ALL, "the saved file holds the learned functions only")
-    check(r.stage == "result" and r.ok and "9 functions learned" in r.text, "result: all learned")
+    check(r.stage == "result" and r.ok and "10 functions learned" in r.text, "result: all learned")
     check("Done" in r.render() and "Learn remote: Cambridge" in r.render(), "done screen")
     check(await r.key("up") is True and not r.active_screen, "a key closes the result screen")
     check(r.summary()["progress"]["state"] == "idle" and "learned" in r.summary()["progress"]["text"], "summary idle + last result")
@@ -394,7 +394,7 @@ async def main():
     check(r.ok, "the same 5 refusals right after a signal are strays: completes")
 
     # ---- skipping functions from the phone (a small remote)
-    u = FakeUtil(["ok"] * 6 + ["none", "none", "none"])
+    u = FakeUtil(["ok"] * 6 + ["none", "none", "none", "none"])
     r, drawn, tmp = await make(u)
     r.timeout = 30
     await r.command("learn", "Small")
@@ -408,8 +408,12 @@ async def main():
     await asyncio.sleep(0.2)
     check(r.index == 8 and r.summary()["progress"]["label"] == "Back", "now asking for Back")
     check(await r.command("skip") is None, "Back can be skipped too")
+    await asyncio.sleep(0.2)
+    check(r.index == 9 and r.summary()["progress"]["label"] == "Stop" and r.summary()["progress"]["optional"] is True,
+          "now asking for Stop (optional)")
+    check(await r.command("skip") is None, "Stop can be skipped too")
     await asyncio.wait_for(r.task, 10)
-    check(r.ok and "6 functions learned, 3 not set" in r.text, f"done with three not set ({r.text})")
+    check(r.ok and "6 functions learned, 4 not set" in r.text, f"done with four not set ({r.text})")
     check(u.table == ALL[:6] and r.profiles() == ["Small"], "the profile holds the 6 learned functions")
     u = FakeUtil(["none"])
     r, drawn, tmp = await make(u)
@@ -474,7 +478,7 @@ async def main():
     check(r.summary()["progress"]["expected"] == [k[1] for k in R.KEYS] and r.summary()["progress"]["lit"] == [], "nothing lit yet")
     await r.key("ok"); await r.key("up")
     check(set(r.summary()["progress"]["lit"]) == {"Play / Pause", "Up"} and "✓  Play / Pause" in r.render(), "pressed functions light up")
-    for k in ("blue", "down", "left", "right", "ch_up", "ch_down", "back"):
+    for k in ("blue", "down", "left", "right", "ch_up", "ch_down", "back", "stop"):
         await r.key(k)
     check(await until(lambda: r.phase == "test2"), "all lit -> step 2")
     shots[2] = r.render()
@@ -491,7 +495,7 @@ async def main():
     r, drawn, tmp = await make(u, auto=False)
     await r.command("learn", "Miss")
     await until(lambda: r.phase == "test1")
-    for k in ("ok", "blue", "down", "left", "right", "ch_up", "ch_down", "back"):   # Up is never pressed (or never arrives)
+    for k in ("ok", "blue", "down", "left", "right", "ch_up", "ch_down", "back", "stop"):   # Up is never pressed (or never arrives)
         await r.key(k)
     check(await until(lambda: r.phase == "test2", 3), "silence in step 1 ends it after the idle time")
     await r.key("blue")
@@ -509,7 +513,7 @@ async def main():
     r, drawn, tmp = await make(u, auto=False)
     await r.command("learn", "Stray")
     await until(lambda: r.phase == "test1")
-    for k in ("ok", "blue", "up", "down", "left", "right", "ch_up", "ch_down", "back"):
+    for k in ("ok", "blue", "up", "down", "left", "right", "ch_up", "ch_down", "back", "stop"):
         await r.key(k)
     await until(lambda: r.phase == "test2")
     await r.key("down"); await r.key("down"); await r.key("green")   # Green and Yellow acting as Down (the TotalTV case)
@@ -541,12 +545,12 @@ async def main():
     check(await r.command("keep") == "nothing to decide" and await r.command("discard") == "nothing to decide", "keep / discard only in a review")
 
     # ---- a skipped function's key firing counts as a stray in step 1
-    u = FakeUtil(["ok"] * 6 + ["none", "none", "none"])
+    u = FakeUtil(["ok"] * 6 + ["none", "none", "none", "none"])
     r, drawn, tmp = await make(u, auto=False, test_idle=0.4)
     r.timeout = 30
     await r.command("learn", "Skp")
     await asyncio.sleep(0.15)
-    for _ in range(3):
+    for _ in range(4):
         await r.command("skip")
         await asyncio.sleep(0.2)
     await until(lambda: r.phase == "test1")
@@ -710,7 +714,7 @@ async def main():
     check(r.ok and r.active_names == ["A", "New"], f"learned: now using A + New ({r.text})")
     check("now using A + New" in r.text, "the result says so")
     hs = sorted(R.row_hash(x) for x in u.table)
-    check(len(hs) == 3 + 9 and set(R.row_hash(x) for x in A_ROWS) <= set(hs), f"the receiver holds A's 3 + the new remote's 9 buttons ({len(hs)})")
+    check(len(hs) == 3 + 10 and set(R.row_hash(x) for x in A_ROWS) <= set(hs), f"the receiver holds A's 3 + the new remote's 10 buttons ({len(hs)})")
     u = BinFake("learn2")
     u.only_merged_refused = True          # the combined table is refused after the new remote was learned
     r, drawn, tmp = await make(u, auto=True)
@@ -724,11 +728,11 @@ async def main():
     check(u.table == A_ROWS and "back - use Add" in r.text, "... and A's table is back in the receiver")
     u.only_merged_refused = False
     await r.command("add", "New2"); await r.task
-    check(r.active_names == ["A", "New2"] and len(u.table) == 3 + 9, "Add afterwards works")
+    check(r.active_names == ["A", "New2"] and len(u.table) == 3 + 10, "Add afterwards works")
 
     # ---- the remote's Play / Pause button pressed for a later function = that function stays "not set"
     crc = lambda salt, k: "%08X" % (zlib.crc32((salt + k).encode()) & 0xffffffff)
-    u = BinFake("skp", presses=["ok", "okbtn", "ok", "ok", "ok", "ok", "ok", "ok", "okbtn"])
+    u = BinFake("skp", presses=["ok", "okbtn", "ok", "ok", "ok", "ok", "ok", "ok", "okbtn", "ok"])
     old = [R.row_hash(x) for x in u.table]
     r, drawn, tmp = await make(u, auto=True)
     await r.command("learn", "Skips")
@@ -736,13 +740,13 @@ async def main():
     ok_h = crc("skp", "return")
     hs = [R.row_hash(x) for x in u.table]
     want = [f for f in R.FUNCTIONS if f not in ("Menu", "Back")]
-    check(r.ok and "7 functions learned, 2 not set" in r.text, f"Play / Pause for Menu and Back: 7 learned, 2 not set ({r.text})")
+    check(r.ok and "8 functions learned, 2 not set" in r.text, f"Play / Pause for Menu and Back: 8 learned, 2 not set ({r.text})")
     check([R.KEYS[i][1] for i in r.skipped] == ["Menu", "Back"], "Menu and Back are the ones left out")
     check(all(ok_h not in snap for snap in u.at_record[1:]), "while the later functions were learned, Play / Pause was out of the receiver")
-    check(hs.count(ok_h) == 1 and len(hs) == 7, f"afterwards Play / Pause is back, once, with the 6 others ({len(hs)} rows)")
+    check(hs.count(ok_h) == 1 and len(hs) == 8, f"afterwards Play / Pause is back, once, with the 7 others ({len(hs)} rows)")
     check(R.table_functions(u.table) == want, "the receiver: no Menu, no Back")
-    check(R.table_functions(R.read_fcfg(r._path("Skips"))[1]) == want, "the saved profile: the same 7 functions")
-    check(r.details()["Skips"]["set"] == want, "details: the 7 functions with a button")
+    check(R.table_functions(R.read_fcfg(r._path("Skips"))[1]) == want, "the saved profile: the same 8 functions")
+    check(r.details()["Skips"]["set"] == want, "details: the 8 functions with a button")
     check(any("not set" in d[2] for d in drawn), "the TV says the function is not set")
     check([R.KEYS[i][1] for i in r.learned] == want, "the test asked only for the learned functions; Play / Pause ended step 2")
 
@@ -781,7 +785,7 @@ async def main():
     check(await r2.recover() is True and u.table == old, "crash with Play / Pause out: recover() restores the old buttons")
 
     # Play / Pause cannot be put back: stopped, old buttons back
-    u = BinFake("unp", presses=["ok"] + ["okbtn"] * 8)
+    u = BinFake("unp", presses=["ok"] + ["okbtn"] * 9)
     u.refuse_full = True
     old = list(u.table)
     r, drawn, tmp = await make(u, auto=True)
@@ -791,11 +795,11 @@ async def main():
           f"Play / Pause not accepted back: stopped, old buttons back ({r.text[:80]})")
 
     # all later functions left out with the Play / Pause button: a one-button remote
-    u = BinFake("one", presses=["ok"] + ["okbtn"] * 8)
+    u = BinFake("one", presses=["ok"] + ["okbtn"] * 9)
     r, drawn, tmp = await make(u, auto=True)
     await r.command("learn", "One")
     await asyncio.wait_for(r.task, 15)
-    check(r.ok and "1 functions learned, 8 not set" in r.text and R.table_functions(u.table) == ["Play / Pause"],
+    check(r.ok and "1 functions learned, 9 not set" in r.text and R.table_functions(u.table) == ["Play / Pause"],
           f"only Play / Pause learned ({r.text})")
 
     # a receiver where taking Play / Pause out fails: the learn still works (its button is then refused as 'already used')
@@ -809,7 +813,7 @@ async def main():
     r, drawn, tmp = await make(u, auto=True)
     await r.command("learn", "NoDel")
     await asyncio.wait_for(r.task, 15)
-    check(r.ok and len(u.table) == 9 and r.ok_row is None, f"Play / Pause could not be taken out: the learn completes as before ({r.text})")
+    check(r.ok and len(u.table) == 10 and r.ok_row is None, f"Play / Pause could not be taken out: the learn completes as before ({r.text})")
 
     # ---- the overview on the phone: which functions have a button, and the names typed for them
     u = BinFake("lab")
@@ -849,9 +853,9 @@ async def main():
     check(R.esc("a{b}\\c") == "a\\{b\\}\\\u200bc", "escape")
     u = FakeUtil()
     r, drawn, tmp = await make(u)
-    r.stage, r.index, r.name = "run", 8, "X"
+    r.stage, r.index, r.name = "run", 9, "X"
     ass = r.render()
-    check("Back" in ass and "9 / 9" in ass and "Press the button you want for" in ass, "run screen names the function and the count")
+    check("Stop" in ass and "10 / 10" in ass and "Press the button you want for" in ass, "run screen names the function and the count")
     r.index = 1
     ass = r.render()
     check("Play / Pause button = not set" in ass and "opens and closes the menu" in ass, "after Play / Pause: the screen says its button leaves a function out")

@@ -145,7 +145,7 @@ async def main(tmp):
             await H.drain(mtv)
             out = (await H.state(http, "mtv")).get("output")
             check(out == {"name": "TV Player", "screen": "3840x2160 @ 60 Hz", "device": "alsa/hdmi", "volume": 73,
-                          "muted": False, "version": "0.4.0"}, f"output in the state, typed and bounded ({out})")
+                          "muted": False, "version": "0.4.0", "sound": "hdmi"}, f"output in the state, typed and bounded ({out})")
             await mtv.send_json({"type": "output", "name": "x" * 500, "volume": 900})
             await H.drain(mtv)
             out = (await H.state(http, "mtv"))["output"]

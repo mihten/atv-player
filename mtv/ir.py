@@ -197,7 +197,7 @@ EVIOCGRAB = 0x40044590
 EVDEV_KEYS = {
     28: "ok", 96: "ok", 103: "up", 108: "down", 105: "left", 106: "right",   # Enter / keypad Enter, arrows
     104: "ch_up", 109: "ch_down",                                           # Page Up / Page Down
-    59: "red", 60: "green", 61: "yellow", 62: "blue",                        # F1 .. F4
+    59: "stop", 60: "green", 61: "yellow", 62: "blue",                        # F1 = Stop, F2 .. F4
     11: "0", 2: "1", 3: "2", 4: "3", 5: "4", 6: "5", 7: "6", 8: "7", 9: "8", 10: "9",
     164: "ok", 207: "ok",                                                   # Play/Pause media keys
     1: "back", 14: "back",                                                  # Esc / Backspace: Back (closes the menu)

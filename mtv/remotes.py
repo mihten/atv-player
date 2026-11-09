@@ -31,7 +31,8 @@ KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
         ("pageup", "Next", "next video; page down in the menu", True),
         ("pagedown", "Previous", "previous video; page up in the menu", True),
-        ("escape", "Back", "closes the menu", True)]
+        ("escape", "Back", "closes the menu", True),
+        ("F1", "Stop", "stops playback; the screen goes black", True)]
 FUNCTIONS = [k[1] for k in KEYS]
 LABEL_MAX = 30            # characters of a button name typed on the phone
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,29}$")
@@ -60,9 +61,9 @@ FCFG_MAGIC = b"\xef\xbe\xad\xde"
 FCFG_HEAD, FCFG_ROW = 28, 16
 # The player's key name each learned function arrives as (ir.EVDEV_KEYS: Enter -> ok, F4 -> blue, PgUp -> ch_up ...)
 HID = {"return": 0x28, "F4": 0x3d, "up": 0x52, "down": 0x51, "left": 0x50, "right": 0x4f, "pageup": 0x4b, "pagedown": 0x4e,
-       "escape": 0x29}
+       "escape": 0x29, "F1": 0x3a}
 PLAYER_KEY = {"return": "ok", "F4": "blue", "up": "up", "down": "down", "left": "left", "right": "right",
-              "pageup": "ch_up", "pagedown": "ch_down", "escape": "back"}
+              "pageup": "ch_up", "pagedown": "ch_down", "escape": "back", "F1": "stop"}
 TEST_IDLE = 60.0          # s without any key before a test step gives up
 REVIEW_FOR = 120.0        # s the phone has to choose Keep / Discard after a failed test (then: discard)
 WARN = "&H4080F0&"        # orange (BGR)
