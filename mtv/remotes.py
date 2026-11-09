@@ -29,12 +29,13 @@ KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("down", "Down", "menu down; previous video", False),
         ("left", "Left", "menu back; back 10 seconds", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
-        ("pageup", "Volume up", "volume up (TV or headphones); page down in the menu", True),
-        ("pagedown", "Volume down", "volume down (TV or headphones); page up in the menu", True),
+        ("pageup", "CH+ button", "the channel up button: volume up in the player, page up in the menu", True),
+        ("pagedown", "CH- button", "the channel down button: volume down in the player, page down in the menu", True),
         ("escape", "Back", "closes the menu", True),
         ("F1", "Stop", "stops playback; the screen goes black", True)]
 FUNCTIONS = [k[1] for k in KEYS]
-RENAMED = {"Next": "Volume up", "Previous": "Volume down"}   # 0.12.0: CH+ / CH- became the volume keys (same buttons)
+# Older names of the CH+ / CH- functions (same Flirc keys): Next / Previous until 0.11.0, Volume up / down in 0.12.0
+RENAMED = {"Next": "CH+ button", "Previous": "CH- button", "Volume up": "CH+ button", "Volume down": "CH- button"}
 LABEL_MAX = 30            # characters of a button name typed on the phone
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,29}$")
 TIMEOUT = 40.0            # s to wait for one press

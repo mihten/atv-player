@@ -149,7 +149,7 @@ async def main():
     await r.task
     keys = [c[1] for c in u.calls if c[0] == "record"]
     check(keys == ALL and N == 10, f"recorded {len(keys)} functions in order")
-    check([k[1] for k in R.KEYS] == ["Play / Pause", "Menu", "Up", "Down", "Left", "Right", "Volume up", "Volume down", "Back", "Stop"], "the functions asked for: no digits, no colours")
+    check([k[1] for k in R.KEYS] == ["Play / Pause", "Menu", "Up", "Down", "Left", "Right", "CH+ button", "CH- button", "Back", "Stop"], "the functions asked for: no digits, no colours")
     check(not any(len(k[1]) > 12 for k in R.KEYS), "labels fit the server's 12 characters")
     check(u.calls[0][0] == "saveconfig" and u.calls[1] == ("format",), "current table saved before the format")
     check(r.profiles() == ["Cambridge"] and r.active == "Cambridge", "profile saved and active")
@@ -443,12 +443,12 @@ async def main():
     r.timeout = 30
     await r.command("learn", "Small")
     await asyncio.sleep(0.15)
-    check(r.index == 6 and r.busy and r.summary()["progress"]["optional"] is True and r.summary()["progress"]["label"] == "Volume up",
-          "at Volume up: optional, reported to the phone")
+    check(r.index == 6 and r.busy and r.summary()["progress"]["optional"] is True and r.summary()["progress"]["label"] == "CH+ button",
+          "at CH+ button: optional, reported to the phone")
     check(await r.command("skip") is None, "skip accepted for an optional function")
     await asyncio.sleep(0.2)
-    check(r.index == 7 and r.summary()["progress"]["label"] == "Volume down", "skipped: now asking for Volume down")
-    check(await r.command("skip") is None, "Volume down can be skipped too")
+    check(r.index == 7 and r.summary()["progress"]["label"] == "CH- button", "skipped: now asking for CH- button")
+    check(await r.command("skip") is None, "CH- button can be skipped too")
     await asyncio.sleep(0.2)
     check(r.index == 8 and r.summary()["progress"]["label"] == "Back", "now asking for Back")
     check(await r.command("skip") is None, "Back can be skipped too")
@@ -600,7 +600,7 @@ async def main():
     await until(lambda: r.phase == "test1")
     check(r.summary()["progress"]["expected"] == [k[1] for k in R.KEYS[:6]], "only the learned functions are expected")
     await r.key("ch_up")
-    check(r.summary()["progress"]["strays"] == ["Volume up"], "Volume up was skipped but its key fired: a stray")
+    check(r.summary()["progress"]["strays"] == ["CH+ button"], "CH+ button was skipped but its key fired: a stray")
     await r.command("cancel")
     await asyncio.wait_for(r.task, 5)
 
@@ -881,8 +881,8 @@ async def main():
     check(await r.command("label", "../A", "Menu", "x") == "no such profile", "a bad profile name is refused")
     check(r.profiles() == ["A", "Rep"], "the names file is not a profile")
     with open(os.path.join(r.dir, "A.labels.json"), "w") as f:   # a file written by 0.11.0 (CH+ / CH- were Next / Previous)
-        json.dump({"Next": "CH+", "Previous": "CH-", "Bogus": "x"}, f)
-    check(r.labels("A") == {"Volume up": "CH+", "Volume down": "CH-"}, "old names Next / Previous read as Volume up / down")
+        json.dump({"Next": "CH+", "Volume down": "CH-", "Bogus": "x"}, f)
+    check(r.labels("A") == {"CH+ button": "CH+", "CH- button": "CH-"}, "old names (Next / Volume down) read as CH+ / CH- button")
     with open(os.path.join(r.dir, "A.labels.json"), "w") as f:
         json.dump({}, f)
     u.presses = ["none"]
