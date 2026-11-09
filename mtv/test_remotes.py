@@ -104,6 +104,7 @@ async def make(util, auto=True, **kw):
         drawn.append((r.stage, r.index, r.note))
 
     kw.setdefault("test_idle", 0.3)
+    kw.setdefault("retry_wait", 0.0)
     kw.setdefault("review_for", 0.5)
     r = R.Remotes("flirc_util", tmp, changed, lambda m: None, spawn=util, timeout=0.2, flash=0, result_for=0.3, **kw)
     if auto:
@@ -392,6 +393,49 @@ async def main():
     await r.command("learn", "S")
     await r.task
     check(r.ok, "the same 5 refusals right after a signal are strays: completes")
+
+    # ---- the first settings / saveconfig call of a fresh flirc_util process fails once: tried again, the learn goes through
+    class FlakyFirst(FakeUtil):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.failed = set()
+
+        async def __call__(self, util, *args, **kw):
+            if args[0] in ("settings", "saveconfig") and args[0] not in self.failed:
+                self.failed.add(args[0])
+                self.calls.append(args)
+                return FakeProc("[E] could not open the device", rc=1)
+            return await super().__call__(util, *args, **kw)
+    u = FlakyFirst()
+    r, drawn, tmp = await make(u)
+    check(await r.command("learn", "Flaky") is None, "learn starts")
+    await asyncio.wait_for(r.task, 15)
+    check(r.ok and r.profiles() == ["Flaky"] and u.failed == {"settings", "saveconfig"},
+          f"a failing first saveconfig / settings is tried again; the learn completes ({r.text})")
+    class AlwaysFails(FakeUtil):
+        async def __call__(self, util, *args, **kw):
+            if args[0] == "saveconfig":
+                self.calls.append(args)
+                return FakeProc("[E] no device", rc=1)
+            return await super().__call__(util, *args, **kw)
+    u = AlwaysFails()
+    r, drawn, tmp = await make(u)
+    await r.command("learn", "Never")
+    await asyncio.wait_for(r.task, 15)
+    check(not r.ok and len([c for c in u.calls if c[0] == "saveconfig"]) == R.RETRIES and not any(c[0] == "format" for c in u.calls),
+          f"a save that keeps failing: {R.RETRIES} tries, then the learn stops BEFORE touching the receiver ({r.text})")
+    u = FakeUtil()
+    check(await FakeUtil.__call__(u, "x", "record", "a") is not None, "fixture ok")
+    class FlakyFormat(FakeUtil):
+        async def __call__(self, util, *args, **kw):
+            if args[0] == "format":
+                self.calls.append(args)
+                return FakeProc("[E] x", rc=1)
+            return await super().__call__(util, *args, **kw)
+    u = FlakyFormat()
+    r, drawn, tmp = await make(u)
+    await r._util("format")
+    check(len([c for c in u.calls if c[0] == "format"]) == 1, "format is never repeated (not idempotent for the table)")
 
     # ---- skipping functions from the phone (a small remote)
     u = FakeUtil(["ok"] * 6 + ["none", "none", "none", "none"])

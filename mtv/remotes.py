@@ -54,6 +54,10 @@ LOADED = "Loaded Successfully"
 NOT_A_BUTTON = {"7C8BCB1E": "the repeat part of a signal"}
 ROW = re.compile(r"^\s*(\d+)\s+([0-9A-Fa-f]{8})\s+(\d+)\s+(\d+)\s+(\S+)\s*$", re.M)
 MAX_PARTIAL = 8
+# The first call of a fresh flirc_util process sometimes fails (seen 2026-11-09 in the TV Player CT); a read of the table or a
+# save of it changes nothing, so those two are tried again instead of aborting a learn.
+RETRY_CMDS = ("settings", "saveconfig")
+RETRIES, RETRY_WAIT = 3, 1.0
 # The receiver holds ONE button table and `loadconfig` replaces it (measured 2026-11-08), so several remotes at once =
 # one combined table written by us: a .fcfg file is a 28-byte header (magic, version, row count, checksum the device does
 # not verify when loading, ...) and 16-byte rows (hash LE u32, IK, ..., HID key code in the last byte).
@@ -143,7 +147,8 @@ def merge_tables(tables):
 class Remotes:
     def __init__(self, util, state_dir, changed, log=lambda m: None, spawn=None, timeout=TIMEOUT, flash=FLASH,
                  result_for=RESULT_FOR, quiet_for=None, quiet=QUIET, quiet_max=QUIET_MAX, settle=SETTLE,
-                 test_idle=TEST_IDLE, review_for=REVIEW_FOR):
+                 test_idle=TEST_IDLE, review_for=REVIEW_FOR, retry_wait=RETRY_WAIT):
+        self.retry_wait = retry_wait
         self.util, self.dir, self.changed, self.log = util, os.path.join(state_dir, "remotes"), changed, log
         self.quiet_for = quiet_for   # callable: seconds since the receiver last sent a key event (None: unknown)
         self.quiet, self.quiet_max, self.settle = quiet, quiet_max, settle
@@ -314,7 +319,16 @@ class Remotes:
 
     # -- the flirc_util program
     async def _util(self, *args, timeout=15.0):
-        """(returncode or None on timeout / stop, output)."""
+        """(returncode or None on timeout / stop, output). settings / saveconfig are tried again when they fail."""
+        for attempt in range(RETRIES if args and args[0] in RETRY_CMDS else 1):
+            if attempt:
+                await asyncio.sleep(self.retry_wait)
+            rc, out = await self._util_once(*args, timeout=timeout)
+            if rc == 0 or rc is None or self.cancelled:
+                break
+        return rc, out
+
+    async def _util_once(self, *args, timeout=15.0):
         proc = self.proc = await self.spawn(self.util, *args, stdout=asyncio.subprocess.PIPE,
                                             stderr=asyncio.subprocess.STDOUT)
         try:
