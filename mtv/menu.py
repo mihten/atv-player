@@ -3,12 +3,14 @@
 Pure model + renderer: Menu holds a stack of pages, key() moves / selects, render() returns ASS events. Lists come
 from the server's HTTP API through an async `fetch(path)`; commands go back through `send(msg)` (the player's
 WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left back
-one page, Blue (Menu), Back or Red closes.
+one page, Blue (Menu), Back or Red closes. The Volume row (root page) is a level row: Left / Right change the volume
+(`volume.volume_step`), OK mutes (`volume.volume_mute`); `volume.volume_now()` gives (label, percent or None, muted).
 """
 RES_X, RES_Y = 1920, 1080
 X0, Y0, X1, Y1 = 80, 70, 1160, 1010      # panel
 ROW_Y, ROW_H, ROWS = 200, 62, 12         # first row, row height, visible rows
 LABEL_MAX = 54
+STEP = 5                                 # % per press on the Volume row
 SUB_CHARS = 1.25                         # label characters given up per character of the right-hand text
 
 BG = "&H101010&"
@@ -53,8 +55,9 @@ def fit(label, sub):
 
 
 class Row:
-    def __init__(self, label, sub="", act=None, opens=False, closes=False):
+    def __init__(self, label, sub="", act=None, opens=False, closes=False, level=False):
         self.label, self.sub, self.act, self.opens, self.closes = label, sub, act, opens, closes
+        self.level = level   # a volume row: Left / Right change it, OK mutes
 
 
 class Page:
@@ -66,8 +69,9 @@ class Page:
 
 
 class Menu:
-    def __init__(self, fetch, send, state=lambda: None):
+    def __init__(self, fetch, send, state=lambda: None, volume=None):
         self.fetch, self.send, self.state = fetch, send, state
+        self.vol = volume
         self.pages = []
         self.library = None          # id -> summary, for queue titles (loaded once per open)
 
@@ -89,6 +93,10 @@ class Menu:
             rows.append(Row("Pause" if playing else "Play", item_label(cur),
                             act={"cmd": "toggle"}))  # stays open (Mihovil): the label follows the state
             rows.append(Row("Stop", "screen goes black", act={"cmd": "stop"}, closes=True))
+        if self.vol is not None:
+            label, pct, muted = self.vol.volume_now()
+            rows.append(Row(label, "not connected" if pct is None else "muted" if muted else f"{pct} %",
+                            act=self.vol_action, level=True))
         n = len(st.get("queue") or [])
         rows += [
             Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True),
@@ -101,6 +109,9 @@ class Menu:
             Row("Repeat", st.get("repeat_mode") or "all", act={"cmd": "repeat"}),
         ]
         return Page("TV Player", rows)
+
+    async def vol_action(self):
+        """Placeholder act of the Volume row (it must be an action so the row is selectable); the keys are handled in key()."""
 
     def queue_page(self):
         async def load(page):
@@ -199,6 +210,15 @@ class Menu:
         if name in ("red", "blue", "back"):  # Blue (the Menu function) opens and closes, Back and Red close
             self.close()
             return True
+        row = page.rows[page.sel] if page.rows and not page.loading and 0 <= page.sel < len(page.rows) else None
+        if row is not None and row.level and self.vol is not None and name in ("left", "right", "ok"):
+            from_ = self.vol  # a level row: Left / Right = volume, OK = mute
+            if name == "ok":
+                await from_.volume_mute()
+            else:
+                await from_.volume_step(STEP if name == "right" else -STEP)
+            self.refresh_root()
+            return True
         if name == "left":
             if len(self.pages) > 1:
                 self.pages.pop()
@@ -260,6 +280,10 @@ class Menu:
             text(X0 + 40, y + 6, label, 36, WHITE if row.act else GREY)
             if sub:
                 text(X1 - 40, y + 10, sub, 28, GREY if i != page.sel else WHITE, an=9)
-        hint = "OK select   ◀ previous page   Menu / Back close" if len(self.pages) > 1 else "OK select   Menu / Back close"
+        row = page.rows[page.sel] if page.rows and 0 <= page.sel < len(page.rows) else None
+        if row is not None and row.level:
+            hint = "◀ ▶ volume   OK mute   Menu / Back close"
+        else:
+            hint = "OK select   ◀ previous page   Menu / Back close" if len(self.pages) > 1 else "OK select   Menu / Back close"
         text(X0 + 40, Y1 - 46, hint, 26, DIM)
         return "\n".join(ev)

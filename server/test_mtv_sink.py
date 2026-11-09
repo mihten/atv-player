@@ -193,6 +193,19 @@ async def main(tmp):
             check(not await H.drain(sink), "garbage volume dropped")
             await boxremote.send_json({"type": "volume", "percent": 33, "muted": False})
             check(of_type(await H.drain(sink), "volume") == [{"type": "volume", "percent": 33, "muted": False}], "a box remote's volume still reaches the sink")
+            # the player's own volume keys / menu: `sink_volume` = the headphones' volume while the sound is routed
+            await mtv.send_json({"type": "sink_volume", "percent": 62.4, "muted": True})
+            check(of_type(await H.drain(sink), "volume") == [{"type": "volume", "percent": 62, "muted": True}], "player sink_volume -> the sink's volume (typed)")
+            await mtv.send_json({"type": "sink_volume", "percent": "x"})
+            await mtv.send_json({"type": "sink_volume", "percent": 900})
+            got = of_type(await H.drain(sink), "volume")
+            check(got == [{"type": "volume", "percent": 100, "muted": False}], f"garbage dropped, 900 clamped to 100 ({got})")
+            await mtv.send_json({"type": "volume", "percent": 5})
+            check(not of_type(await H.drain(sink), "volume"), "a plain `volume` from the player is still not relayed")
+            await remote.send_json({"type": "volume", "percent": 20, "muted": False})
+            await H.drain(sink)
+            await sink.send_json({"type": "sink", "name": "atv-audio", "output": dict(READY, volume=20)})
+            await H.drain(mtv)
 
             # ---- the box yields to the TV Player while it plays through the sink
             await tvremote.send_json({"type": "cmd", "cmd": "pause"})
@@ -233,6 +246,8 @@ async def main(tmp):
             await remote.send_json({"type": "cmd", "cmd": "next"})
             await H.drain(mtv)
             check(not [m for m in await H.drain(sink) if m["type"] in ("load", "control")], "the TV Player's next is no longer sent to the sink")
+            await mtv.send_json({"type": "sink_volume", "percent": 70, "muted": False})
+            check(not of_type(await H.drain(sink), "volume"), "sink_volume while the sound is on HDMI is ignored (it is not the headphones')")
 
             # ---- the player leaves while routed: the sink goes back to the Apple TV
             await mtv.send_json({"type": "route", "sink": True})

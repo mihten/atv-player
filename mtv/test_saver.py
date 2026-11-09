@@ -42,7 +42,8 @@ def model():
     c.t += 2
     check(s.tick(False) == "show" and s.on, "model: comes up after 300 s idle")
     x, y = s.pos
-    check(S.X_MIN <= x <= S.X_MAX and S.Y_MIN <= y <= S.Y_MAX, f"model: first spot on the screen ({s.pos})")
+    x0, x1, y0, y1 = S.text_box(S.IDLE_TEXT, S.IDLE_SIZE)
+    check(x0 <= x <= x1 and y0 <= y <= y1, f"model: first spot on the screen ({s.pos})")
     c.t += 179
     check(s.tick(False) is None, "model: stays put for 179 s")
     spots = [s.pos]
@@ -52,7 +53,7 @@ def model():
         assert check_move == "move"
         spots.append(s.pos)
     far = all((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 >= S.MIN_JUMP ** 2 for a, b in zip(spots, spots[1:]))
-    inside = all(S.X_MIN <= p[0] <= S.X_MAX and S.Y_MIN <= p[1] <= S.Y_MAX for p in spots)
+    inside = all(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for p in spots)
     check(far and inside and len(set(spots)) > 30, "model: 40 jumps: always far from the last spot, always on the screen, different spots")
     c.t += 5
     check(s.tick(True) == "hide" and not s.on, "model: activity removes it")
@@ -61,6 +62,13 @@ def model():
     ass = s.render()
     check("MTVPlayer" in ass and ass.count("\\p1") == 1 and f"\\pos({s.pos[0]},{s.pos[1]})" in ass
           and f"{S.RES_X} {S.RES_Y}" in ass, "model: render = black screen + the name at the spot")
+    check(f"\\fs{S.IDLE_SIZE}" in ass and S.IDLE_SIZE >= 200, f"model: big text ({S.IDLE_SIZE} px, was 96)")
+    # the text really fits: width from the measured factor, in the most extreme positions
+    for text, size in ((S.IDLE_TEXT, S.IDLE_SIZE), (S.STOPPED_TEXT, S.STOPPED_SIZE)):
+        a, b, c_, d = S.text_box(text, size)
+        w = 0.50 * len(text) * size   # measured libass width is 0.49 / 0.47 of len * size
+        check(a - w / 2 >= 0 and b + w / 2 <= S.RES_X and c_ - size / 2 >= 0 and d + size / 2 <= S.RES_Y,
+              f"model: '{text}' at {size} px fits on the screen at every allowed spot")
     c.t += 10
     s.tick(False)
     check(s.on, "model: on again")
@@ -72,6 +80,30 @@ def model():
     s.on = True
     s.wake()
     check(s.recently_woke() and not (c.__setattr__("t", c.t + 2.5) or s.recently_woke()), "model: held-key window is 2 s")
+
+
+def stopped_model():
+    c = Clock()
+    s = S.Saver(c, rng=random.Random(5), after=300, move=180)
+    check(s.tick(False, True) == "show" and s.on and s.stopped, "stopped: comes up AT ONCE with the stopped text")
+    ass = s.render()
+    check("MTV Player stopped" in ass and f"\\fs{S.STOPPED_SIZE}" in ass and "MTVPlayer" not in ass, "stopped: render has the stopped text and its size")
+    x0, x1, y0, y1 = S.text_box(S.STOPPED_TEXT, S.STOPPED_SIZE)
+    check(x0 <= s.pos[0] <= x1 and y0 <= s.pos[1] <= y1, "stopped: its spot is inside the stopped text's bounds")
+    c.t += 181
+    check(s.tick(False, True) == "move" and s.stopped, "stopped: it jumps like the idle one")
+    check(s.wake() is True and not s.on, "stopped: a key closes it")
+    c.t += 1
+    check(s.tick(False, True) is None, "stopped: still stopped after the key -> it does not come straight back")
+    c.t += 300
+    check(s.tick(False, True) == "show" and s.stopped, "stopped: after the idle time it comes back, with the stopped text")
+    s.tick(True, False)
+    s.on = False
+    c.t += 301
+    check(s.tick(False, False) == "show" and not s.stopped and "MTVPlayer" in s.render(), "idle (not stopped): the plain name")
+    check(s.tick(False, True) == "move" and s.stopped and "MTV Player stopped" in s.render(), "a Stop while the plain name shows: the text changes")
+    s2 = S.Saver(c, rng=random.Random(5), after=300, move=180)
+    check(s2.tick(True, True) is None and not s2.on, "busy wins over stopped (something is going on)")
 
 
 def config(tmp):
@@ -172,6 +204,18 @@ async def player_part():
     await p.attach(mpv2)
     check(len(overlays(mpv2, 3)) == 1 and "MTVPlayer" in overlays(mpv2, 3)[0][1], "a restarted mpv gets the screensaver again")
 
+    # a Stop shows the stopped screen at once; a load clears it
+    await p.handle({"type": "control", "action": "stop"})
+    await p.tick()
+    ov = overlays(mpv2, 3)
+    check(p.stopped and p.saver.on and "MTV Player stopped" in ov[-1][1], "control stop -> the stopped screensaver at once")
+    await M.on_key(p, "ok", False)
+    check(not p.saver.on and overlays(mpv2, 3)[-1][0] == "none", "a key closes the stopped screen (and only that)")
+    await p.handle({"type": "load", "item": {"id": 9}, "position": 0, "autoplay": False})
+    check(not p.stopped, "a load ends 'stopped'")
+    sent.clear()
+    p.item = None
+
     # Stop key
     sent.clear()
     await M.on_key(p, "ok", False)         # wakes it
@@ -191,6 +235,7 @@ async def player_part():
 
 async def main():
     model()
+    stopped_model()
     await player_part()
 
 

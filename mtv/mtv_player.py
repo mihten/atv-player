@@ -40,12 +40,12 @@ Environment:
 Sound: HDMI (default) or the atv-audio headphones, chosen on the web remote (Settings > Audio): mpv is muted, the
 server's atv-audio sink plays the same file and follows this player's clock (sinklink.py).
 
-Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black; Play starts the item again),
-Blue = open the menu, CH+ / CH- = next / previous, Right / Left = +10 / -10 s,
-Up / Down = +60 / -60 s (Left/Right/Up/Down repeat while held; each shows a short text). Menu open (menu.py): Up / Down
-move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close. A held key counts as one press (arrows
-repeat while held). The menu's first row is Play / Pause (the menu stays open). While the screensaver is on, any key only
-closes it.
+Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black, "MTV Player stopped"; Play starts
+the item again), Blue = open the menu, Up / Down = next / previous video, Right / Left = +10 / -10 s (Left/Right repeat while
+held), CH+ / CH- = next / previous video on HDMI sound, volume up / down (5 %) when the sound is on the headphones; each shows a
+short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close; on the Volume
+row Left / Right change the volume and OK mutes. A held key counts as one press (arrows repeat while held in the menu). The
+menu's first rows are Play / Pause, Stop and Volume (the menu stays open). While the screensaver is on, any key only closes it.
 
 Run: python3 mtv_player.py
 """
@@ -73,8 +73,10 @@ import remotes as remotes_mod  # noqa: E402
 import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
+VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
+HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
 TICK = 0.25
 RECONNECT_MAX = 30.0
 # Cheap HDR -> SDR: the default peak detection + tone mapping drops ~15 frames/s of 4K60 HLG on a Gen 9.5 iGPU.
@@ -186,10 +188,12 @@ class Player:
         self.load_volume()
         self.state = None            # last session state from the server (queue, current, playing, shuffle, ...)
         self.http = None             # aiohttp session for the menu's lists (set while connected)
-        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state)
+        self.menu = menu_mod.Menu(self.fetch, self.send, lambda: self.state, volume=self)
         self.last_key_at = -1e9      # monotonic time of the last key event from the keyboard receiver (Flirc)
         self.remotes = remotes_mod.Remotes(cfg.flirc_util, cfg.state_dir or tempfile.gettempdir(), self.remotes_changed,
                                            self.log, quiet_for=lambda: self.mono() - self.last_key_at)
+        self.stopped = False         # playback was stopped (Stop): the screensaver says so; cleared by the next load
+        self.hp_set = None           # (percent, muted, time) of the headphones' volume just sent
         self.link = sinklink.SinkLink(self)   # the sound on the atv-audio headphones (chosen on the web remote)
         self.link.lip_ms = cfg.lip_sync
         self.saver = saver_mod.Saver(mono, after=cfg.saver_after, move=cfg.saver_move)
@@ -237,7 +241,7 @@ class Player:
         return bool(self.menu.open or self.remotes.active_screen or (self.item and self.want_play))
 
     async def saver_tick(self):
-        what = self.saver.tick(self.busy())
+        what = self.saver.tick(self.busy(), self.stopped)
         if what is None:
             return
         if what != "move":
@@ -263,6 +267,43 @@ class Player:
             await self.draw_saver(False)
             return True
         return False
+
+    # -- volume keys / the menu's Volume row: the headphones' own volume while the sound goes there, else mpv's volume
+    def volume_now(self):
+        """(label, percent or None, muted): the volume the keys and the menu act on."""
+        if not self.link.on:
+            return "Volume", self.volume, self.muted
+        out = (self.link.sink or {}).get("output") or {}
+        pct, muted = out.get("volume"), bool(out.get("muted"))
+        if self.hp_set and self.mono() - self.hp_set[2] < HP_HOLD:
+            pct, muted = self.hp_set[0], self.hp_set[1]
+        if not self.link.usable:
+            return "Headphones volume", None, False
+        return "Headphones volume", pct, muted
+
+    async def set_level(self, percent, muted):
+        """Set that volume (HDMI: mpv, kept in the state file; headphones: the sink's output volume, through the server)."""
+        percent = max(0, min(100, int(percent)))
+        if self.link.on:
+            self.hp_set = (percent, bool(muted), self.mono())
+            self.send({"type": "sink_volume", "percent": percent, "muted": bool(muted)})
+        else:
+            await self.set_volume(percent, muted)
+
+    async def volume_step(self, delta):
+        """A step up / down (unmutes). Returns the text for the screen."""
+        label, pct, _muted = self.volume_now()
+        if pct is None:
+            return "Headphones not connected"
+        await self.set_level(pct + delta, False)
+        return f"{label} {max(0, min(100, pct + delta))} %"
+
+    async def volume_mute(self):
+        label, pct, muted = self.volume_now()
+        if pct is None:
+            return "Headphones not connected"
+        await self.set_level(pct, not muted)
+        return f"{label} {'muted' if not muted else f'{pct} %'}"
 
     # -- volume: mpv's own (software) volume; the TV / soundbar volume is separate
     def _volume_file(self):
@@ -490,6 +531,7 @@ class Player:
             self.pos = float(msg.get("position") or 0)
             self.want_play = bool(msg.get("autoplay")) and bool(self.item)
             self.loads += 1
+            self.stopped = False
             if self.saver.on and self.want_play:
                 await self.wake()
             if self.item:
@@ -547,6 +589,7 @@ class Player:
                 if mpv:
                     await mpv.set_property("pause", True)
             elif action == "stop":
+                self.stopped = True
                 self.want_play = False
                 self.item = None
                 self.pos = 0.0
@@ -607,7 +650,7 @@ class Player:
                    "duration": dur})
 
 
-SEEK_KEYS = {"right": 10.0, "left": -10.0, "up": 60.0, "down": -60.0}
+SEEK_KEYS = {"right": 10.0, "left": -10.0}
 
 
 def clock(sec):
@@ -681,9 +724,17 @@ async def on_key(player, name, held):
         playing = player.want_play    # after Stop the player holds no item: the server restarts the current one
         player.send({"type": "cmd", "cmd": "toggle"})
         await osd(player, "Pause" if playing else "Play")
+    elif name in ("up", "down"):       # next / previous video (a held key is one press)
+        if held:
+            return
+        player.send({"type": "cmd", "cmd": "next" if name == "up" else "prev"})
+        await osd(player, "Next" if name == "up" else "Previous")
     elif name in ("ch_up", "ch_down"):
-        player.send({"type": "cmd", "cmd": "next" if name == "ch_up" else "prev"})
-        await osd(player, "Next" if name == "ch_up" else "Previous")
+        if player.link.on:             # the sound is on the headphones: these keys are their volume
+            await osd(player, await player.volume_step(VOLUME_STEP if name == "ch_up" else -VOLUME_STEP), 1200)
+        else:
+            player.send({"type": "cmd", "cmd": "next" if name == "ch_up" else "prev"})
+            await osd(player, "Next" if name == "ch_up" else "Previous")
     elif name in SEEK_KEYS:
         if not it:
             return

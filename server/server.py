@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.26.0"
+VERSION = "0.26.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -2161,6 +2161,10 @@ async def on_message(s, data, role, ws=None):
                 await to_players(s, {"type": "volume", **vol})
     elif role == "player" and s.kind == "mtv" and kind in ("route", "lip_sync", "clock"):
         await mtv_to_sink(s, data)
+    elif role == "player" and s.kind == "mtv" and kind == "sink_volume":  # its volume keys / menu: the headphones' own volume
+        vol = clean_volume(data)
+        if vol is not None and mtv_routed():  # only while its sound is on the headphones (else it is mpv's own volume)
+            await sink_volume(vol)
     elif role == "player" and kind == "output" and s.kind == "mtv":  # screen, sound device, volume as it is now
         MTV_OUT[ws] = clean_mtv_output(data)
         await broadcast_state(s)

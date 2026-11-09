@@ -25,12 +25,12 @@ RES_X, RES_Y = 1920, 1080
 # Play / Pause button again, or by Skip on the phone (a small remote has no spare buttons). `optional` = shown as optional.
 KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("F4", "Menu", "opens and closes the menu", False),
-        ("up", "Up", "menu up; forward 1 minute", False),
-        ("down", "Down", "menu down; back 1 minute", False),
+        ("up", "Up", "menu up; next video", False),
+        ("down", "Down", "menu down; previous video", False),
         ("left", "Left", "menu back; back 10 seconds", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
-        ("pageup", "Next", "next video; page down in the menu", True),
-        ("pagedown", "Previous", "previous video; page up in the menu", True),
+        ("pageup", "Next", "next video, volume up on headphones; page down in the menu", True),
+        ("pagedown", "Previous", "previous video, volume down on headphones; page up in the menu", True),
         ("escape", "Back", "closes the menu", True),
         ("F1", "Stop", "stops playback; the screen goes black", True)]
 FUNCTIONS = [k[1] for k in KEYS]

@@ -202,6 +202,11 @@ class FakeMpv:
         self.props = {"duration": 200.0, "pause": False}
         self.texts = []
         self.overlays = []
+        self.sets = []
+
+    async def set_property(self, name, value):
+        self.sets.append((name, value))
+        self.props[name] = value
 
     async def command(self, *args, timeout=5.0):
         if args[0] == "show-text":
@@ -242,12 +247,23 @@ async def keys():
     check(seeks == [60.0, 70.0] and p.mpv.texts[-1] == "+10 s   1:10 / 3:20", f"right twice adds up ({seeks})")
     held_logs = [m for m in sent if m.get("message") == "mtv: key right"]
     check(len(held_logs) == 1, "held repeats are not logged")
-    await M.on_key(p, "down", False)
-    await M.on_key(p, "down", False)
-    check([m["position"] for m in sent if m.get("cmd") == "seek"][-2:] == [10.0, 0.0], "down -60 twice, clamped at 0")
-    p.pos = 190.0
+    await M.on_key(p, "left", False)
+    p.pos = 5.0
+    await M.on_key(p, "left", False)
+    check([m["position"] for m in sent if m.get("cmd") == "seek"][-1] == 0.0, "left -10 s, clamped at 0")
+    p.pos = 195.0
+    await M.on_key(p, "right", False)
+    check([m["position"] for m in sent if m.get("cmd") == "seek"][-1] == 198.0, "right near the end stops 2 s before it")
+    # Up / Down = next / previous video (no longer +-60 s); a held key is one press
+    n = len(sent)
     await M.on_key(p, "up", False)
-    check([m["position"] for m in sent if m.get("cmd") == "seek"][-1] == 198.0, "up near the end stops 2 s before it")
+    await M.on_key(p, "up", True)
+    await M.on_key(p, "up", True)
+    await M.on_key(p, "down", False)
+    await M.on_key(p, "down", True)
+    new = [m["cmd"] for m in sent[n:] if m.get("type") == "cmd"]
+    check(new == ["next", "prev"] and p.mpv.texts[-1] == "Previous", f"Up / Down -> next / previous, repeats of a held key ignored ({new})")
+    check(not [m for m in sent[n:] if m.get("cmd") == "seek"], "... and no 60 s seek any more")
     n = len(sent)
     await M.on_key(p, "red", False)
     check(len(sent) == n, "Red with the menu closed: nothing sent")
