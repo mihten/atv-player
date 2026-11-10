@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.26.1"
+VERSION = "0.27.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -3552,6 +3552,37 @@ async def api_status(request):
     })
 
 
+RESTART_CODE = 75  # exit status of a requested restart: the unit's Restart=on-failure starts the server again
+
+
+def save_all():
+    """Write every state file now (they are already written on each change; this is the safety net before an exit)."""
+    for s in SESSIONS.values():
+        s.save()
+    save_history()
+    save_playlists()
+    if LISTEN is not None:
+        LISTEN.commit()
+        LISTEN.close()
+
+
+def restart_now():
+    log.warning("restart: exiting with status %d, systemd starts the server again", RESTART_CODE)
+    logging.shutdown()
+    os._exit(RESTART_CODE)
+
+
+async def api_restart(request):
+    """Settings -> Server -> Restart server. Saves the state, answers, then exits with RESTART_CODE half a second later.
+    A direct exit on purpose: the normal aiohttp shutdown waits on open players' websockets and streams (systemd had to
+    SIGKILL every stop after 90 s); the state is on disk and child ffmpeg jobs die with the unit's cgroup."""
+    need_admin(request)
+    log.warning("restart requested from %s", request.remote)
+    save_all()
+    asyncio.get_running_loop().call_later(0.5, restart_now)
+    return web.json_response({"ok": True, "started": STARTED, "version": VERSION})
+
+
 async def api_cache_clear(request):
     """Delete the audio copies (they are made again when needed). Not while the copy job runs."""
     need_admin(request)
@@ -3876,6 +3907,7 @@ def make_app():
     app.router.add_delete("/api/settings/shares/{key}", api_settings_share_delete)
     app.router.add_get("/api/status", api_status)
     app.router.add_post("/api/cache/clear", api_cache_clear)
+    app.router.add_post("/api/restart", api_restart)
     app.router.add_get("/api/backup", api_backup_get)
     app.router.add_post("/api/backup", api_backup_restore)
     app.router.add_post("/api/atv-audio", api_atv_audio)
