@@ -3,7 +3,7 @@ with mpv osd-overlays over the video, which keeps playing underneath.
 
 Two layers: backdrop() = an opaque Aurora background in the cover's colours (drawn once per item), front() = the left
 column (status, title, artist, album, facts, progress, up next) and the time-synced lyrics on the right: the current
-line bright and full size, the others dim and a little smaller, the list scrolls by itself so the current line sits at
+line bright, the others dim (same size), the list scrolls by itself so the current line sits at
 38 % of the panel (0.5 s ease in / out); lines fade out at the panel's top and bottom edges. No manual scrolling. Only
 TIME-SYNCED lyrics are shown (owner's rule): a file with untimed lyrics or none shows the left column and a short note.
 
@@ -30,7 +30,8 @@ PANEL_H = PANEL_Y1 - PANEL_Y0
 # lyrics (LyricsMetrics.tv): line 54, gap 34, top 140, anchor 0.38
 LINE, LINE_W, LINE_LH = 54, 700, 1.17          # size, weight, line height factor
 CUE_GAP, CONTENT_TOP, ANCHOR = 34, 140, 0.38
-DIM, DIM_SCALE = 0.3, 93                       # inactive lines: opacity, scale %
+DIM = 0.3                                      # inactive lines: opacity (no size change: re-rasterising scaled text was the
+                                               # main CPU cost of a scroll on the TV box, owner chose to drop it)
 FADE_TOP, FADE_BOTTOM = 0.09, 0.10             # edge fade (fraction of the panel height)
 SCROLL_S, LIT_S = 0.5, 0.3                     # animation lengths
 LIT_AFTER_END = 1.5                            # a line stays lit 1.5 s after its end time
@@ -344,9 +345,8 @@ class LyricsView:
             else:
                 t = 0.0
             op = DIM + (1 - DIM) * t
-            scale = DIM_SCALE + (100 - DIM_SCALE) * t
             for n, line in enumerate(lines):
-                ly = sy + n * lh * (scale / 100)
+                ly = sy + n * lh
                 mid = ly + lh / 2
                 edge = 1.0
                 if mid < PANEL_Y0 + top_fade:
@@ -355,7 +355,7 @@ class LyricsView:
                     edge = max(0.0, (PANEL_Y1 - mid) / bottom_fade)
                 if op * edge <= 0.01:
                     continue
-                ev.append(d.text(RX0, ly, line, LINE, INK, op * edge, LINE_W, scale=scale, clip=clip))
+                ev.append(d.text(RX0, ly, line, LINE, INK, op * edge, LINE_W, clip=clip))
 
     def signature(self, pos, playing, upcoming):
         """Changes whenever the front layer looks different outside an animation (redraw then)."""

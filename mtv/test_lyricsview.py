@@ -136,8 +136,7 @@ def main():
     dim = [t for t in tx if t[0] == "First line"]
     check(cur and cur[0][1] == 0, "the current line: full opacity (braces escaped)")
     check(dim and abs(dim[0][1] - round(0.7 * 255)) <= 2, "another line: 30 % opacity")
-    check("\\fscx93" in ass and "\\fscx100" not in [t for t in ass.split("\n") if "Second" in t][0],
-          "others at 93 %, the current one at full size")
+    check("\\fscx" not in ass and "\\fscy" not in ass, "no size change between lines (no scaled text to re-rasterise)")
     mid_anim = v.front(9.5, 200, True, [], 300.1)
     a_mid = [t for t in texts(mid_anim) if t[0].startswith("Second")][0][1]
     check(0 < a_mid < round(0.7 * 255), "lighting up is animated (opacity between dim and full after 0.1 s)")
