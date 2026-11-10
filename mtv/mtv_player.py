@@ -1393,6 +1393,8 @@ async def main():
     await asyncio.gather(*tasks, return_exceptions=True)  # run_mpv's finally terminates mpv
     if player.shader_dir:
         shutil.rmtree(player.shader_dir, ignore_errors=True)
+    if player.info_dir:
+        shutil.rmtree(player.info_dir, ignore_errors=True)
     log("stopped")
     return 0
 

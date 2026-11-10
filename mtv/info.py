@@ -106,7 +106,7 @@ class Info:
         ev = []
         for g, op in ((18, 0.10), (10, 0.14), (4, 0.20)):          # soft shadow (stacked, no blur: cheap at 4K)
             ev.append(d.rrect(X0 - g, Y0 - g + 8, X1 + g, Y1 + g + 8, 30 + g, d.BLACK, op))
-        ev.append(d.rrect(X0, Y0, X1, Y1, 30, card, 0.96))
+        ev.append(d.rrect(X0, Y0, X1, Y1, 30, card, 1))   # opaque: the video's own subtitle would ghost through
         tx, y = THUMB[0], THUMB[1]
         if not data.get("thumb"):                                  # no cover: a tinted tile keeps the layout
             ev.append(d.rrect(tx, y, tx + THUMB[2], y + THUMB[3], THUMB_R, accent, 0.22))
