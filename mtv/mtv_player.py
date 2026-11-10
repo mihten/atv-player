@@ -46,10 +46,12 @@ server's atv-audio sink plays the same file and follows this player's clock (sin
 Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black, "MTV Player stopped"; Play starts
 the item again), Blue = open the menu, Up / Down = previous / next video, Right / Left = +10 / -10 s (Left/Right repeat while
 held), CH+ / CH- = volume up / down (5 %; mpv's volume on HDMI, the headphones' own when the sound goes there); each shows a
-short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close. A held key
-counts as one press (arrows repeat while held in the menu). The menu's first page: Play / Pause, Stop, Volume, Boost, Loudness
-(the server's sound settings of this session), Lyrics (language: Off / Auto / English / Croatian), Lyrics screen, then the
-lists, Shuffle, Repeat. While the screensaver is on, any key only closes it.
+short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left and Back go back one page (Back closes on the
+first page), Blue / Red close. A held key counts as one press (arrows repeat while held in the menu). The menu's first page:
+Lyrics screen, Lyrics (language: Off / Auto / English / Croatian), Volume, Boost, Loudness (the server's sound settings of
+this session), Equalizer (a short preset picker: Off, Momentum 4, Pop, Rock, Full bass, Classical; the custom curve is set
+in the web remote), Shuffle, Repeat, then a divider and the lists: Queue, Playlists, For you, Music videos. No Play / Pause
+or Stop row (the remote has those buttons). While the screensaver is on, any key only closes it.
 
 Lyrics: the video's own lyrics (subtitle) track in the chosen language is shown on the picture (Auto = the file's default
 track). The lyrics screen (lyricsview.py) replaces the picture with the Apple TV's lyrics view: time-synced lyrics only,
@@ -84,7 +86,7 @@ import remotes as remotes_mod  # noqa: E402
 import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)

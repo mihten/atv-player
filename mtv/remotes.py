@@ -31,7 +31,7 @@ KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
         ("pageup", "CH+ button", "the channel up button: volume up in the player, page up in the menu", True),
         ("pagedown", "CH- button", "the channel down button: volume down in the player, page down in the menu", True),
-        ("escape", "Back", "closes the menu", True),
+        ("escape", "Back", "goes up one menu page, closes the menu from the first", True),
         ("F1", "Stop", "stops playback; the screen goes black", True)]
 FUNCTIONS = [k[1] for k in KEYS]
 # Older names of the CH+ / CH- functions (same Flirc keys): Next / Previous until 0.11.0, Volume up / down in 0.12.0

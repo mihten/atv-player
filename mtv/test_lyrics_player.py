@@ -204,11 +204,14 @@ async def main():
 
     # ---- menu rows: Boost, Loudness, Lyrics, Lyrics screen
     p.state = {"current": item(10), "playing": True, "queue": [10], "index": 0,
-               "sound": {"preset": "off", "boost": 2, "loudness": "raise"}}
+               "sound": {"preset": "off", "boost": 2, "loudness": "raise"},
+               "sound_presets": [["off", "Off"], ["a:momentum4", "Momentum 4"], ["p:11", "Pop"], ["p:13", "Rock"],
+                                 ["p:4", "Full bass"], ["p:1", "Classical"], ["p:17", "Techno"], ["custom", "Custom"]]}
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
-    check(labels[:7] == ["Pause", "Stop", "Volume", "Boost", "Loudness", "Lyrics", "Lyrics screen"],
-          f"menu: Boost, Loudness, Lyrics, Lyrics screen after Volume ({labels[:7]})")
+    check(labels[:8] == ["Lyrics screen", "Lyrics", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]
+          and labels[8:] == ["Queue", "Playlists", "For you", "Music videos"],
+          f"menu: Lyrics screen first, settings, then Queue / Playlists / For you / Music videos ({labels})")
     check(len(labels) <= M.menu_mod.ROWS, f"the first page fits on the screen ({len(labels)} rows)")
     sent.clear()
     p.menu.page.sel = 3
@@ -240,20 +243,27 @@ async def main():
     await M.on_key(p, "ok", False)
     check(last_cmd(sent) == {"type": "cmd", "cmd": "sound", "loudness": "raise"}, "Loudness OK again: raise quiet tracks")
     p.menu.page.sel = 5
-    check(p.menu.page.rows[5].sub == "English", "Lyrics row shows the language")
+    sent.clear()
     await M.on_key(p, "right", False)
-    check(p.lyrics_lang == "hrv" and p.menu.page.rows[5].sub == "Croatian", "Lyrics Right: Croatian")
+    check(last_cmd(sent) == {"type": "cmd", "cmd": "sound", "preset": "a:momentum4"} and p.menu.page.rows[5].sub == "Momentum 4",
+          "Equalizer Right: Momentum 4 sent through the real player, the row shows it")
+    await M.on_key(p, "ok", False)
+    check(len([m for m in sent if m.get("cmd") == "sound"]) == 1, "OK on the Equalizer row sends nothing")
+    p.menu.page.sel = 1
+    check(p.menu.page.rows[1].sub == "English", "Lyrics row shows the language")
+    await M.on_key(p, "right", False)
+    check(p.lyrics_lang == "hrv" and p.menu.page.rows[1].sub == "Croatian", "Lyrics Right: Croatian")
     await M.on_key(p, "right", False)
     check(p.lyrics_lang == "hrv", "Lyrics Right at the end: stays (no wrap)")
     for _ in range(5):
         await M.on_key(p, "left", False)
-    check(p.lyrics_lang == "off" and p.menu.page.rows[5].sub == "Off" and len(p.menu.pages) == 1,
+    check(p.lyrics_lang == "off" and p.menu.page.rows[1].sub == "Off" and len(p.menu.pages) == 1,
           "Lyrics Left x5: Off, stops there, Left does not leave the page")
     await M.on_key(p, "ok", False)
     check(p.lyrics_lang == "off", "OK on the Lyrics row does nothing")
-    p.menu.page.sel = 6
+    p.menu.page.sel = 0
     await M.on_key(p, "ok", False)
-    check(p.lyrics_on and p.menu.page.rows[6].value is True and mpv.cmds("change-list")[-1][1:3] == ("glsl-shaders", "set"),
+    check(p.lyrics_on and p.menu.page.rows[0].value is True and mpv.cmds("change-list")[-1][1:3] == ("glsl-shaders", "set"),
           "Lyrics screen OK: on, the screen comes up under the menu")
     await M.on_key(p, "ok", False)
     check(not p.lyrics_on, "Lyrics screen OK again: off")

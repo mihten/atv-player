@@ -2,12 +2,16 @@
 
 Pure model + renderer: Menu holds a stack of pages, key() moves / selects, render() returns ASS events. Lists come
 from the server's HTTP API through an async `fetch(path)`; commands go back through `send(msg)` (the player's
-WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left back
-one page, Blue (Menu), Back or Red closes.
+WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left and
+Back go back one page (Back closes on the first page), Blue (Menu) and Red close.
+
+First page (owner, 2026-11-10): the settings first (Lyrics screen, Lyrics, Volume, Boost, Loudness, Equalizer, Shuffle,
+Repeat), then a subtle divider and the lists (Queue, Playlists, For you, Music videos). No Play / Pause or Stop row (the
+remote has those buttons). Back goes up ONE page and closes the menu only on the first page; Menu (Blue) and Red close.
 
 Row kinds (the owner's Apple TV conventions): an ACTION runs on OK; a TOGGLE (two values: Loudness, Lyrics screen,
-Shuffle) switches on OK; a CHOICE of more than two values (Lyrics language) steps with Left / Right and stops at the
-ends; a LEVEL (Volume, Boost) steps with Left / Right, OK mutes the volume. `ctl` (the player) gives the volume
+Shuffle) switches on OK; a CHOICE of more than two values (Lyrics language, Equalizer preset) steps with Left / Right and
+stops at the ends; a LEVEL (Volume, Boost) steps with Left / Right, OK mutes the volume. `ctl` (the player) gives the volume
 (`volume_now()`, `volume_step()`, `volume_mute()`), the lyrics language and screen (`lyrics_lang`, `set_lyrics_lang()`,
 `lyrics_on`, `set_lyrics_on()`) and the cover colours (`accent()`); Boost and Loudness are the server's sound settings
 of this session (state `sound`), changed with the `sound` command.
@@ -28,6 +32,9 @@ STEP = 5                                 # % per press on the Volume row
 BOOST_MAX = 8
 PENDING_S = 2.0                          # a sound value just sent counts until the server's state shows it
 LANGS = [("off", "Off"), ("auto", "Auto"), ("eng", "English"), ("hrv", "Croatian")]
+# Equalizer presets offered on the TV (by the server's label; the full list and the custom curve are in the web remote)
+EQ_PICK = ("Off", "Momentum 4", "Pop", "Rock", "Full bass", "Classical")
+SEP_GAP = 28                             # extra space above the first list row of the first page (the divider sits in it)
 DEFAULT_ACCENT = (0.45, 0.68, 1.0)
 CARD = (0.055, 0.055, 0.075)
 INK, DARK = d.WHITE, (0.07, 0.07, 0.09)
@@ -56,12 +63,14 @@ def item_label(it):
 
 class Row:
     def __init__(self, label, sub="", act=None, opens=False, closes=False, level=False, kind=None, value=None,
-                 vmax=None, key=None):
+                 vmax=None, key=None, options=None, sep=False):
         self.label, self.sub, self.act, self.opens, self.closes = label, sub, act, opens, closes
+        self.options = options                    # choice rows with a changing list (Equalizer): [(value, label)]
+        self.sep = sep                            # a subtle divider is drawn above this row
         self.level = level                        # a level row (Volume / Boost): Left / Right change it
         self.kind = kind or ("level" if level else "opens" if opens else "action")
         self.value, self.vmax = value, vmax       # level: value 0..vmax; toggle: bool; choice: index
-        self.key = key                            # which setting (volume, boost, loudness, lang, lyrics, shuffle)
+        self.key = key                            # which setting (volume, boost, loudness, lang, lyrics, eq, shuffle)
 
 
 class Page:
@@ -110,15 +119,27 @@ class Menu:
         return self.vol is not None and hasattr(self.vol, name)
 
     # -- pages
+    def eq_options(self, st):
+        """[(value, label)] for the Equalizer row: EQ_PICK that the server knows, plus the current preset first when it is
+        not among them (the custom curve set in the web remote), so it is shown and can be stepped away from."""
+        presets = [(p[0], p[1]) for p in (st.get("sound_presets") or []) if isinstance(p, (list, tuple)) and len(p) == 2]
+        by_label = {label: value for value, label in presets}
+        opts = [(by_label[n], n) for n in EQ_PICK if n in by_label]
+        cur = self.sound("preset")
+        if opts and cur is not None and cur not in [v for v, _ in opts]:
+            opts.insert(0, (cur, next((label for value, label in presets if value == cur), str(cur))))
+        return opts
+
     def root(self):
         st = self.state() or {}
-        cur = st.get("current") or {}
-        playing = bool(st.get("playing"))
         rows = []
-        if cur:
-            rows.append(Row("Pause" if playing else "Play", "",
-                            act={"cmd": "toggle"}))  # stays open (owner): the label follows the state; title in the header
-            rows.append(Row("Stop", "screen goes black", act={"cmd": "stop"}, closes=True))
+        if self._has("lyrics_lang"):
+            on = bool(self.vol.lyrics_on)
+            rows.append(Row("Lyrics screen", "on" if on else "off", act=self.noop, kind="toggle", value=on, key="lyrics"))
+            codes = [c for c, _ in LANGS]
+            lang = self.vol.lyrics_lang if self.vol.lyrics_lang in codes else "auto"
+            rows.append(Row("Lyrics", dict(LANGS)[lang], act=self.noop, kind="choice", value=codes.index(lang),
+                            vmax=len(LANGS) - 1, key="lang"))
         if self._has("volume_now"):
             label, pct, muted = self.vol.volume_now()
             rows.append(Row(label, "not connected" if pct is None else "muted" if muted else f"{pct} %",
@@ -131,25 +152,23 @@ class Menu:
             raise_ = self.sound("loudness") == "raise"
             rows.append(Row("Loudness", "raise quiet tracks" if raise_ else "off", act=self.noop, kind="toggle",
                             value=raise_, key="loudness"))
-        if self._has("lyrics_lang"):
-            codes = [c for c, _ in LANGS]
-            lang = self.vol.lyrics_lang if self.vol.lyrics_lang in codes else "auto"
-            rows.append(Row("Lyrics", dict(LANGS)[lang], act=self.noop, kind="choice", value=codes.index(lang),
-                            vmax=len(LANGS) - 1, key="lang"))
-            on = bool(self.vol.lyrics_on)
-            rows.append(Row("Lyrics screen", "on" if on else "off", act=self.noop, kind="toggle", value=on,
-                            key="lyrics"))
+            opts = self.eq_options(st)
+            if len(opts) > 1:
+                cur = self.sound("preset")
+                idx = next((n for n, (v, _) in enumerate(opts) if v == cur), 0)
+                rows.append(Row("Equalizer", opts[idx][1], act=self.noop, kind="choice", value=idx,
+                                vmax=len(opts) - 1, key="eq", options=opts))
+        rows.append(Row("Shuffle", "on" if st.get("shuffle") else "off", act={"cmd": "shuffle"}, kind="toggle",
+                        value=bool(st.get("shuffle")), key="shuffle"))
+        rows.append(Row("Repeat", st.get("repeat_mode") or "all", act={"cmd": "repeat"}))
         n = len(st.get("queue") or [])
         rows += [
-            Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True),
+            Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True, sep=True),
             Row("Playlists", act=self.playlists_page, opens=True),
             Row("For you", act=self.auto_page, opens=True),
             Row("Music videos", act=lambda: self.items_page("Music videos", "/api/collection/videos",
                                                               {"cmd": "play_collection", "collection": "videos"}),
                 opens=True),
-            Row("Shuffle", "on" if st.get("shuffle") else "off", act={"cmd": "shuffle"}, kind="toggle",
-                value=bool(st.get("shuffle")), key="shuffle"),
-            Row("Repeat", st.get("repeat_mode") or "all", act={"cmd": "repeat"}),
         ]
         return Page("TV Player", rows)
 
@@ -193,13 +212,12 @@ class Menu:
         return Page("For you", loader=load)
 
     def items_page(self, title, path, play, by_index=False):
-        """A list: Play all, Shuffle all, then its items (OK plays from that item). by_index: a playlist (may hold an
-        item twice: the server wants the position, not the id)."""
+        """A list: "Shuffle all" (play icon; the only play-all, owner 2026-11-10), then its items (OK plays from that
+        item). by_index: a playlist (may hold an item twice: the server wants the position, not the id)."""
         async def load(page):
             data = await self.fetch(path)
             items = data.get("items", [])
-            page.rows = [Row("▶  Play all", f"{len(items)}", act=dict(play), closes=True),
-                         Row("⤨  Shuffle all", act=dict(play, shuffle=True), closes=True)]
+            page.rows = [Row("▶  Shuffle all", f"{len(items)}", act=dict(play, shuffle=True), closes=True)]
             for n, it in enumerate(items):
                 act = dict(play, start_index=n) if by_index else dict(play, start_id=it["id"])
                 page.rows.append(Row(item_label(it), mmss(it.get("duration")), act=act, closes=True))
@@ -263,6 +281,8 @@ class Menu:
             new = max(0, min(row.vmax, row.value + (1 if name == "right" else -1)))   # stops at the ends
             if new != row.value and k == "lang" and self._has("set_lyrics_lang"):
                 await self.vol.set_lyrics_lang(LANGS[new][0])
+            elif new != row.value and k == "eq" and row.options:
+                self.send_sound("preset", row.options[new][0])
             return True
         if row.kind == "toggle" and name == "ok":
             if k == "loudness":
@@ -279,7 +299,13 @@ class Menu:
         page = self.page
         if page is None:
             return False
-        if name in ("red", "blue", "back"):  # Blue (the Menu function) opens and closes, Back and Red close
+        if name == "back":                   # one page up; on the first page it closes the menu (owner, 2026-11-10)
+            if len(self.pages) > 1:
+                self.pages.pop()
+            else:
+                self.close()
+            return True
+        if name in ("red", "blue"):          # Blue (the Menu function) opens and closes, Red closes from any depth
             self.close()
             return True
         row = page.rows[page.sel] if page.rows and not page.loading and 0 <= page.sel < len(page.rows) else None
@@ -384,9 +410,14 @@ class Menu:
         if page.loading:
             ev.append(d.text(tx, ROW_Y + 10, "Loading…", LABEL_SIZE, INK, 0.5, 500))
         # rows
+        extra = 0
         for n, row in enumerate(page.rows[page.top:page.top + ROWS]):
             i = page.top + n
-            self._row(ev, row, ROW_Y + n * ROW_H, i == page.sel, accent)
+            if row.sep and n > 0:    # subtle divider between the settings and the lists (not when it is the top row)
+                extra += SEP_GAP
+                ly = ROW_Y + n * ROW_H + extra - (SEP_GAP + 8) / 2
+                ev.append(d.rect(X0 + 44, ly - 1, X1 - 44, ly + 1, INK, 0.16))
+            self._row(ev, row, ROW_Y + n * ROW_H + extra, i == page.sel, accent)
         # scroll bar
         if len(page.rows) > ROWS:
             top, bottom = ROW_Y, ROW_Y + ROWS * ROW_H - 8
