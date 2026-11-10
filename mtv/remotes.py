@@ -25,8 +25,8 @@ RES_X, RES_Y = 1920, 1080
 # Play / Pause button again, or by Skip on the phone (a small remote has no spare buttons). `optional` = shown as optional.
 KEYS = [("return", "Play / Pause", "also selects in the menu", False),
         ("F4", "Menu", "opens and closes the menu", False),
-        ("up", "Up", "menu up; next video", False),
-        ("down", "Down", "menu down; previous video", False),
+        ("up", "Up", "menu up; previous video", False),
+        ("down", "Down", "menu down; next video", False),
         ("left", "Left", "menu back; back 10 seconds", False),
         ("right", "Right", "menu select; forward 10 seconds", False),
         ("pageup", "CH+ button", "the channel up button: volume up in the player, page up in the menu", True),

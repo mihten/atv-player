@@ -44,7 +44,7 @@ Sound: HDMI (default) or the atv-audio headphones, chosen on the web remote (Set
 server's atv-audio sink plays the same file and follows this player's clock (sinklink.py).
 
 Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black, "MTV Player stopped"; Play starts
-the item again), Blue = open the menu, Up / Down = next / previous video, Right / Left = +10 / -10 s (Left/Right repeat while
+the item again), Blue = open the menu, Up / Down = previous / next video, Right / Left = +10 / -10 s (Left/Right repeat while
 held), CH+ / CH- = volume up / down (5 %; mpv's volume on HDMI, the headphones' own when the sound goes there); each shows a
 short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left back, Blue / Red close. A held key
 counts as one press (arrows repeat while held in the menu). The menu's first page: Play / Pause, Stop, Volume, Boost, Loudness
@@ -1001,11 +1001,11 @@ async def on_key(player, name, held):
         playing = player.want_play    # after Stop the player holds no item: the server restarts the current one
         player.send({"type": "cmd", "cmd": "toggle"})
         await osd(player, "Pause" if playing else "Play")
-    elif name in ("up", "down"):       # next / previous video (a held key is one press)
+    elif name in ("up", "down"):       # previous / next video (a held key is one press)
         if held:
             return
-        player.send({"type": "cmd", "cmd": "next" if name == "up" else "prev"})
-        await osd(player, "Next" if name == "up" else "Previous")
+        player.send({"type": "cmd", "cmd": "prev" if name == "up" else "next"})
+        await osd(player, "Previous" if name == "up" else "Next")
     elif name in ("ch_up", "ch_down"):  # volume up / down: mpv's on HDMI, the headphones' own when the sound goes there
         await osd(player, await player.volume_step(VOLUME_STEP if name == "ch_up" else -VOLUME_STEP), 1200)
     elif name in SEEK_KEYS:

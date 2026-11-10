@@ -257,7 +257,7 @@ async def keys():
     p.pos = 195.0
     await M.on_key(p, "right", False)
     check([m["position"] for m in sent if m.get("cmd") == "seek"][-1] == 198.0, "right near the end stops 2 s before it")
-    # Up / Down = next / previous video (no longer +-60 s); a held key is one press
+    # Up / Down = previous / next video (no longer +-60 s); a held key is one press
     n = len(sent)
     await M.on_key(p, "up", False)
     await M.on_key(p, "up", True)
@@ -265,7 +265,7 @@ async def keys():
     await M.on_key(p, "down", False)
     await M.on_key(p, "down", True)
     new = [m["cmd"] for m in sent[n:] if m.get("type") == "cmd"]
-    check(new == ["next", "prev"] and p.mpv.texts[-1] == "Previous", f"Up / Down -> next / previous, repeats of a held key ignored ({new})")
+    check(new == ["prev", "next"] and p.mpv.texts[-1] == "Next", f"Up / Down -> previous / next, repeats of a held key ignored ({new})")
     check(not [m for m in sent[n:] if m.get("cmd") == "seek"], "... and no 60 s seek any more")
     n = len(sent)
     await M.on_key(p, "red", False)
