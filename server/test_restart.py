@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Settings -> Server -> Restart server (POST /api/restart, server 0.27.0) on a THROWAWAY server (own temp library,
+"""Settings -> Server -> Restart server (POST /api/restart, server 0.28.0) on a THROWAWAY server (own temp library,
 data dir and port): admin lock, answer before the exit, state files written, exit status 75 (the unit's
 Restart=on-failure starts it again), quick exit with a player websocket still open, and a second start that keeps
 the queue.
@@ -66,7 +66,7 @@ async def main(tmp):
             ids = sorted(it["id"] for it in items.values())
             code, st = await req(http, "GET", "/api/status")
             started = st["started"]
-            check(st["version"] == "0.27.0", f"version 0.27.0 ({st['version']})")
+            check(st["version"] == "0.28.0", f"version 0.28.0 ({st['version']})")
 
             # admin lock: a locked browser cannot restart
             code, _ = await req(http, "POST", "/api/settings/password", json={"password": "secret123"})
@@ -91,7 +91,7 @@ async def main(tmp):
             check(code is not None, f"the restart request gets an answer ({r if code is None else code})")
             if code is None:
                 code, r = 0, {"ok": False, "started": 0, "version": ""}
-            check(code == 200 and r["ok"] is True and r["started"] == started and r["version"] == "0.27.0",
+            check(code == 200 and r["ok"] is True and r["started"] == started and r["version"] == "0.28.0",
                   f"restart answers before the exit ({code} {r})")
             check(state_file.exists() and json.loads(state_file.read_text()).get("queue") == ids,
                   "state.json (tv queue) written again before the exit")

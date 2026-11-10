@@ -49,8 +49,9 @@ def unit():
     check(box_sound.message({"preset": "p:1", "boost": 0, "loudness": "off"}, None)["bands"][0] == 0.0,
           "VLC's -1.11e-15 bands read as 0")
     names = [n for _, n in box_sound.choices()]
-    check(len(names) == 22 and names[:3] == ["Off", "Momentum 4", "Amplify"] and names[-2:] == ["Techno", "Custom"],
-          f"presets: Off + 2 app + 18 VLC + Custom in the apps' order ({len(names)})")
+    check(len(names) == 26 and names[:3] == ["Off", "Momentum 4", "Amplify"] and names[-2:] == ["Techno", "Custom"]
+          and names[7:25] == [n for n, *_ in box_sound.VLC_PRESETS],
+          f"presets: Off + 2 app + 4 tone + 18 VLC (the apps' order) + Custom ({len(names)})")
     check(box_sound.clean({"preset": "x", "boost": 99, "loudness": "level"}) == box_sound.DEFAULT | {"boost": 8},
           "clean(): unknown preset -> off, boost clamped 0..8, unknown loudness -> default")
     cu = box_sound.clean({"preset": "custom", "custom": {"preamp": 30, "bands": [1.4, -40, "x", 3]}})
@@ -102,9 +103,24 @@ async def main(tmp):
             st = await H.state(http, "box")
             check(st["session"] == "box" and st["session_name"] == "Web Player", "session box named Web Player")
             check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv"], "sessions list has the box")
-            check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 22, "box state: sound + presets")
-            check(st["sound_curves"]["a:momentum4"][0] == 4.0 and len(st["sound_curves"]) == 20,
+            check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 26, "box state: sound + presets")
+            check(st["sound_curves"]["a:momentum4"][0] == 4.0 and len(st["sound_curves"]) == 24,
                   "box state: preset curves for the custom editor (20 = no off / custom)")
+            names = [n for _, n in st["sound_presets"]]
+            check(names[:7] == ["Off", "Momentum 4", "Amplify", "Bass boost", "Vocal", "Bright", "V-shape"]
+                  and names[-1] == "Custom" and names[7] == "Flat", f"tone presets sit after the app presets, before VLC's ({names[:8]})")
+            tone = {v: box_sound.curve(v) for v, _ in st["sound_presets"] if v.startswith("t:")}
+            check(sorted(tone) == ["t:bass", "t:bright", "t:vocal", "t:vshape"]
+                  and all(all(b >= 0 and b == int(b) for b in bands) and pre == int(pre) and -2 <= pre <= 0
+                          for pre, bands in tone.values()),
+                  "tone presets: whole dB, no band is cut, makeup 0 .. -2 dB")
+            check(all(st["sound_curves"][v] == [pre, bands] or tuple(st["sound_curves"][v]) == (pre, bands) for v, (pre, bands) in tone.items()),
+                  "the custom editor starts from the same curves")
+            check(box_sound.valid_preset("t:bass") and not box_sound.valid_preset("t:nope")
+                  and box_sound.curve("t:nope") == (0.0, [0.0] * 10), "t: tags: known are valid, unknown fall back to flat")
+            m = box_sound.message({"preset": "t:bass", "boost": 2, "loudness": "raise"}, {"lufs": -20.0})
+            check(m["gain"] == -1.0 + 2 + 6.0 and m["bands"][:3] == [5.0, 5.0, 4.0] and m["processed"],
+                  f"tone preset message: makeup + boost + loudness lift ({m['gain']})")
             check(st["sink"]["connected"] is False and st["sink"]["route"] is False, "box sink: not connected")
             check((await H.state(http, "phone"))["sink"] is None and "sound" not in await H.state(http, "tv"),
                   "tv / phone states have no box fields")

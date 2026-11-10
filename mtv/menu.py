@@ -33,7 +33,7 @@ BOOST_MAX = 8
 PENDING_S = 2.0                          # a sound value just sent counts until the server's state shows it
 LANGS = [("off", "Off"), ("auto", "Auto"), ("eng", "English"), ("hrv", "Croatian")]
 # Equalizer presets offered on the TV (by the server's label; the full list and the custom curve are in the web remote)
-EQ_PICK = ("Off", "Momentum 4", "Pop", "Rock", "Full bass", "Classical")
+EQ_PICK = ("Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom")
 SEP_GAP = 28                             # extra space above the first list row of the first page (the divider sits in it)
 DEFAULT_ACCENT = (0.45, 0.68, 1.0)
 CARD = (0.055, 0.055, 0.075)
@@ -150,7 +150,7 @@ class Menu:
             rows.append(Row("Boost", f"+{boost} dB" if boost else "off", act=self.noop, level=True, value=boost,
                             vmax=BOOST_MAX, key="boost"))
             raise_ = self.sound("loudness") == "raise"
-            rows.append(Row("Loudness", "raise quiet tracks" if raise_ else "off", act=self.noop, kind="toggle",
+            rows.append(Row("Loudness", "", act=self.noop, kind="toggle",
                             value=raise_, key="loudness"))
             opts = self.eq_options(st)
             if len(opts) > 1:
@@ -455,8 +455,7 @@ class Menu:
                 ev.append(d.rrect(bx, mid - 4, bx + fw, mid + 4, 4, DARK if selected else accent, 0.85 if selected else 1))
             right = bx - 18
         elif row.kind == "toggle":
-            if row.key != "loudness":   # the switch says on / off; only Loudness names what "on" does
-                sub = ""
+            sub = ""                    # the switch says on / off (owner: no description next to Loudness either)
             sw, sh = 60, 32
             sx = right - sw
             on = bool(row.value)

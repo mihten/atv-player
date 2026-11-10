@@ -205,8 +205,9 @@ async def main():
     # ---- menu rows: Boost, Loudness, Lyrics, Lyrics screen
     p.state = {"current": item(10), "playing": True, "queue": [10], "index": 0,
                "sound": {"preset": "off", "boost": 2, "loudness": "raise"},
-               "sound_presets": [["off", "Off"], ["a:momentum4", "Momentum 4"], ["p:11", "Pop"], ["p:13", "Rock"],
-                                 ["p:4", "Full bass"], ["p:1", "Classical"], ["p:17", "Techno"], ["custom", "Custom"]]}
+               "sound_presets": [["off", "Off"], ["a:momentum4", "Momentum 4"], ["a:amplify", "Amplify"], ["t:bass", "Bass boost"],
+                                 ["t:vocal", "Vocal"], ["t:bright", "Bright"], ["t:vshape", "V-shape"], ["p:0", "Flat"],
+                                 ["p:11", "Pop"], ["custom", "Custom"]]}
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
     check(labels[:8] == ["Lyrics screen", "Lyrics", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]

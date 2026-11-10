@@ -46,7 +46,9 @@ server's atv-audio sink plays the same file and follows this player's clock (sin
 Remote keys (ir.py names), menu closed: OK = play / pause, Stop = stop (the screen goes black, "MTV Player stopped"; Play starts
 the item again), Blue = open the menu, Up / Down = previous / next video, Right / Left = +10 / -10 s (Left/Right repeat while
 held), CH+ / CH- = volume up / down (5 %; mpv's volume on HDMI, the headphones' own when the sound goes there); each shows a
-short text. Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left and Back go back one page (Back closes on the
+short text. Back with no menu open shows the info popup (cover, title, progress, next; info.py) for 5 s, Back again hides it; it also
+shows for 5 s whenever a different video starts (not over the lyrics screen, the menu or the screensaver).
+Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left and Back go back one page (Back closes on the
 first page), Blue / Red close. A held key counts as one press (arrows repeat while held in the menu). The menu's first page:
 Lyrics screen, Lyrics (language: Off / Auto / English / Croatian), Volume, Boost, Loudness (the server's sound settings of
 this session), Equalizer (a short preset picker: Off, Momentum 4, Pop, Rock, Full bass, Classical; the custom curve is set
@@ -78,6 +80,7 @@ for _d in (HERE, os.path.join(HERE, "..", "server", "sink")):
         sys.path.insert(0, os.path.abspath(_d))
         break
 from atv_audio import MpvError, MpvIpc, gain_text, sound_chain, sound_commands  # noqa: E402
+import info as info_mod  # noqa: E402
 import ir  # noqa: E402
 import lyricsview  # noqa: E402
 import menu as menu_mod  # noqa: E402
@@ -86,7 +89,7 @@ import remotes as remotes_mod  # noqa: E402
 import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -229,6 +232,13 @@ class Player:
         self.lyrics_layer = False    # its overlays (4, 5) are on the screen
         self.aspect_set = False      # video-aspect-override set for the lyrics screen
         self.fetching = set()        # ("lyrics" | "art", id) in flight
+        # info popup (info.py): shown for 5 s on a different video and on Back; osd-overlay 6 + the cover bitmap overlay 1
+        self.info = info_mod.Info(mono)
+        self.thumbs = {}             # item id -> (w, h, x, y, premultiplied BGRA) cover thumbnails (small cache)
+        self.info_drawn = None       # signature of the popup on the screen now (None: nothing drawn)
+        self.info_thumb = None       # item id whose cover bitmap is on the screen
+        self.info_item = None        # id of the video the popup last announced (a different one shows it again)
+        self.info_dir = None
 
     @property
     def connected(self):
@@ -448,7 +458,7 @@ class Player:
         if not item:
             return
         iid = item.get("id")
-        if iid not in self.palettes:
+        if iid not in self.palettes or (item.get("art") and iid not in self.thumbs):
             if not item.get("art"):
                 self.palettes[iid] = palette_mod.for_item(iid)
             elif self.http is not None and ("art", iid) not in self.fetching:
@@ -463,7 +473,7 @@ class Player:
                 asyncio.ensure_future(self._fetch_lyrics(iid))
 
     async def _fetch_art(self, iid):
-        pal = None
+        pal, data = None, None
         try:
             data = await self.fetch_bytes(f"/art/{iid}")
             pal = await asyncio.get_running_loop().run_in_executor(None, palette_mod.extract, data)
@@ -474,6 +484,16 @@ class Player:
         self.palettes[iid] = pal or palette_mod.for_item(iid)
         while len(self.palettes) > 40:
             self.palettes.pop(next(iter(self.palettes)))
+        if data is not None:   # the info popup's cover, at the screen's pixel size
+            k = (self.display[0] / info_mod.RES_X) if self.display else 1.0
+            x, y, w, h = (round(v * k) for v in info_mod.THUMB)
+            buf = await asyncio.get_running_loop().run_in_executor(None, info_mod.thumb_bgra, data, w, h,
+                                                                   round(info_mod.THUMB_R * k))
+            if buf:
+                self.thumbs[iid] = (w, h, x, y, buf)
+                while len(self.thumbs) > 8:
+                    self.thumbs.pop(next(iter(self.thumbs)))
+            await self.draw_info()
         if (self.item or {}).get("id") == iid:
             if self.view.item is not None and self.view.item.get("id") == iid:
                 self.view.palette = self.palettes[iid]
@@ -644,6 +664,77 @@ class Player:
             r.raise_for_status()
             return await r.read()
 
+    # -- info popup
+    def info_blocked(self):
+        """Nothing to show it for, or something else owns the screen: the lyrics screen has its own title and progress."""
+        return bool(not self.item or self.lyrics_on or self.menu.open or self.remotes.active_screen or self.saver.on)
+
+    def info_data(self):
+        it = self.item or {}
+        mpv = self.mpv
+        dur = (mpv.props.get("duration") if mpv and self.file_loaded else None) or it.get("duration") or 0
+        st = self.state or {}
+        up = st.get("upcoming") or []
+        return {"item": it, "pos": self.pos, "dur": dur, "playing": self.want_play, "next": up[0] if up else None,
+                "shuffle": bool(st.get("shuffle")), "repeat": st.get("repeat_mode") or "all",
+                "accent": self.accent(), "base": self.backdrop_base(), "thumb": it.get("id") in self.thumbs}
+
+    async def draw_info(self):
+        """The popup (osd-overlay 6 + the cover as overlay-add 1) while it is up, redrawn only when it looks different
+        (once a second while playing); removed when it ends or something else takes the screen."""
+        mpv = self.mpv
+        if not mpv:
+            return
+        if self.info.visible and self.info_blocked():
+            self.info.hide()
+        try:
+            if not self.info.visible:
+                if self.info_drawn is not None:
+                    await mpv.command("osd-overlay", 6, "none", "")
+                    if self.info_thumb is not None:
+                        await mpv.command("overlay-remove", 1)
+                    self.info_drawn = self.info_thumb = None
+                return
+            it = self.item or {}
+            iid = it.get("id")
+            if it.get("art") and iid not in self.thumbs and ("art", iid) in self.fetching and self.info.age < 1.0:
+                return   # the cover is on its way: do not flash the empty tile first
+            data = self.info_data()
+            sig = self.info.signature(data)
+            if sig == self.info_drawn:
+                return
+            await mpv.command("osd-overlay", 6, "ass-events", self.info.render(data), info_mod.RES_X, info_mod.RES_Y,
+                              info_mod.Z)
+            th = self.thumbs.get(iid)
+            if th is None:
+                if self.info_thumb is not None:
+                    await mpv.command("overlay-remove", 1)
+                    self.info_thumb = None
+            elif self.info_thumb != iid:
+                w, h, x, y, buf = th
+                if not self.info_dir:
+                    self.info_dir = tempfile.mkdtemp(prefix="mtv-info-")
+                path = os.path.join(self.info_dir, "cover.bgra")
+                with open(path, "wb") as f:
+                    f.write(buf)
+                await mpv.command("overlay-add", 1, x, y, path, 0, "bgra", w, h, w * 4)   # read into memory at once
+                self.info_thumb = iid
+            self.info_drawn = sig
+        except (MpvError, OSError) as e:
+            log(f"info popup draw: {e}")
+
+    async def info_back(self):
+        """Back with no menu: shows the popup for 5 s, or hides it when it is up."""
+        if not self.item:
+            await osd(self, "Nothing playing")
+            return
+        if self.lyrics_on:
+            self.log("key back: the lyrics screen shows the info already")
+            return
+        on = self.info.toggle()
+        await self.draw_info()
+        self.log(f"key back: info {'shown' if on else 'hidden'}")
+
     async def draw_menu(self):
         """The menu on the screen (osd-overlay 1), or nothing when it is closed."""
         if not self.mpv:
@@ -679,6 +770,7 @@ class Player:
         self.aspect_set = False
         self.lyrics_drawn = None
         self.lyrics_layer = False
+        self.info_drawn = self.info_thumb = None   # a new mpv has none of the popup's overlays
         if self.sound is not None:
             await self._set_af(sound_chain(self.sound))
             self.applied = self.sound
@@ -806,6 +898,9 @@ class Player:
             self.stopped = False
             if self.saver.on and self.want_play:
                 await self.wake()
+            if self.item and self.item.get("id") != self.info_item:   # a different video: the info popup for 5 s
+                self.info_item = self.item.get("id")
+                self.info.show()
             if self.item:
                 self.view.set_item(self.item)
                 self.view.palette = self.palettes.get(self.item.get("id"))
@@ -820,6 +915,7 @@ class Player:
                     with contextlib.suppress(MpvError):
                         await self.mpv.command("stop")
                 await self.apply_lyrics_screen()
+            await self.draw_info()
             self.report(force=True)
         elif t == "control":
             await self.on_control(msg)
@@ -877,6 +973,7 @@ class Player:
                 if mpv:
                     await mpv.command("stop")
                 await self.apply_lyrics_screen()   # nothing loaded: the lyrics screen goes away (the stopped screen shows)
+                await self.draw_info()             # ... and so does the info popup
             elif action == "seek" and self.item:
                 self.pos = max(0.0, float(msg.get("position") or 0))
                 self.ended_for = None
@@ -893,6 +990,7 @@ class Player:
     async def tick(self):
         await self.link.tick()
         await self.saver_tick()
+        await self.draw_info()
         mpv, it = self.mpv, self.item
         if not it:
             return
@@ -990,7 +1088,11 @@ async def on_key(player, name, held):
     if name == "blue":
         await player.menu.show()
         await player.draw_menu()
+        await player.draw_info()      # the menu owns the screen: the popup goes
         player.log("menu opened")
+        return
+    if name == "back":                # no menu: the info popup (shows 5 s, or hides when it is up)
+        await player.info_back()
         return
     if not player._send:
         await osd(player, "Not connected to the server")

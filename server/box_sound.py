@@ -6,8 +6,9 @@ lifts quiet tracks to -14 LUFS, only up, at most +8 dB, in half-dB steps; Equali
 unprocessed. The sink builds gain -> 10 octave-wide equalizer bands -> limiter from the message (sink/atv_audio.py
 sound_chain), exactly as for the TV's own `sound` messages.
 
-Presets: the apps' own presets (tag "a:<id>") and libVLC 3.0.x's 18 (tag "p:<index>", modules/audio_filter/
-equalizer_presets.h, same order and values as VLCAudioEqualizer.presets). Preamps are VLC's raw values: 12 = 0 dB.
+Presets: the apps' own presets (tag "a:<id>"), the tone presets of this server (tag "t:<id>", see TONE_PRESETS) and
+libVLC 3.0.x's 18 (tag "p:<index>", modules/audio_filter/equalizer_presets.h, same order and values as
+VLCAudioEqualizer.presets). Preamps of the "a:" / "p:" presets are VLC's raw values: 12 = 0 dB.
 """
 
 FREQS = (31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)  # VLC's ISO 10-band table (equalizer.c)
@@ -21,6 +22,19 @@ _Z = 0.0  # VLC stores -1.11022e-15 for "0"
 APP_PRESETS = (
     ("momentum4", "Momentum 4", 16.0, (-1, -1, -0.5, 0.5, 1, 2, 3.5, 2, -0.5, -1.5)),
     ("amplify", "Amplify", 17.0, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+)
+# Tone presets (2026-11-10, owner: the VLC presets below sounded dull on the TV Player: measured against Off with the
+# same settings, Pop cut 1-16 kHz by 5-9 dB, Rock cut 125-500 Hz by 10-15 dB, Full bass cut everything above 500 Hz by 11-23 dB,
+# Classical cut the highs by 7-11 dB; their raw preamps are -5..-7 dB and the sink's cascade of overlapping octave filters
+# stacks the boosts). Rules of these four: whole dB (the web remote's Custom editor loads them exactly), NO band is cut, a
+# makeup of 0 / -1 dB only for headroom; measured on six library tracks with tools/tv-player-test/eq-measure.py: the boosted
+# range rises 3-5 dB, the rest stays within 1.5 dB of Off, loudness +0.2..+1.0 LU.
+# (id, name, makeup dB, 10 band gains at FREQS)
+TONE_PRESETS = (
+    ("bass", "Bass boost", -1.0, (5, 5, 4, 2, 1, 0, 0, 0, 0, 0)),
+    ("vocal", "Vocal", 0.0, (0, 0, 0, 0, 1, 2, 3, 2, 1, 0)),
+    ("bright", "Bright", 0.0, (0, 0, 0, 0, 0, 1, 2, 3, 4, 4)),
+    ("vshape", "V-shape", -1.0, (4, 4, 3, 0, 0, 0, 0, 3, 4, 4)),
 )
 VLC_PRESETS = (
     ("Flat", 12.0, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
@@ -51,6 +65,7 @@ DEFAULT = {"preset": "off", "boost": 0, "loudness": "raise", "custom": FLAT}  # 
 def choices():
     """[[value, label], ...] in the apps' display order. Custom = this queue's own curve, kept on the server."""
     return ([["off", "Off"]] + [[f"a:{i}", name] for i, name, _, _ in APP_PRESETS]
+            + [[f"t:{i}", name] for i, name, _, _ in TONE_PRESETS]
             + [[f"p:{n}", p[0]] for n, p in enumerate(VLC_PRESETS)] + [["custom", "Custom"]])
 
 
@@ -99,6 +114,10 @@ def curve(preset, settings=None):
         for i, _, pre, bands in APP_PRESETS:
             if preset == f"a:{i}":
                 return pre - VLC_PREAMP_OFFSET, list(bands)
+    elif preset.startswith("t:"):
+        for i, _, pre, bands in TONE_PRESETS:
+            if preset == f"t:{i}":
+                return float(pre), [float(b) for b in bands]
     elif preset.startswith("p:"):
         try:
             _, pre, bands = VLC_PRESETS[int(preset[2:])]

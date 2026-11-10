@@ -202,9 +202,10 @@ async def main():
     check([r.label for r in m.page.rows][:2] == ["Shuffle", "Repeat"] and m.page.rows[2].label == "Queue"
           and m.page.rows[2].sub == "empty", "nothing loaded: same rows, Queue is empty")
 
-    # ---- Equalizer: a short picker (Off, Momentum 4, Pop, Rock, Full bass, Classical), the rest is in the web remote
-    presets = [["off", "Off"], ["a:momentum4", "Momentum 4"], ["a:amplify", "Amplify"], ["p:0", "Flat"], ["p:1", "Classical"],
-               ["p:4", "Full bass"], ["p:11", "Pop"], ["p:13", "Rock"], ["p:17", "Techno"], ["custom", "Custom"]]
+    # ---- Equalizer: a short picker (Off, Momentum 4, four tone presets, Custom); the VLC presets stay in the web remote
+    presets = [["off", "Off"], ["a:momentum4", "Momentum 4"], ["a:amplify", "Amplify"], ["t:bass", "Bass boost"],
+               ["t:vocal", "Vocal"], ["t:bright", "Bright"], ["t:vshape", "V-shape"], ["p:0", "Flat"], ["p:1", "Classical"],
+               ["p:11", "Pop"], ["p:13", "Rock"], ["p:17", "Techno"], ["custom", "Custom"]]
     eq_state = dict(state, sound={"preset": "off", "boost": 0, "loudness": "raise"}, sound_presets=presets)
     eqm = Mn.Menu(fetch, sent.append, lambda: eq_state)
     await eqm.show()
@@ -212,8 +213,8 @@ async def main():
     check(labels == ["Boost", "Loudness", "Equalizer", "Shuffle", "Repeat", "Queue", "Playlists", "For you", "Music videos"],
           f"Equalizer sits after Loudness, before Shuffle ({labels})")
     eq = eqm.page.rows[2]
-    check(eq.kind == "choice" and [o[1] for o in eq.options] == ["Off", "Momentum 4", "Pop", "Rock", "Full bass", "Classical"]
-          and eq.sub == "Off" and eq.value == 0, "picker: Off + 5 presets (no Flat / Amplify / Techno / Custom)")
+    check(eq.kind == "choice" and [o[1] for o in eq.options] == ["Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom"]
+          and eq.sub == "Off" and eq.value == 0, "picker: Off, Momentum 4, 4 tone presets, Custom (no VLC presets, no Amplify / Flat)")
     eqm.page.sel = 2
     n0 = len(sent)
     await eqm.key("left")
@@ -223,30 +224,54 @@ async def main():
     check(sent[-1] == {"cmd": "sound", "preset": "a:momentum4", "type": "cmd"} and eqm.page.rows[2].sub == "Momentum 4",
           "Right -> Momentum 4 sent, the row shows it at once")
     await eqm.key("right")
-    check(sent[-1]["preset"] == "p:11" and eqm.page.rows[2].sub == "Pop", "a second quick Right steps from the pending value (Pop)")
-    for _ in range(5):
+    check(sent[-1]["preset"] == "t:bass" and eqm.page.rows[2].sub == "Bass boost", "a second quick Right steps from the pending value")
+    for _ in range(4):
         await eqm.key("right")
+    check(sent[-1]["preset"] == "custom" and eqm.page.rows[2].sub == "Custom", "... through Vocal, Bright, V-shape to Custom")
     n1 = len(sent)
     await eqm.key("right")
-    check(len(sent) == n1 and eqm.page.rows[2].sub == "Classical", "stops at the last value (Classical)")
+    check(len(sent) == n1 and eqm.page.rows[2].sub == "Custom", "stops at the last value (Custom)")
     await eqm.key("left")
-    check(sent[-1]["preset"] == "p:4" and eqm.page.rows[2].sub == "Full bass", "Left steps back")
+    check(sent[-1]["preset"] == "t:vshape" and eqm.page.rows[2].sub == "V-shape", "Left steps back")
     check(("◀ ▶" in "".join(k for k, _ in eqm.hint(eqm.page.rows[2]))) and "}change" in eqm.render(), "hint: ◀ ▶ change")
     eq_state["sound"] = {"preset": "custom", "boost": 0, "loudness": "raise"}   # set in the web remote
     eqm.pending.clear()
     eqm.refresh_root()
     eq = eqm.page.rows[2]
-    check(eq.sub == "Custom" and eq.value == 0 and len(eq.options) == 7 and eq.options[1][1] == "Off",
-          "a preset outside the list (Custom) is shown first and can be left")
+    check(eq.sub == "Custom" and eq.value == 6 and len(eq.options) == 7, "Custom (in the list) is shown at its place")
+    await eqm.key("left")
+    check(sent[-1]["preset"] == "t:vshape", "Left from Custom -> V-shape")
+    eq_state["sound"] = {"preset": "p:11", "boost": 0, "loudness": "raise"}     # a VLC preset picked in the web remote
+    eqm.pending.clear()
+    eqm.refresh_root()
+    eq = eqm.page.rows[2]
+    check(eq.sub == "Pop" and eq.value == 0 and len(eq.options) == 8 and eq.options[1][1] == "Off",
+          "a preset outside the list (Pop from the web remote) is shown first and can be left")
     await eqm.key("right")
-    check(sent[-1]["preset"] == "off", "Right from Custom -> Off")
+    check(sent[-1]["preset"] == "off", "Right from Pop -> Off")
     eq_state["sound"] = {"preset": "off", "boost": 0, "loudness": "raise"}
     eqm.pending.clear()
     eqm.refresh_root()
-    check(len(eqm.page.rows[2].options) == 6, "after leaving Custom the list is the short one again")
+    check(len(eqm.page.rows[2].options) == 7, "after leaving it the list is the short one again")
     eq_state.pop("sound_presets")
     eqm.refresh_root()
     check("Equalizer" not in [r.label for r in eqm.page.rows], "no preset list from the server: no Equalizer row")
+
+    # ---- Loudness: a switch only, no description (owner 2026-11-10)
+    lm = Mn.Menu(fetch, sent.append, lambda: dict(state, sound={"preset": "off", "boost": 0, "loudness": "raise"}))
+    await lm.show()
+    check("raise quiet" not in lm.render() and "quiet" not in lm.render(), "Loudness: no 'raise quiet tracks' text on the screen")
+    check([r.sub for r in lm.page.rows if r.label == "Loudness"] == [""], "Loudness row carries no description")
+    lm.page.sel = 1
+    await lm.key("ok")
+    check(sent[-1] == {"cmd": "sound", "loudness": "off", "type": "cmd"}, "Loudness still switches with OK")
+    # no switch carries a word: not Loudness, not Lyrics screen, not Shuffle (the switch itself says on / off)
+    sw = Mn.Menu(fetch, sent.append, lambda: dict(state, shuffle=True, sound={"preset": "off", "boost": 3, "loudness": "off"}))
+    await sw.show()
+    words = [re.sub(r"\\\u200b", "", t_) for t_ in re.findall(r"\}([^{}\n]*)$", sw.render(), re.M)]
+    check("on" not in words and "off" not in words and "raise quiet tracks" not in words,
+          f"switches draw no on / off text ({[w_ for w_ in words if w_ in ('on', 'off')]})")
+    check("+3 dB" in words, "(the level and choice rows still show their values)")
 
     # ---- the divider between settings and lists: one extra shape, the lists move down by SEP_GAP
     await m.show()

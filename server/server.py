@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.27.0"
+VERSION = "0.28.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
