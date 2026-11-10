@@ -234,9 +234,10 @@ class Player:
         self.fetching = set()        # ("lyrics" | "art", id) in flight
         # info popup (info.py): shown for 5 s on a different video and on Back; osd-overlay 6 + the cover bitmap overlay 1
         self.info = info_mod.Info(mono)
-        self.thumbs = {}             # item id -> (w, h, x, y, premultiplied BGRA) cover thumbnails (small cache)
+        self.arts = {}               # item id -> cover bytes (small cache; the popup's bitmap is made from it at the screen's scale)
+        self.thumbs = {}             # item id -> (scale, bitmap or None, w, h, x, y) the bitmap made for that scale
         self.info_drawn = None       # signature of the popup on the screen now (None: nothing drawn)
-        self.info_thumb = None       # item id whose cover bitmap is on the screen
+        self.info_thumb = None       # (item id, scale) of the cover bitmap on the screen
         self.info_item = None        # id of the video the popup last announced (a different one shows it again)
         self.info_dir = None
 
@@ -458,7 +459,7 @@ class Player:
         if not item:
             return
         iid = item.get("id")
-        if iid not in self.palettes or (item.get("art") and iid not in self.thumbs):
+        if iid not in self.palettes or (item.get("art") and iid not in self.arts):
             if not item.get("art"):
                 self.palettes[iid] = palette_mod.for_item(iid)
             elif self.http is not None and ("art", iid) not in self.fetching:
@@ -484,15 +485,12 @@ class Player:
         self.palettes[iid] = pal or palette_mod.for_item(iid)
         while len(self.palettes) > 40:
             self.palettes.pop(next(iter(self.palettes)))
-        if data is not None:   # the info popup's cover, at the screen's pixel size
-            k = (self.display[0] / info_mod.RES_X) if self.display else 1.0
-            x, y, w, h = (round(v * k) for v in info_mod.THUMB)
-            buf = await asyncio.get_running_loop().run_in_executor(None, info_mod.thumb_bgra, data, w, h,
-                                                                   round(info_mod.THUMB_R * k))
-            if buf:
-                self.thumbs[iid] = (w, h, x, y, buf)
-                while len(self.thumbs) > 8:
-                    self.thumbs.pop(next(iter(self.thumbs)))
+        if data is not None:   # the info popup's cover (its bitmap is made when it is drawn, at mpv's OSD scale)
+            self.arts[iid] = data
+            while len(self.arts) > 8:
+                old = next(iter(self.arts))
+                self.arts.pop(old)
+                self.thumbs.pop(old, None)
             await self.draw_info()
         if (self.item or {}).get("id") == iid:
             if self.view.item is not None and self.view.item.get("id") == iid:
@@ -677,7 +675,25 @@ class Player:
         up = st.get("upcoming") or []
         return {"item": it, "pos": self.pos, "dur": dur, "playing": self.want_play, "next": up[0] if up else None,
                 "shuffle": bool(st.get("shuffle")), "repeat": st.get("repeat_mode") or "all",
-                "accent": self.accent(), "base": self.backdrop_base(), "thumb": it.get("id") in self.thumbs}
+                "accent": self.accent(), "base": self.backdrop_base(), "thumb": False}
+
+    async def info_thumb_for(self, iid):
+        """The popup's cover bitmap for this item at mpv's OSD scale ((scale, bitmap, w, h, x, y); bitmap None when there
+        is none to make). overlay-add draws in screen pixels: the scale is osd-width / 1920 read from mpv now, not a guess."""
+        art = self.arts.get(iid)
+        if art is None:
+            return None
+        ow = None
+        with contextlib.suppress(MpvError):
+            ow = await self.mpv.get_property("osd-width")
+        k = (ow if isinstance(ow, (int, float)) and ow > 0 else (self.display[0] if self.display else info_mod.RES_X)) / info_mod.RES_X
+        th = self.thumbs.get(iid)
+        if th is not None and abs(th[0] - k) < 1e-6:
+            return th
+        x, y, w, h = (round(v * k) for v in info_mod.THUMB)
+        buf = await asyncio.get_running_loop().run_in_executor(None, info_mod.thumb_bgra, art, w, h, round(info_mod.THUMB_R * k))
+        th = self.thumbs[iid] = (k, buf, w, h, x, y)
+        return th
 
     async def draw_info(self):
         """The popup (osd-overlay 6 + the cover as overlay-add 1) while it is up, redrawn only when it looks different
@@ -697,28 +713,30 @@ class Player:
                 return
             it = self.item or {}
             iid = it.get("id")
-            if it.get("art") and iid not in self.thumbs and ("art", iid) in self.fetching and self.info.age < 1.0:
+            if it.get("art") and iid not in self.arts and ("art", iid) in self.fetching and self.info.age < 1.0:
                 return   # the cover is on its way: do not flash the empty tile first
-            data = self.info_data()
-            sig = self.info.signature(data)
+            th = await self.info_thumb_for(iid)
+            if th is not None and th[1] is None:
+                th = None            # no bitmap could be made (no Pillow, a bad picture): the tile
+            data = dict(self.info_data(), thumb=th is not None)
+            sig = self.info.signature(data) + ((th[0], th[2]) if th else ())
             if sig == self.info_drawn:
                 return
             await mpv.command("osd-overlay", 6, "ass-events", self.info.render(data), info_mod.RES_X, info_mod.RES_Y,
                               info_mod.Z)
-            th = self.thumbs.get(iid)
             if th is None:
                 if self.info_thumb is not None:
                     await mpv.command("overlay-remove", 1)
                     self.info_thumb = None
-            elif self.info_thumb != iid:
-                w, h, x, y, buf = th
+            elif self.info_thumb != (iid, th[0]):
+                _k, buf, w, h, x, y = th
                 if not self.info_dir:
                     self.info_dir = tempfile.mkdtemp(prefix="mtv-info-")
                 path = os.path.join(self.info_dir, "cover.bgra")
                 with open(path, "wb") as f:
                     f.write(buf)
                 await mpv.command("overlay-add", 1, x, y, path, 0, "bgra", w, h, w * 4)   # read into memory at once
-                self.info_thumb = iid
+                self.info_thumb = (iid, th[0])
             self.info_drawn = sig
         except (MpvError, OSError) as e:
             log(f"info popup draw: {e}")

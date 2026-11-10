@@ -64,7 +64,8 @@ async def main():
     cfg = M.Config({"MTV_SERVER": "http://media.test:8080", "MTV_STATE": tmp})
     p = M.Player(cfg, send=sent.append, mono=c)
     mpv = FakeMpv(TRACKS)
-    mpv.props.update({"display-width": 3840, "display-height": 2160, "display-fps": 60, "current-vo": "gpu-next"})
+    mpv.props.update({"display-width": 3840, "display-height": 2160, "display-fps": 60, "current-vo": "gpu-next",
+                      "osd-width": 3840, "osd-height": 2160})
     slow = {"on": False}
 
     async def fetch(path):
@@ -114,6 +115,37 @@ async def main():
     await p.tick()
     check("PAUSED" in ov(mpv, 6)[-1][3], "paused: redrawn as PAUSED")
     await p.on_control({"action": "play"})
+
+    # ---- the cover's scale is mpv's OSD width (overlay-add draws in screen pixels), read when it is drawn
+    cover10 = len(adds(mpv))
+    mpv.props["osd-width"], mpv.props["osd-height"] = 1920, 1080
+    p.pos = 2.4
+    c.t += 1.0
+    await p.tick()
+    await settle()
+    check(len(adds(mpv)) == cover10 + 1 and adds(mpv)[-1][2:4] == (94, 840) and adds(mpv)[-1][6:9] == ("bgra", 240, 135)
+          and os.path.getsize(adds(mpv)[-1][4]) == 240 * 135 * 4,
+          f"the OSD is 1920 wide: the cover is made again at 240 x 135 at (94, 840) ({adds(mpv)[-1][2:4]})")
+    mpv.props["osd-width"], mpv.props["osd-height"] = 3840, 2160
+    p.pos = 3.4
+    c.t += 1.0
+    await p.tick()
+    await settle()
+    check(adds(mpv)[-1][2:4] == (188, 1680) and adds(mpv)[-1][6:9] == ("bgra", 480, 270),
+          "back to 4K: 480 x 270 at (188, 1680) again")
+    mpv.props.pop("osd-width")
+    p.display = None
+    p.pos = 4.4
+    c.t += 0.5
+    await p.tick()
+    await settle()
+    check(adds(mpv)[-1][2:4] == (94, 840), "no OSD size and no display size: the 1920 base, not a crash")
+    mpv.props["osd-width"], mpv.props["osd-height"] = 3840, 2160
+    p.display = (3840, 2160)
+    p.pos = 5.4
+    c.t += 0.5
+    await p.tick()
+    await settle()
 
     # ---- after 5 s it goes
     c.t += 5.0
@@ -180,6 +212,25 @@ async def main():
     await p.tick()
     check(ov(mpv, 6) and ov(mpv, 6)[-1][2] == "ass-events" and not adds(mpv), "pending > 1 s: the card with the tile, no bitmap")
     p.fetching.discard(("art", 13))
+
+    # ---- a cover that cannot be turned into a bitmap (no Pillow, a broken picture): the tile, no bitmap
+    p.info.hide()
+    await p.draw_info()
+    real = M.info_mod.thumb_bgra
+    M.info_mod.thumb_bgra = lambda *a: None
+    try:
+        p.arts.pop(17, None)
+        p.thumbs.pop(17, None)
+        mpv.calls.clear()
+        await p.handle({"type": "load", "item": item(17), "position": 0, "autoplay": True})
+        await settle()
+        shown = ov(mpv, 6)
+        check(shown and shown[-1][2] == "ass-events" and not adds(mpv), "no bitmap possible: the card is drawn, without overlay-add")
+        check(M.info_mod.d.alpha(0.22) in shown[-1][3], "... with the tinted tile in its place")
+    finally:
+        M.info_mod.thumb_bgra = real
+    p.info.hide()
+    await p.tick()
 
     # ---- an item without a picture: the tile at once, no bitmap
     p.info.hide()
