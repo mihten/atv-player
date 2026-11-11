@@ -107,7 +107,7 @@ class Info:
         # one blurred shadow (owner 2026-11-10: the three stacked translucent rects showed rings and grey bands on bright video).
         # Measured with libass at 4K: 29 ms per redraw vs 48 ms for the stacked one; the popup redraws once a second.
         ev.append(d.rrect(X0 - 6, Y0 + 12, X1 + 6, Y1 + 24, 36, d.BLACK, 0.75, blur=26))
-        ev.append(d.rrect(X0, Y0, X1, Y1, 30, card, 1))   # opaque: the video's own subtitle would ghost through
+        ev.append(d.rrect(X0, Y0, X1, Y1, 30, card, 0.9))   # like the menu; the subtitles are hidden while it is up
         tx, y = THUMB[0], THUMB[1]
         if not data.get("thumb"):                                  # no cover: a tinted tile keeps the layout
             ev.append(d.rrect(tx, y, tx + THUMB[2], y + THUMB[3], THUMB_R, accent, 0.22))

@@ -77,8 +77,8 @@ async def main():
     # ---- the menu's Volume row (HDMI): mpv's volume
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
-    check(labels[:3] == ["Lyrics screen", "Lyrics", "Volume"] and "Pause" not in labels and "Stop" not in labels,
-          f"menu: Volume after the two lyrics rows, no Pause / Stop row ({labels[:4]})")
+    check(labels[:3] == ["Lyrics screen", "Subtitles", "Volume"] and "Pause" not in labels and "Stop" not in labels,
+          f"menu: Volume after Lyrics screen and Subtitles, no Pause / Stop row ({labels[:4]})")
     vrow = p.menu.page.rows[2]
     check(vrow.sub == "60 %" and vrow.level, "the row shows 60 % and is a level row")
     p.menu.page.sel = 2

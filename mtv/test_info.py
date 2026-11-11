@@ -170,6 +170,8 @@ def main():
     black = d.bgr(d.BLACK)
     shadow = [tags for tags, p in shapes(ass) if f"\\1c{black}" in tags]
     check(len(shadow) == 1 and "\\blur" in shadow[0], f"one blurred shadow, not stacked rings ({len(shadow)} black shapes)")
+    card_a = [tags for tags, p in shapes(ass) if f"\\1c{d.bgr(d.mix(I.CARD, BASE, 0.45))}" in tags]
+    check(len(card_a) == 1 and d.alpha(0.9) in card_a[0], "the card is 90 % opaque like the menu (owner's option 2)")
 
     # ---- the cover bitmap
     try:

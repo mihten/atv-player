@@ -5,8 +5,10 @@ from the server's HTTP API through an async `fetch(path)`; commands go back thro
 WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left and
 Back go back one page (Back closes on the first page), Blue (Menu) and Red close.
 
-First page (owner, 2026-11-10): the settings first (Lyrics screen, Lyrics, Volume, Boost, Loudness, Equalizer, Shuffle,
-Repeat), then a subtle divider and the lists (Queue, Playlists, For you, Music videos). No Play / Pause or Stop row (the
+First page (owner, 2026-11-10 / -11): the settings first (Lyrics screen, Subtitles ›, Volume, Boost, Loudness, Equalizer,
+Shuffle, Repeat), then a subtle divider and the lists (Queue, Playlists, For you, Music videos). The Subtitles page holds
+Language (bottom line), Second language (top line), Font, Size, Box, Bold (subs.py). Setting rows work on any page that
+has a builder (Page.build); there Left changes a choice / level row, so Back (or Left on another row) goes up. No Play / Pause or Stop row (the
 remote has those buttons). Back goes up ONE page and closes the menu only on the first page; Menu (Blue) and Red close.
 
 Row kinds (the owner's Apple TV conventions): an ACTION runs on OK; a TOGGLE (two values: Loudness, Lyrics screen,
@@ -23,6 +25,7 @@ the cover's accent colour, key hints as small chips at the bottom. Text is Inter
 import time
 
 import draw as d
+import subs as subs_mod
 
 RES_X, RES_Y = d.RES_X, d.RES_Y
 X0, Y0, X1, Y1 = 72, 56, 1112, 1024     # card
@@ -74,8 +77,9 @@ class Row:
 
 
 class Page:
-    def __init__(self, title, rows=None, loader=None):
+    def __init__(self, title, rows=None, loader=None, build=None):
         self.title, self.rows, self.loader = title, rows or [], loader
+        self.build = build           # settings pages: rebuilds the rows after a change (the first page, Subtitles)
         self.sel = self.top = 0
         self.loading = loader is not None
         self.error = None
@@ -136,10 +140,8 @@ class Menu:
         if self._has("lyrics_lang"):
             on = bool(self.vol.lyrics_on)
             rows.append(Row("Lyrics screen", "on" if on else "off", act=self.noop, kind="toggle", value=on, key="lyrics"))
-            codes = [c for c, _ in LANGS]
-            lang = self.vol.lyrics_lang if self.vol.lyrics_lang in codes else "auto"
-            rows.append(Row("Lyrics", dict(LANGS)[lang], act=self.noop, kind="choice", value=codes.index(lang),
-                            vmax=len(LANGS) - 1, key="lang"))
+            rows.append(Row("Subtitles", subs_mod.summary(self.vol.lyrics_lang, self.sub_style()), act=self.subs_page,
+                            opens=True))
         if self._has("volume_now"):
             label, pct, muted = self.vol.volume_now()
             rows.append(Row(label, "not connected" if pct is None else "muted" if muted else f"{pct} %",
@@ -170,7 +172,25 @@ class Menu:
                                                               {"cmd": "play_collection", "collection": "videos"}),
                 opens=True),
         ]
-        return Page("TV Player", rows)
+        return Page("TV Player", rows, build=self.root)
+
+    def sub_style(self):
+        return subs_mod.clean(getattr(self.vol, "sub_style", None))
+
+    def subs_page(self):
+        """Subtitles: Language (bottom line; also the lyrics screen's), Second language (top line), Font, Size, Box, Bold."""
+        codes = [c for c, _ in LANGS]
+        lang = self.vol.lyrics_lang if self.vol.lyrics_lang in codes else "auto"
+        st = self.sub_style()
+        rows = [Row("Language", dict(LANGS)[lang], act=self.noop, kind="choice", value=codes.index(lang),
+                    vmax=len(LANGS) - 1, key="lang")]
+        for key, label in (("second", "Second language"), ("font", "Font"), ("size", "Size"), ("box", "Box")):
+            opts = subs_mod.CHOICES[key]
+            idx = next((n for n, (v, _) in enumerate(opts) if v == st[key]), 0)
+            rows.append(Row(label, opts[idx][1], act=self.noop, kind="choice", value=idx, vmax=len(opts) - 1, key=key,
+                            options=opts))
+        rows.append(Row("Bold", "", act=self.noop, kind="toggle", value=bool(st["bold"]), key="bold"))
+        return Page("Subtitles", rows, build=self.subs_page)
 
     async def noop(self):
         """Placeholder act of level / choice / toggle rows (they must be actions so they are selectable)."""
@@ -248,12 +268,15 @@ class Menu:
         self._scroll(page)
 
     def refresh_root(self):
-        """Server state or a setting changed (play/pause, shuffle, repeat, sound, lyrics): the first page follows it."""
-        if self.pages and len(self.pages) == 1:
-            sel = self.pages[0].sel
-            self.pages[0] = self.root()
-            self.pages[0].sel = min(sel, len(self.pages[0].rows) - 1)
-            self._scroll(self.pages[0])
+        """Server state or a setting changed (shuffle, repeat, sound, lyrics, subtitles): the page on top follows it
+        when it is a settings page (the first page, Subtitles); list pages keep their rows."""
+        page = self.page
+        if page is None or page.build is None:
+            return
+        new = page.build()
+        new.sel, new.top = min(page.sel, len(new.rows) - 1), page.top
+        self.pages[-1] = new
+        self._scroll(new)
 
     def _scroll(self, page):
         page.sel = max(0, min(page.sel, len(page.rows) - 1))
@@ -283,12 +306,16 @@ class Menu:
                 await self.vol.set_lyrics_lang(LANGS[new][0])
             elif new != row.value and k == "eq" and row.options:
                 self.send_sound("preset", row.options[new][0])
+            elif new != row.value and k in subs_mod.CHOICES and row.options and self._has("set_sub_style"):
+                await self.vol.set_sub_style(k, row.options[new][0])
             return True
         if row.kind == "toggle" and name == "ok":
             if k == "loudness":
                 self.send_sound("loudness", "off" if row.value else "raise")
             elif k == "lyrics" and self._has("set_lyrics_on"):
                 await self.vol.set_lyrics_on(not row.value)
+            elif k == "bold" and self._has("set_sub_style"):
+                await self.vol.set_sub_style("bold", not row.value)
             elif isinstance(row.act, dict):
                 self.send(dict(row.act, type="cmd"))
             return True
@@ -302,6 +329,7 @@ class Menu:
         if name == "back":                   # one page up; on the first page it closes the menu (owner, 2026-11-10)
             if len(self.pages) > 1:
                 self.pages.pop()
+                self.refresh_root()          # the page below shows what changed up there (Subtitles summary)
             else:
                 self.close()
             return True
@@ -309,13 +337,14 @@ class Menu:
             self.close()
             return True
         row = page.rows[page.sel] if page.rows and not page.loading and 0 <= page.sel < len(page.rows) else None
-        if row is not None and len(self.pages) == 1 and row.kind in ("level", "choice", "toggle") \
+        if row is not None and page.build is not None and row.kind in ("level", "choice", "toggle") \
                 and await self._setting(row, name):
             self.refresh_root()
             return True
         if name == "left":
             if len(self.pages) > 1:
                 self.pages.pop()
+                self.refresh_root()
                 return True
             return False
         if page.loading or not page.rows:
@@ -362,7 +391,7 @@ class Menu:
         return CARD
 
     def hint(self, row):
-        kind = row.kind if row is not None and len(self.pages) == 1 else None
+        kind = row.kind if row is not None and self.page is not None and self.page.build is not None else None
         if kind == "level":
             keys = [("◀ ▶", "adjust")] + ([("OK", "mute")] if row.key == "volume" else [])
         elif kind == "choice":
@@ -372,7 +401,7 @@ class Menu:
         else:
             keys = [("OK", "select")]
         if len(self.pages) > 1:
-            keys.append(("◀", "back"))
+            keys.append(("Back", "back") if kind in ("level", "choice") else ("◀", "back"))
         keys.append(("Menu", "close"))
         return keys
 

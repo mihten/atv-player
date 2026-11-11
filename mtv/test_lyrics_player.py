@@ -105,11 +105,18 @@ async def main():
     await p.handle({"type": "load", "item": item(10), "position": 0, "autoplay": True})
     await p._on_file_loaded(mpv.entry)
     await settle()
-    check(mpv.sets("sid")[-1] == 1 and mpv.sets("sub-visibility")[-1] is True, "Auto: the file's default track (sid 1), visible")
+    check(mpv.sets("sid")[-1] == 1, "Auto: the file's default track (sid 1)")
+    check(p.info.visible and mpv.sets("sub-visibility")[-1] is False and mpv.sets("secondary-sub-visibility")[-1] is False,
+          "a new video starts with the info popup up: both subtitle lines hidden meanwhile (owner's option 2)")
+    c.t += 5.1
+    await p.tick()
+    check(not p.info.visible and mpv.sets("sub-visibility")[-1] is True and mpv.sets("secondary-sub-visibility")[-1] is True,
+          "the popup gone: both lines visible again")
     check("/art/10" in fetched and "/api/lyrics/10" not in fetched, "cover fetched for the colours; lyrics not fetched (screen off)")
     await p.set_lyrics_lang("hrv")
     check(mpv.sets("sid")[-1] == 2, "Croatian: sid 2 at once")
-    check(json.load(open(os.path.join(tmp, "lyrics.json"))) == {"lang": "hrv", "screen": False}, "kept in lyrics.json")
+    saved = json.load(open(os.path.join(tmp, "lyrics.json")))
+    check(saved["lang"] == "hrv" and saved["screen"] is False and saved["style"] == M.subs_mod.DEFAULT, "kept in lyrics.json (with the style)")
     await p.set_lyrics_lang("off")
     check(mpv.sets("sid")[-1] == "no", "Off: no subtitle")
     await p.set_lyrics_lang("klingon")
@@ -210,7 +217,7 @@ async def main():
                                  ["p:11", "Pop"], ["custom", "Custom"]]}
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
-    check(labels[:8] == ["Lyrics screen", "Lyrics", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]
+    check(labels[:8] == ["Lyrics screen", "Subtitles", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]
           and labels[8:] == ["Queue", "Playlists", "For you", "Music videos"],
           f"menu: Lyrics screen first, settings, then Queue / Playlists / For you / Music videos ({labels})")
     check(len(labels) <= M.menu_mod.ROWS, f"the first page fits on the screen ({len(labels)} rows)")
@@ -250,18 +257,99 @@ async def main():
           "Equalizer Right: Momentum 4 sent through the real player, the row shows it")
     await M.on_key(p, "ok", False)
     check(len([m for m in sent if m.get("cmd") == "sound"]) == 1, "OK on the Equalizer row sends nothing")
+    # ---- Subtitles page: language (bottom), second language (top), font, size, box, bold
     p.menu.page.sel = 1
-    check(p.menu.page.rows[1].sub == "English", "Lyrics row shows the language")
+    check(p.menu.page.rows[1].label == "Subtitles" and p.menu.page.rows[1].sub == "English", "the Subtitles row shows the language")
+    await M.on_key(p, "ok", False)
+    labels = [r.label for r in p.menu.page.rows]
+    check(p.menu.page.title == "Subtitles" and labels == ["Language", "Second language", "Font", "Size", "Box", "Bold"],
+          f"OK opens the Subtitles page ({labels})")
     await M.on_key(p, "right", False)
-    check(p.lyrics_lang == "hrv" and p.menu.page.rows[1].sub == "Croatian", "Lyrics Right: Croatian")
+    check(p.lyrics_lang == "hrv" and p.menu.page.rows[0].sub == "Croatian", "Language Right: Croatian")
     await M.on_key(p, "right", False)
-    check(p.lyrics_lang == "hrv", "Lyrics Right at the end: stays (no wrap)")
+    check(p.lyrics_lang == "hrv", "Language Right at the end: stays (no wrap)")
     for _ in range(5):
         await M.on_key(p, "left", False)
-    check(p.lyrics_lang == "off" and p.menu.page.rows[1].sub == "Off" and len(p.menu.pages) == 1,
-          "Lyrics Left x5: Off, stops there, Left does not leave the page")
+    check(p.lyrics_lang == "off" and p.menu.page.rows[0].sub == "Off" and len(p.menu.pages) == 2,
+          "Language Left x5: Off, stops there, Left does not leave the page (it is a choice row)")
     await M.on_key(p, "ok", False)
-    check(p.lyrics_lang == "off", "OK on the Lyrics row does nothing")
+    check(p.lyrics_lang == "off", "OK on the Language row does nothing")
+    for _ in range(2):
+        await M.on_key(p, "right", False)
+    check(p.lyrics_lang == "eng", "(back to English)")
+    # second language: Croatian on top (a video with English + Croatian tracks is playing)
+    await p.handle({"type": "load", "item": item(10), "position": 0, "autoplay": True})
+    await p._on_file_loaded(mpv.entry)
+    await settle()
+    check(p.menu.open and p.menu.page.title == "Subtitles", "(a video switch does not disturb the open menu)")
+    await M.on_key(p, "down", False)
+    n_sec = len(mpv.sets("secondary-sid"))
+    await M.on_key(p, "right", False)
+    await M.on_key(p, "right", False)
+    check(p.sub_style["second"] == "hrv" and p.menu.page.rows[1].sub == "Croatian" and mpv.sets("secondary-sid")[-1] == 2
+          and len(mpv.sets("secondary-sid")) > n_sec, "Second language Right x2: Croatian on top (secondary-sid 2)")
+    check(mpv.sets("sid")[-1] == 1, "... English stays at the bottom (sid 1)")
+    await p.set_lyrics_lang("hrv")
+    check(mpv.sets("sid")[-1] == 2 and mpv.sets("secondary-sid")[-1] == "no", "the same language at the bottom too: no second line (no repeat)")
+    await p.set_lyrics_lang("eng")
+    check(mpv.sets("secondary-sid")[-1] == 2, "different again: the second line is back")
+    await p.set_sub_style("second", "off")
+    check(mpv.sets("secondary-sid")[-1] == "no", "Second language Off: no top line")
+    await p.set_lyrics_lang("hrv")
+    await p.set_sub_style("second", "eng")
+    check(mpv.sets("sid")[-1] == 2 and mpv.sets("secondary-sid")[-1] == 1, "Croatian bottom + English top works too (sid 2, secondary 1)")
+    await p.set_lyrics_lang("eng")
+    await p.set_sub_style("second", "hrv")
+    mpv.tracks = TRACKS[:3]
+    p.item["subs"] = SUBS[:1]
+    await p.apply_subs()
+    check(mpv.sets("secondary-sid")[-1] == "no", "a file without Croatian: no second line (no fallback to the default track)")
+    mpv.tracks = TRACKS
+    p.item["subs"] = SUBS
+    await p.apply_subs()
+    # font, size, box, bold: mpv properties at once, kept
+    await M.on_key(p, "down", False)
+    await M.on_key(p, "right", False)
+    check(p.sub_style["font"] == "sans" and mpv.sets("sub-font")[-1] == "DejaVu Sans", "Font Right: Sans (DejaVu Sans)")
+    await M.on_key(p, "right", False)
+    check(mpv.sets("sub-font")[-1] == "DejaVu Serif" and p.menu.page.rows[2].sub == "Serif", "Font Right: Serif")
+    await M.on_key(p, "down", False)
+    await M.on_key(p, "right", False)
+    check(mpv.sets("sub-font-size")[-1] == 50 and p.menu.page.rows[3].sub == "Large", "Size Right: Large (50)")
+    await M.on_key(p, "down", False)
+    await M.on_key(p, "right", False)
+    await M.on_key(p, "right", False)
+    check(mpv.sets("sub-border-style")[-1] == "background-box" and mpv.sets("sub-back-color")[-1] == "#C0000000"
+          and mpv.sets("sub-shadow-offset")[-1] == 0, "Box Right x2: Dark box (background-box, 75 % black, no shadow offset)")
+    await M.on_key(p, "left", False)
+    await M.on_key(p, "left", False)
+    check(mpv.sets("sub-border-style")[-1] == "outline-and-shadow" and mpv.sets("sub-back-color")[-1] == "#AF000000"
+          and mpv.sets("sub-shadow-offset")[-1] == 1, "Box Off: outline and shadow again")
+    await M.on_key(p, "down", False)
+    await M.on_key(p, "ok", False)
+    check(p.sub_style["bold"] is False and mpv.sets("sub-bold")[-1] is False and p.menu.page.rows[5].value is False, "Bold OK: off")
+    saved = json.load(open(os.path.join(tmp, "lyrics.json")))
+    check(saved["style"] == {"second": "hrv", "font": "serif", "size": "large", "box": "off", "bold": False}, f"all kept in lyrics.json ({saved['style']})")
+    p3 = M.Player(cfg, send=lambda m: None, mono=c)
+    check(p3.sub_style == saved["style"], "a restart of the program reads them back")
+    mpv3 = FakeMpv(TRACKS)
+    mpv3.props.update(mpv.props)
+    await p3.attach(mpv3)
+    check(mpv3.sets("sub-font")[-1] == "DejaVu Serif" and mpv3.sets("sub-font-size")[-1] == 50 and mpv3.sets("sub-bold")[-1] is False,
+          "... and a new mpv gets the style at once")
+    drawn = p.menu.render()
+    check("}◀" in drawn and "}back" in drawn and "}Back" not in drawn, "on a toggle row (Bold) the hint is ◀ back")
+    sel = p.menu.page.sel
+    p.menu.page.sel = 0
+    drawn = p.menu.render()
+    check("}Back" in drawn and "}back" in drawn and "}◀ ▶" in drawn, "on a choice row the hints are ◀ ▶ change, Back: back (◀ changes the value there)")
+    p.menu.page.sel = sel
+    await M.on_key(p, "back", False)
+    check(p.menu.page.title == "TV Player" and p.menu.page.rows[1].sub == "English + Croatian", "Back: the first page, its row says English + Croatian")
+    await M.on_key(p, "ok", False)
+    await M.on_key(p, "up", False)           # wraps to Bold (a toggle): Left goes back there
+    await M.on_key(p, "left", False)
+    check(p.menu.page.title == "TV Player", "Left on a toggle row goes back")
     p.menu.page.sel = 0
     await M.on_key(p, "ok", False)
     check(p.lyrics_on and p.menu.page.rows[0].value is True and mpv.cmds("change-list")[-1][1:3] == ("glsl-shaders", "set"),

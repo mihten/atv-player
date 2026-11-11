@@ -167,7 +167,19 @@ async def main():
     await p.tick()
     check(len(mpv.calls) == k, "nothing is sent while it is hidden")
 
-    # ---- Back: shows, Back again hides at once, again shows and ends after 5 s
+    # ---- Back: shows, Back again hides at once, again shows and ends after 5 s; the subtitles follow it
+    check(mpv.sets("sub-visibility")[-1] is True and mpv.sets("secondary-sub-visibility")[-1] is True,
+          "the popup ended: both subtitle lines visible")
+    await M.on_key(p, "back", False)
+    check(mpv.sets("sub-visibility")[-1] is False and mpv.sets("secondary-sub-visibility")[-1] is False,
+          "Back shows the popup: both subtitle lines hidden (they would show through the 90 % card)")
+    await M.on_key(p, "back", False)
+    check(mpv.sets("sub-visibility")[-1] is True and mpv.sets("secondary-sub-visibility")[-1] is True,
+          "Back hides it: the lines come back at once")
+    n_vis = len(mpv.sets("sub-visibility"))
+    await p.tick()
+    await p.tick()
+    check(len(mpv.sets("sub-visibility")) == n_vis, "no repeated visibility commands while nothing changes")
     await M.on_key(p, "back", False)
     check(p.info.visible and ov(mpv, 6)[-1][2] == "ass-events", "Back (no menu): the popup shows")
     c.t += 2

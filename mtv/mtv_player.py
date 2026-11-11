@@ -56,7 +56,8 @@ in the web remote), Shuffle, Repeat, then a divider and the lists: Queue, Playli
 or Stop row (the remote has those buttons). While the screensaver is on, any key only closes it.
 
 Lyrics: the video's own lyrics (subtitle) track in the chosen language is shown on the picture (Auto = the file's default
-track). The lyrics screen (lyricsview.py) replaces the picture with the Apple TV's lyrics view: time-synced lyrics only,
+track); a second language can be shown at the top at the same time, and font / size / box / bold are chosen in the menu's
+Subtitles page (subs.py; kept in lyrics.json with the language). Both lines are hidden while the info popup is up. The lyrics screen (lyricsview.py) replaces the picture with the Apple TV's lyrics view: time-synced lyrics only,
 scrolling by themselves, on a backdrop in the cover's colours that the GPU draws as a shader; the video keeps playing under it.
 Language and screen are kept in MTV_STATE/lyrics.json.
 
@@ -88,8 +89,9 @@ import palette as palette_mod  # noqa: E402
 import remotes as remotes_mod  # noqa: E402
 import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
+import subs as subs_mod  # noqa: E402
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -169,7 +171,7 @@ def mpv_args(cfg, sock, volume=None, muted=False):
             f"--volume={cfg.volume if volume is None else volume}", f"--mute={'yes' if muted else 'no'}",
             "--volume-max=100", "--audio-display=embedded-first", "--sid=no",
             "--sub-font=Inter", "--sub-bold=yes", "--sub-font-size=40", "--sub-outline-size=2", "--sub-shadow-offset=1",
-            "--sub-margin-y=44", "--osd-font=Inter",
+            "--sub-margin-y=44", "--osd-font=Inter", f"--secondary-sub-pos={subs_mod.SECOND_POS}", "--secondary-sid=no",
             "--hr-seek=yes", "--cache=yes", "--cache-secs=60", "--demuxer-readahead-secs=30",
             "--demuxer-max-bytes=512MiB", "--demuxer-max-back-bytes=64MiB", "--network-timeout=15",
             "--ytdl=no", "--no-input-terminal", "--input-default-bindings=no", "--osd-level=1", "--osc=no",
@@ -218,6 +220,8 @@ class Player:
         # lyrics: the language (subtitles on the video and the lyrics screen) and the lyrics screen itself, kept in
         # lyrics.json; the screen's model, the cover colours per item and the shader file mpv draws the backdrop from
         self.lyrics_lang, self.lyrics_on = "auto", False
+        self.sub_style = dict(subs_mod.DEFAULT)   # second language (top line) + look of the subtitles (subs.py)
+        self.sub_vis = None          # subtitle visibility last set in mpv (None: not set in this mpv yet)
         self.load_lyrics_settings()
         self.view = lyricsview.LyricsView()
         self.view.set_lang(self.lyrics_lang)
@@ -388,6 +392,7 @@ class Player:
             if data.get("lang") in dict(lyricsview.LANGS):
                 self.lyrics_lang = data["lang"]
             self.lyrics_on = bool(data.get("screen"))
+            self.sub_style = subs_mod.clean(data.get("style"))
         except (OSError, ValueError, TypeError, AttributeError):
             pass
 
@@ -399,7 +404,7 @@ class Player:
             os.makedirs(self.cfg.state_dir, exist_ok=True)
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                json.dump({"lang": self.lyrics_lang, "screen": self.lyrics_on}, f)
+                json.dump({"lang": self.lyrics_lang, "screen": self.lyrics_on, "style": self.sub_style}, f)
             os.replace(tmp, path)
 
     async def set_lyrics_lang(self, lang):
@@ -413,6 +418,41 @@ class Player:
         await self.apply_subs()
         self.lyrics_drawn = None
         await self.draw_lyrics()
+
+    async def set_sub_style(self, key, value):
+        """Menu Subtitles page: second language, font, size, box, bold (kept in lyrics.json, applied at once)."""
+        new = subs_mod.clean(dict(self.sub_style, **{key: value}))
+        if new == self.sub_style:
+            return
+        self.sub_style = new
+        self.save_lyrics_settings()
+        self.log(f"subtitles {key} {new.get(key)}")
+        if key == "second":
+            await self.apply_subs()
+        else:
+            await self.apply_sub_style()
+
+    async def apply_sub_style(self):
+        if not self.mpv:
+            return
+        for name, value in subs_mod.props(self.sub_style):
+            try:
+                await self.mpv.set_property(name, value)
+            except MpvError as e:
+                log(f"subtitle style {name}: {e}")
+
+    async def apply_sub_visibility(self):
+        """Both subtitle lines are hidden under the lyrics screen and while the info popup is up (owner: the card is
+        partly transparent like the menu, the lines would show through); set in mpv only when it changes."""
+        vis = not self.lyrics_on and not self.info.visible
+        if not self.mpv or vis == self.sub_vis:
+            return
+        try:
+            await self.mpv.set_property("sub-visibility", vis)
+            await self.mpv.set_property("secondary-sub-visibility", vis)
+            self.sub_vis = vis
+        except MpvError as e:
+            log(f"subtitle visibility: {e}")
 
     async def set_lyrics_on(self, on):
         """Menu: the lyrics screen on / off (the video keeps playing underneath)."""
@@ -449,9 +489,13 @@ class Player:
             if sid is not None and sid > count:
                 sid = None
             await mpv.set_property("sid", sid if sid is not None else "no")
-            await mpv.set_property("sub-visibility", not self.lyrics_on)
+            second = subs_mod.exact_sub_id(it, self.sub_style["second"]) if self.sub_style["second"] != "off" else None
+            if second is not None and (second > count or second == sid):
+                second = None            # not in the file, or the same track as the bottom line
+            await mpv.set_property("secondary-sid", second if second is not None else "no")
         except MpvError as e:
             log(f"subtitles: {e}")
+        await self.apply_sub_visibility()
 
     def want_data(self, item):
         """Cover colours for every item (menu accent, lyrics backdrop); the lyrics while the lyrics screen is on."""
@@ -553,15 +597,14 @@ class Player:
                 if not self.aspect_set and self.display:
                     await mpv.set_property("video-aspect-override", f"{self.display[0]}:{self.display[1]}")
                     self.aspect_set = True
-                await mpv.set_property("sub-visibility", False)
             else:
                 await self._set_shader(None)
                 if self.aspect_set:
                     await mpv.set_property("video-aspect-override", "no")
                     self.aspect_set = False
-                await mpv.set_property("sub-visibility", True)
         except (MpvError, OSError) as e:
             log(f"lyrics screen: {e}")
+        await self.apply_sub_visibility()
         self.lyrics_drawn = None
         await self.draw_lyrics()
 
@@ -703,6 +746,7 @@ class Player:
             return
         if self.info.visible and self.info_blocked():
             self.info.hide()
+        await self.apply_sub_visibility()   # the subtitle lines go while the card is up and come back with it gone
         if not self.info.visible:
             if self.info_drawn is not None or self.info_thumb is not None:
                 await self.remove_info()
@@ -809,6 +853,8 @@ class Player:
         self.lyrics_drawn = None
         self.lyrics_layer = False
         self.info_drawn = self.info_thumb = None   # a new mpv has none of the popup's overlays
+        self.sub_vis = None                        # ... and its own subtitle visibility / style
+        await self.apply_sub_style()
         if self.sound is not None:
             await self._set_af(sound_chain(self.sound))
             self.applied = self.sound
