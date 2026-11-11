@@ -132,6 +132,8 @@ async def main():
           "render: position counter, breadcrumb (eyebrow), page title")
     pill = Mn.d.bgr((0.96, 0.96, 0.97))
     check(ass.count(pill) == 1, "render: exactly one selection pill")
+    black = [e for e in ass.split("\n") if "\\p1" in e and f"\\1c{Mn.d.bgr(Mn.d.BLACK)}" in e]
+    check(len(black) == 1 and "\\blur" in black[0], f"render: one blurred shadow, not stacked rings ({len(black)} black shapes)")
     check(ass.count("\\p1") >= 6, "render: card, shadow, pill, scroll bar, key chips are shapes")
 
     # ---- back / close

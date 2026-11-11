@@ -239,7 +239,6 @@ class Player:
         self.info_drawn = None       # signature of the popup on the screen now (None: nothing drawn)
         self.info_thumb = None       # (item id, scale) of the cover bitmap on the screen
         self.info_item = None        # id of the video the popup last announced (a different one shows it again)
-        self.info_dir = None
 
     @property
     def connected(self):
@@ -697,20 +696,18 @@ class Player:
 
     async def draw_info(self):
         """The popup (osd-overlay 6 + the cover as overlay-add 1) while it is up, redrawn only when it looks different
-        (once a second while playing); removed when it ends or something else takes the screen."""
+        (once a second while playing); removed when it ends or something else takes the screen. A failed step never
+        leaves stale state behind: removing always runs and marks what is on the screen only after mpv took it."""
         mpv = self.mpv
         if not mpv:
             return
         if self.info.visible and self.info_blocked():
             self.info.hide()
+        if not self.info.visible:
+            if self.info_drawn is not None or self.info_thumb is not None:
+                await self.remove_info()
+            return
         try:
-            if not self.info.visible:
-                if self.info_drawn is not None:
-                    await mpv.command("osd-overlay", 6, "none", "")
-                    if self.info_thumb is not None:
-                        await mpv.command("overlay-remove", 1)
-                    self.info_drawn = self.info_thumb = None
-                return
             it = self.item or {}
             iid = it.get("id")
             if it.get("art") and iid not in self.arts and ("art", iid) in self.fetching and self.info.age < 1.0:
@@ -722,24 +719,47 @@ class Player:
             sig = self.info.signature(data) + ((th[0], th[2]) if th else ())
             if sig == self.info_drawn:
                 return
+            if th is not None and self.info_thumb != (iid, th[0]):
+                try:
+                    await self.add_cover(th)
+                    self.info_thumb = (iid, th[0])
+                except (MpvError, OSError) as e:   # no cover this time: the card with the tile, the next draw retries
+                    log(f"info popup cover: {e}")
+                    th = None
+                    data["thumb"] = False
+                    sig = None
+            elif th is None and self.info_thumb is not None:
+                with contextlib.suppress(MpvError):
+                    await mpv.command("overlay-remove", 1)
+                self.info_thumb = None
             await mpv.command("osd-overlay", 6, "ass-events", self.info.render(data), info_mod.RES_X, info_mod.RES_Y,
                               info_mod.Z)
-            if th is None:
-                if self.info_thumb is not None:
-                    await mpv.command("overlay-remove", 1)
-                    self.info_thumb = None
-            elif self.info_thumb != (iid, th[0]):
-                _k, buf, w, h, x, y = th
-                if not self.info_dir:
-                    self.info_dir = tempfile.mkdtemp(prefix="mtv-info-")
-                path = os.path.join(self.info_dir, "cover.bgra")
-                with open(path, "wb") as f:
-                    f.write(buf)
-                await mpv.command("overlay-add", 1, x, y, path, 0, "bgra", w, h, w * 4)   # read into memory at once
-                self.info_thumb = (iid, th[0])
-            self.info_drawn = sig
-        except (MpvError, OSError) as e:
+            self.info_drawn = sig if sig is not None else ("retry",)
+        except MpvError as e:
             log(f"info popup draw: {e}")
+
+    async def add_cover(self, th):
+        """The cover bitmap into mpv: a fresh private file every time (nothing outside can have removed it), read by mpv
+        into memory before the command returns, then deleted."""
+        _k, buf, w, h, x, y = th
+        fd, path = tempfile.mkstemp(prefix="mtv-cover-", suffix=".bgra")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(buf)
+            await self.mpv.command("overlay-add", 1, x, y, path, 0, "bgra", w, h, w * 4)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    async def remove_info(self):
+        """Card and cover off the screen; each removal on its own, so one failing never keeps the other."""
+        mpv = self.mpv
+        for args in (("osd-overlay", 6, "none", ""), ("overlay-remove", 1)):
+            try:
+                await mpv.command(*args)
+            except MpvError as e:
+                log(f"info popup remove: {e}")
+        self.info_drawn = self.info_thumb = None
 
     async def info_back(self):
         """Back with no menu: shows the popup for 5 s, or hides it when it is up."""
@@ -1393,8 +1413,6 @@ async def main():
     await asyncio.gather(*tasks, return_exceptions=True)  # run_mpv's finally terminates mpv
     if player.shader_dir:
         shutil.rmtree(player.shader_dir, ignore_errors=True)
-    if player.info_dir:
-        shutil.rmtree(player.info_dir, ignore_errors=True)
     log("stopped")
     return 0
 

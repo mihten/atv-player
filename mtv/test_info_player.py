@@ -52,6 +52,16 @@ def adds(mpv):
     return mpv.cmds("overlay-add")
 
 
+SIZES = []   # file size seen by overlay-add at call time (mpv reads the file during the command)
+
+
+class Mpv(FakeMpv):
+    async def command(self, *args, timeout=5.0):
+        if args and args[0] == "overlay-add":
+            SIZES.append(os.path.getsize(args[4]))
+        return await super().command(*args, timeout=timeout)
+
+
 async def settle(n=6):
     for _ in range(n):          # real short sleeps: the cover's thumbnail is made in a worker thread
         await asyncio.sleep(0.01)
@@ -63,7 +73,7 @@ async def main():
     sent = []
     cfg = M.Config({"MTV_SERVER": "http://media.test:8080", "MTV_STATE": tmp})
     p = M.Player(cfg, send=sent.append, mono=c)
-    mpv = FakeMpv(TRACKS)
+    mpv = Mpv(TRACKS)
     mpv.props.update({"display-width": 3840, "display-height": 2160, "display-fps": 60, "current-vo": "gpu-next",
                       "osd-width": 3840, "osd-height": 2160})
     slow = {"on": False}
@@ -96,7 +106,8 @@ async def main():
     a = adds(mpv)
     check(len(a) == 1 and a[0][1] == 1 and a[0][2:4] == (188, 1680) and a[0][5:] == (0, "bgra", 480, 270, 1920),
           f"the cover: overlay-add 1 at the 4K pixel position, 480 x 270 bgra ({a[-1][1:] if a else None})")
-    check(a and os.path.getsize(a[0][4]) == 480 * 270 * 4, "... from a raw file of w x h x 4 bytes")
+    check(SIZES and SIZES[-1] == 480 * 270 * 4, "... from a raw file of w x h x 4 bytes (when mpv reads it)")
+    check(a and not os.path.exists(a[0][4]), "... the file is gone right after (nothing to clean up, nothing to lose)")
     check(p.info.visible, "popup is up")
 
     # ---- redraws: once a second while playing, not when nothing changed
@@ -124,7 +135,7 @@ async def main():
     await p.tick()
     await settle()
     check(len(adds(mpv)) == cover10 + 1 and adds(mpv)[-1][2:4] == (94, 840) and adds(mpv)[-1][6:9] == ("bgra", 240, 135)
-          and os.path.getsize(adds(mpv)[-1][4]) == 240 * 135 * 4,
+          and SIZES[-1] == 240 * 135 * 4,
           f"the OSD is 1920 wide: the cover is made again at 240 x 135 at (94, 840) ({adds(mpv)[-1][2:4]})")
     mpv.props["osd-width"], mpv.props["osd-height"] = 3840, 2160
     p.pos = 3.4
@@ -307,12 +318,73 @@ async def main():
         M.osd = orig
     check(texts == ["Nothing playing"] and not p.info.visible, "Back with nothing playing: a short text, no popup")
 
+    # ---- the TV bug of 2026-11-11: something removed the player's temp files while it ran -> no cover AND Back did
+    # not close the card. Now: every cover goes through a fresh file, and removal never depends on a draw succeeding.
+    await p.handle({"type": "load", "item": item(20), "position": 0, "autoplay": True})
+    await settle()
+    check(p.info.visible and adds(mpv)[-1][4], "(setup) popup with its cover")
+    import glob as _glob
+    for f_ in _glob.glob(os.path.join(tempfile.gettempdir(), "mtv-cover-*")):
+        os.unlink(f_)
+    p.info_thumb = None            # force a new cover upload, as after a scale change
+    p.info_drawn = None
+    n = len(adds(mpv))
+    await p.tick()
+    await settle()
+    check(len(adds(mpv)) == n + 1 and SIZES[-1] == 480 * 270 * 4, "temp files removed from outside: the next cover still uploads")
+    await M.on_key(p, "back", False)
+    check(not p.info.visible and ov(mpv, 6)[-1][2] == "none" and mpv.cmds("overlay-remove")[-1][1] == 1,
+          "... and Back closes the card")
+
+    class FailCover(Mpv):
+        async def command(self, *args, timeout=5.0):
+            if args and args[0] == "overlay-add":
+                raise M.MpvError("overlay-add failed")
+            return await super().command(*args, timeout=timeout)
+    fc = FailCover(TRACKS)
+    fc.props.update(mpv.props)
+    await p.attach(fc)
+    await settle()
+    await M.on_key(p, "back", False)
+    await settle()
+    check(p.info.visible and ov(fc, 6) and ov(fc, 6)[-1][2] == "ass-events" and M.info_mod.d.alpha(0.22) in ov(fc, 6)[-1][3],
+          "the cover upload fails: the card is still drawn, with the tile")
+    await M.on_key(p, "back", False)
+    check(not p.info.visible and ov(fc, 6)[-1][2] == "none", "... and Back still closes it")
+    await M.on_key(p, "back", False)
+    c.t += 1.1
+    await p.tick()
+    await settle()
+    check(len([x for x in fc.calls if x[0] == "cmd" and x[1] == "overlay-add"]) == 0, "(fake: overlay-add never recorded, it raised)")
+    retries = sum(1 for x in fc.calls if x[0] == "cmd" and x[1] == "osd-overlay" and x[2] == 6 and x[3] == "ass-events")
+    check(retries >= 2, f"a failed cover is retried on the next tick ({retries} draws)")
+    await M.on_key(p, "back", False)
+
+    class FailRemove(Mpv):
+        async def command(self, *args, timeout=5.0):
+            if args and args[0] == "osd-overlay" and args[2] == "none":
+                raise M.MpvError("osd-overlay none failed")
+            return await super().command(*args, timeout=timeout)
+    fr = FailRemove(TRACKS)
+    fr.props.update(mpv.props)
+    await p.attach(fr)
+    await settle()
+    await M.on_key(p, "back", False)
+    await settle()
+    await M.on_key(p, "back", False)
+    check(not p.info.visible and fr.cmds("overlay-remove") and fr.cmds("overlay-remove")[-1][1] == 1,
+          "removing the card fails: the cover is still removed (each removal on its own)")
+    await p.attach(mpv)
+    await settle()
+    p.info.hide()
+    await p.tick()
+
     # ---- mpv restarted: the popup is drawn again (new mpv has no overlays)
     await p.handle({"type": "load", "item": item(16), "position": 0, "autoplay": True})
     await settle()
     c.t += 1
     check(p.info.visible and p.info_drawn is not None, "popup up before the restart")
-    mpv2 = FakeMpv(TRACKS)
+    mpv2 = Mpv(TRACKS)
     mpv2.props.update(mpv.props)
     await p.attach(mpv2)
     await p.tick()
@@ -332,8 +404,6 @@ async def main():
     check(True, "a failing overlay command is logged, the tick goes on")
 
     shutil.rmtree(tmp, ignore_errors=True)
-    if p.info_dir:
-        shutil.rmtree(p.info_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
