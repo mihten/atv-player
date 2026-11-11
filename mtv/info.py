@@ -104,8 +104,9 @@ class Info:
         base = data.get("base")
         card = d.mix(CARD, base, 0.45) if base else CARD
         ev = []
-        for g, op in ((18, 0.10), (10, 0.14), (4, 0.20)):          # soft shadow (stacked, no blur: cheap at 4K)
-            ev.append(d.rrect(X0 - g, Y0 - g + 8, X1 + g, Y1 + g + 8, 30 + g, d.BLACK, op))
+        # one blurred shadow (owner 2026-11-10: the three stacked translucent rects showed rings and grey bands on bright video).
+        # Measured with libass at 4K: 29 ms per redraw vs 48 ms for the stacked one; the popup redraws once a second.
+        ev.append(d.rrect(X0 - 6, Y0 + 12, X1 + 6, Y1 + 24, 36, d.BLACK, 0.75, blur=26))
         ev.append(d.rrect(X0, Y0, X1, Y1, 30, card, 1))   # opaque: the video's own subtitle would ghost through
         tx, y = THUMB[0], THUMB[1]
         if not data.get("thumb"):                                  # no cover: a tinted tile keeps the layout

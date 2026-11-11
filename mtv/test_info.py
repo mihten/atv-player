@@ -167,6 +167,9 @@ def main():
     ally = [v for _, p in shapes(ass) for v in p[1::2]]
     check(0 <= min(allx) and max(allx) <= I.RES_X and 0 <= min(ally) and max(ally) <= I.RES_Y, "all shapes stay on the screen (incl. the shadow)")
     check(I.X0 == 60 and I.Y1 == 1080 - 60 and I.THUMB[2:] == (240, 135), "geometry: 60 px margins, the Apple TV's 240 x 135 cover")
+    black = d.bgr(d.BLACK)
+    shadow = [tags for tags, p in shapes(ass) if f"\\1c{black}" in tags]
+    check(len(shadow) == 1 and "\\blur" in shadow[0], f"one blurred shadow, not stacked rings ({len(shadow)} black shapes)")
 
     # ---- the cover bitmap
     try:
