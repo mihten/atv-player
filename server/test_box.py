@@ -37,11 +37,15 @@ def check(cond, label):
 def unit():
     m4 = {"preset": "a:momentum4", "boost": 0, "loudness": "raise"}
     q, loud = {"lufs": -21.0}, {"lufs": -6.0}
-    check(box_sound.message(m4, q)["gain"] == 11.0, "Momentum 4 + loudness, -21 LUFS track: +4 + 7 = +11 dB")
-    check(box_sound.message(m4, loud)["gain"] == 4.0, "... -6 LUFS track: +4 (loudness never turns down)")
-    check(box_sound.message(m4, {"lufs": -11.6})["gain"] == 4.0, "... -11.6 LUFS (Shallow AGT): no lift")
-    check(box_sound.message(m4, {"lufs": -14.3})["gain"] == 4.5, "... -14.3 LUFS: +0.3 -> half-dB step +0.5")
-    check(box_sound.message({**m4, "boost": 8}, q)["gain"] == 14.0, "+4 + 8 + 7 = 19 -> capped at +14")
+    check(box_sound.message(m4, q)["gain"] == 4.0, "Momentum 4 + loudness, -21 LUFS track: -3 + 7 = +4 dB")
+    check(box_sound.message(m4, loud)["gain"] == -3.0, "... -6 LUFS track: -3 (loudness never turns down)")
+    check(box_sound.message(m4, {"lufs": -11.6})["gain"] == -3.0, "... -11.6 LUFS (Shallow AGT): no lift")
+    check(box_sound.message(m4, {"lufs": -14.3})["gain"] == -2.5, "... -14.3 LUFS: +0.3 -> half-dB step +0.5")
+    check(box_sound.message({**m4, "boost": 8}, q)["gain"] == 12.0, "-3 + 8 + 7 = +12 (under the cap)")
+    check(box_sound.message(m4, None)["bands"] == [-7.0, -2.0, 0.0, 1.0, 2.0, 0.0, 7.0, 1.0, 3.0, 0.0],
+          "Momentum 4 = the 10-band fit of the laptop's EqualizerAPO curve")
+    amp = {"preset": "a:amplify", "boost": 8, "loudness": "raise"}
+    check(box_sound.message(amp, q)["gain"] == 14.0, "Amplify +5 + 8 + 7 = 20 -> capped at +14")
     off = box_sound.message({"preset": "off", "boost": 0, "loudness": "off"}, q)
     check(off["processed"] is False and off["gain"] == 0 and off["bands"] == [0.0] * 10, "all off = unprocessed")
     club = box_sound.message({"preset": "p:2", "boost": 0, "loudness": "off"}, None)
@@ -104,7 +108,7 @@ async def main(tmp):
             check(st["session"] == "box" and st["session_name"] == "Web Player", "session box named Web Player")
             check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv"], "sessions list has the box")
             check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 26, "box state: sound + presets")
-            check(st["sound_curves"]["a:momentum4"][0] == 4.0 and len(st["sound_curves"]) == 24,
+            check(st["sound_curves"]["a:momentum4"][0] == -3.0 and len(st["sound_curves"]) == 24,
                   "box state: preset curves for the custom editor (20 = no off / custom)")
             names = [n for _, n in st["sound_presets"]]
             check(names[:7] == ["Off", "Momentum 4", "Amplify", "Bass boost", "Vocal", "Bright", "V-shape"]

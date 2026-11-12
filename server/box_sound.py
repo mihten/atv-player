@@ -19,8 +19,12 @@ MAX_LOUDNESS = 8.0
 BOOST_RANGE = (0, 8)
 
 _Z = 0.0  # VLC stores -1.11022e-15 for "0"
+# Momentum 4 (2026-11-11, owner: replaces the old app curve here): 10-band fit of the parametric EqualizerAPO
+# correction the owner prefers on his laptop (AutoEQ-style KB501x target, APO preamp -1 dB), fitted to the sink's
+# own chain (octave-wide peaking filters at FREQS) with tools/atv-audio/apo_vs_sink_eq.py: rms 0.6 dB, max 2.1 dB
+# from 25 Hz to 18 kHz. Raw preamp 9 = -3 dB. The apps' Momentum 4 (VLC) still carries the older curve.
 APP_PRESETS = (
-    ("momentum4", "Momentum 4", 16.0, (-1, -1, -0.5, 0.5, 1, 2, 3.5, 2, -0.5, -1.5)),
+    ("momentum4", "Momentum 4", 9.0, (-7, -2, 0, 1, 2, 0, 7, 1, 3, 0)),
     ("amplify", "Amplify", 17.0, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
 )
 # Tone presets (2026-11-10, owner: the VLC presets below sounded dull on the TV Player: measured against Off with the
