@@ -92,6 +92,7 @@ class Player(dbus.service.Object):
         status = st.get("status") if st.get("status") in ("Playing", "Paused", "Stopped") else "Stopped"
         if status != self.props["PlaybackStatus"]:
             changed["PlaybackStatus"] = self.props["PlaybackStatus"] = dbus.String(status)
+            note(f"state to the headphones: {status}")
         meta = self.metadata(st.get("title"), st.get("artist"), float(st.get("length") or 0))
         if meta != self.props["Metadata"]:
             changed["Metadata"] = self.props["Metadata"] = meta
@@ -103,6 +104,7 @@ class Player(dbus.service.Object):
         self.PropertiesChanged(MPRIS, {"PlaybackStatus": self.props["PlaybackStatus"]}, [])
 
     def command(self, cmd, source):
+        note(f"headphones: {source} (state sent to them: {self.props['PlaybackStatus']})")
         if cmd == "play" and time.monotonic() - self.connected_at < PLAY_GUARD:
             note(f"Play {time.monotonic() - self.connected_at:.1f} s after the headphones connected: ignored")
             self.resend()

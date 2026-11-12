@@ -1366,7 +1366,7 @@ class Sink:
 
 TV_STATE = ("route", "lip_sync", "sound", "load", "clock")  # replayed in this order when the TV gets the output back
 DISCONNECT_SETTLE = 0.5  # s between the dongle leaving "streaming" and the disconnect command
-PLAY_GUARD = 10.0  # kept for older callers; since 2026-11-12 every headphone Play is ignored (Buttons.on_cmd)
+PLAY_GUARD = 10.0  # s after the headphones (re)connected: a Play from their buttons is ignored (no auto start)
 
 
 class Router:
@@ -1633,12 +1633,15 @@ class Buttons:
     def on_cmd(self, cmd):
         sink = self.router.sink
         if cmd == "play":
-            # Owner decision 2026-11-12: the headphones NEVER start playback. Putting them on (wear sensor), switching
-            # them on while worn and a tap all send the same Play, so no Play from them is passed on. Pause (taken off,
-            # tap), Next, Previous and seek still work; playback starts from the TV remote, web remote or apps.
-            sink.log("button play ignored: the headphones never start playback")
-            self.last = None  # resend our state: the headphones think they play now
-            return
+            # Owner 2026-11-12: the headphones must never start playback by themselves. With the headset's Smart Pause
+            # off, putting them on / taking them off sends nothing (tested), so a Play is a deliberate tap: passed on.
+            # Only a Play right after a (re)connect is dropped (headphones switched on while worn send one).
+            since = None if sink.output_ready_at is None else sink.mono() - sink.output_ready_at
+            if not sink.output_ok or (since is not None and since < PLAY_GUARD):
+                sink.log(f"button play ignored: headphones just (re)connected"
+                         f" ({'output not ready' if not sink.output_ok else f'{since:.1f} s ago'})")
+                self.last = None  # resend our state: the headphones think they play now
+                return
         session = self.router.button_session()
         sink.log(f"button {cmd} -> {session}")
         self.send({"type": "button", "cmd": cmd, "session": session})
