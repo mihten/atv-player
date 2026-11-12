@@ -50,9 +50,10 @@ short text. Back with no menu open shows the info popup (cover, title, progress,
 shows for 5 s whenever a different video starts (not over the lyrics screen, the menu or the screensaver).
 Menu open (menu.py): Up / Down move, CH+ / CH- page, OK / Right select, Left and Back go back one page (Back closes on the
 first page), Blue / Red close. A held key counts as one press (arrows repeat while held in the menu). The menu's first page:
-Lyrics screen, Lyrics (language: Off / Auto / English / Croatian), Volume, Boost, Loudness (the server's sound settings of
-this session), Equalizer (a short preset picker: Off, Momentum 4, Pop, Rock, Full bass, Classical; the custom curve is set
-in the web remote), Shuffle, Repeat, then a divider and the lists: Queue, Playlists, For you, Music videos. No Play / Pause
+Lyrics screen, Subtitles ›, Audio output (HDMI / Headphones: the same switch as the web remote; Headphones that are not
+ready are asked for during one minute, then never again by themselves), Volume, Boost, Loudness (the server's sound
+settings of this session), Equalizer (a short preset picker: Off, Momentum 4, Bass boost, Vocal, Bright, V-shape, Custom),
+Shuffle, Repeat, then a divider and the lists: Queue, Playlists, For you (its last row: Music videos). No Play / Pause
 or Stop row (the remote has those buttons). While the screensaver is on, any key only closes it.
 
 Lyrics: the video's own lyrics (subtitle) track in the chosen language is shown on the picture (Auto = the file's default
@@ -91,7 +92,7 @@ import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 import subs as subs_mod  # noqa: E402
 
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -468,6 +469,19 @@ class Player:
     def current_palette(self):
         it = self.item or (self.state or {}).get("current") or {}
         return self.palettes.get(it.get("id")) or palette_mod.for_item(it.get("id"))
+
+    # -- the menu's Audio output row (same switch as the web remote's Settings > Audio > TV Player > Sound goes to)
+    def audio_out(self):
+        return self.link.out_status()
+
+    async def set_audio_out(self, mode):
+        await self.link.set_on(mode == "headphones")
+
+    async def refresh_menu(self):
+        """Something the open settings page shows changed outside a key press (headphones connect window ended)."""
+        if self.menu.open and self.menu.page is not None and self.menu.page.build is not None:
+            self.menu.refresh_root()
+            await self.draw_menu()
 
     def accent(self):
         """The cover's accent colour (menu, lyrics screen)."""
@@ -1010,6 +1024,7 @@ class Player:
             await self.remote_command(msg)
         elif t == "sound_out":      # web remote: HDMI or the atv-audio headphones
             await self.link.set_on(msg.get("mode") == "headphones")
+            await self.refresh_menu()
         elif t == "sink_ready":
             await self.link.ready(msg.get("id"))
         elif t == "pong":

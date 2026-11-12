@@ -302,6 +302,52 @@ async def main():
           "mpv restarted: muted, reopens playing at once (the sink follows the clock)")
     check(M.mpv_args(p.cfg, "/s", 50, p.mpv_muted).count("--mute=yes") == 1, "a new mpv process starts muted")
 
+    # ---- Headphones chosen while they are not ready: ask to connect for one minute, then stop (owner 2026-11-12)
+    await p.handle({"type": "control", "action": "stop"})
+    await p.handle({"type": "sound_out", "mode": "hdmi"})
+    await p.handle(state(OFF))
+    sent.clear()
+    await p.handle({"type": "sound_out", "mode": "headphones"})
+    check(p.link.connecting and p.audio_out() == ("headphones", "connecting…"), "Headphones while off: connecting…")
+    await p.tick()
+    check(len(of(sent, "sink_connect")) == 1, "first tick: one sink_connect")
+    for _ in range(20):          # 10 s of ticks
+        c.t += 0.5
+        await p.tick()
+    check(len(of(sent, "sink_connect")) == 1, "no repeat within 30 s")
+    c.t += 20.5
+    await p.tick()
+    check(len(of(sent, "sink_connect")) == 2, "a second request after 30 s")
+    c.t += 29.6
+    await p.tick()
+    check(len(of(sent, "sink_connect")) == 2 and not p.link.connecting and p.audio_out() == ("headphones", "not connected"),
+          f"after 60 s: stopped, 'not connected' ({len(of(sent, 'sink_connect'))} requests)")
+    for _ in range(10):
+        c.t += 30
+        await p.tick()
+    check(len(of(sent, "sink_connect")) == 2 and p.link.on, "never asks again by itself; Headphones stays chosen")
+    await p.handle({"type": "sound_out", "mode": "headphones"})
+    await p.tick()
+    check(p.link.connecting and len(of(sent, "sink_connect")) == 3, "choosing Headphones again: one more minute")
+    await p.handle(state(GOOD))
+    await p.tick()
+    check(not p.link.connecting and p.audio_out() == ("headphones", ""), "the headphones arrive: stops, status empty")
+    await p.handle(state(OFF))
+    for _ in range(4):
+        c.t += 31
+        await p.tick()
+    check(len(of(sent, "sink_connect")) == 3, "lost later: no reconnect attempts (only the notice rules apply)")
+    await p.handle({"type": "sound_out", "mode": "headphones"})
+    await p.handle({"type": "sound_out", "mode": "hdmi"})
+    check(not p.link.connecting, "HDMI ends the window in the same step (no tick needed)")
+    c.t += 31
+    await p.tick()
+    check(not p.link.connecting and len(of(sent, "sink_connect")) == 3 and p.audio_out() == ("hdmi", ""),
+          "HDMI ends the window at once")
+    await p.set_audio_out("headphones")
+    check(p.link.on and p.link.connecting, "the menu's set_audio_out uses the same switch")
+    await p.set_audio_out("hdmi")
+
     # ---- the server link goes away
     p._send = None
     await p.link.connection_lost()

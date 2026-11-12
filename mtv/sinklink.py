@@ -8,6 +8,9 @@ and follows that clock. Rules (owner decisions, same as the Apple TV app):
   - the output missing at a start, or lost while playing, pauses playback with a notice that stays until Play; once per
     loss: a Play while the headphones are still off plays without sound;
   - the headphones back while it plays: the sink resumes by itself at the player's position (nothing to do here).
+  - Headphones chosen while they are not ready: ask the server to connect the paired headphones (`sink_connect`) at
+    once and again after CONNECT_RETRY s (a BlueZ connect gives up after 30 s), for CONNECT_WINDOW s, then stop for
+    good (owner 2026-11-12: never force it, try for a minute and that's it). Nothing reconnects them later by itself.
 The model is pure: it uses the Player's mpv / send / mono and its own tick(), so a fake clock drives the tests.
 """
 import contextlib
@@ -18,6 +21,8 @@ LIP_DEFAULT = -100       # ms the sink plays earlier (the Apple TV's default; th
 READY_WAIT = 3.0         # s to wait for the sink's `ready` before the picture starts without it
 PING_FAST, PING_SLOW, FAST_PINGS = 2.0, 15.0, 8
 SEEK_SETTLE = 0.4        # s after a seek the clock says "stalled" (mpv shows the target before it plays from it)
+CONNECT_WINDOW = 60.0    # s the player asks for the headphones after Headphones was chosen, then gives up
+CONNECT_RETRY = 30.0     # s between two connect requests (BlueZ's own connect timeout)
 
 
 def usable(sink):
@@ -44,6 +49,8 @@ class SinkLink:
         self.next_ping = 0.0
         self.seek_until = 0.0
         self.lip_ms = LIP_DEFAULT
+        self.connect_t0 = None         # Headphones chosen while not ready: when the connect window began
+        self.next_connect = 0.0
         self.load_state()
 
     # -- the choice, kept across restarts
@@ -176,7 +183,50 @@ class SinkLink:
         self.seek_until = self.p.mono() + SEEK_SETTLE
         self.clock(force=True)
 
+    # -- connecting the headphones after a deliberate choice (one minute, then never again by itself)
+    @property
+    def connecting(self):
+        return self.connect_t0 is not None
+
+    def start_connect(self):
+        self.connect_t0 = self.next_connect = self.p.mono()
+        self.p.log(f"atv-audio: headphones not ready, asking to connect them for {CONNECT_WINDOW:g} s; {self.status_text()}")
+
+    def stop_connect(self):
+        self.connect_t0 = None
+
+    async def connect_tick(self):
+        """True when the connect window ended (the menu shows the new status)."""
+        if self.connect_t0 is None:
+            return False
+        now = self.p.mono()
+        if not self.on:
+            self.stop_connect()
+            return True
+        if self.usable:
+            self.p.log(f"atv-audio: headphones ready {now - self.connect_t0:.0f} s after the choice; {self.status_text()}")
+            self.stop_connect()
+            return True
+        if now - self.connect_t0 >= CONNECT_WINDOW:
+            self.p.log(f"atv-audio: headphones still not ready after {CONNECT_WINDOW:g} s, stopped asking; {self.status_text()}")
+            self.stop_connect()
+            return True
+        if now >= self.next_connect and self.p.connected:
+            self.next_connect = now + CONNECT_RETRY
+            self.p.send({"type": "sink_connect"})
+        return False
+
+    def out_status(self):
+        """The menu's Audio output row: ("hdmi" | "headphones", "" | "connecting…" | "not connected")."""
+        if not self.on:
+            return "hdmi", ""
+        if self.usable:
+            return "headphones", ""
+        return "headphones", "connecting…" if self.connecting else "not connected"
+
     async def tick(self):
+        if await self.connect_tick() and hasattr(self.p, "refresh_menu"):
+            await self.p.refresh_menu()
         if self.waiting and self.p.mono() - self.wait_t0 >= READY_WAIT:
             if self.had_item:
                 self.p.log(f"atv-audio: no ready within {READY_WAIT:g} s, the sink already has the item open -> starting")
@@ -189,9 +239,12 @@ class SinkLink:
 
     # -- the choice changes
     async def set_on(self, on):
-        """Web remote: Sound output = headphones / HDMI, at once. While it plays: pause with a notice until Play."""
+        """Web remote / TV menu: Sound output = headphones / HDMI, at once. While it plays: pause with a notice until Play.
+        Headphones that are not ready: ask for them for a minute (connect_tick)."""
         p = self.p
         if on == self.on:
+            if on and not self.usable and not self.connecting:   # chosen again on purpose: one more minute
+                self.start_connect()
             p.report_output()
             return
         playing = p.want_play and p.item is not None
@@ -208,6 +261,10 @@ class SinkLink:
         p.log(f"atv-audio: sound output -> {'headphones, mpv muted' if on else 'HDMI, mpv sound on'}"
               f"{' at ' + str((p.item or {}).get('id')) if p.item else ''}; {self.status_text()}")
         self.loss_armed = self.usable if playing else True
+        if on and not self.usable:
+            self.start_connect()
+        elif not on:
+            self.stop_connect()
         if playing:
             await self.show_notice(f"Sound output changed to {'headphones' if on else 'HDMI'} — playback paused")
         p.report_output()

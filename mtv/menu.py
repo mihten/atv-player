@@ -5,8 +5,9 @@ from the server's HTTP API through an async `fetch(path)`; commands go back thro
 WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK / Right select or open, Left and
 Back go back one page (Back closes on the first page), Blue (Menu) and Red close.
 
-First page (owner, 2026-11-10 / -11): the settings first (Lyrics screen, Subtitles ›, Volume, Boost, Loudness, Equalizer,
-Shuffle, Repeat), then a subtle divider and the lists (Queue, Playlists, For you, Music videos). The Subtitles page holds
+First page (owner, 2026-11-10 / -12): the settings first (Lyrics screen, Subtitles ›, Audio output, Volume, Boost, Loudness,
+Equalizer, Shuffle, Repeat), then a subtle divider and the lists (Queue, Playlists, For you; Music videos sits at the end
+of For you). Audio output = HDMI / Headphones (the player's sinklink; connecting is tried for a minute). The Subtitles page holds
 Language (bottom line), Second language (top line), Font, Size, Box, Bold (subs.py). Setting rows work on any page that
 has a builder (Page.build); there Left changes a choice / level row, so Back (or Left on another row) goes up. No Play / Pause or Stop row (the
 remote has those buttons). Back goes up ONE page and closes the menu only on the first page; Menu (Blue) and Red close.
@@ -37,6 +38,8 @@ PENDING_S = 2.0                          # a sound value just sent counts until 
 LANGS = [("off", "Off"), ("auto", "Auto"), ("eng", "English"), ("hrv", "Croatian")]
 # Equalizer presets offered on the TV (by the server's label; the full list and the custom curve are in the web remote)
 EQ_PICK = ("Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom")
+# Audio output (owner 2026-11-12): only the choice; pairing and the rest stay in the web remote
+OUTPUTS = [("hdmi", "HDMI"), ("headphones", "Headphones")]
 SEP_GAP = 28                             # extra space above the first list row of the first page (the divider sits in it)
 DEFAULT_ACCENT = (0.45, 0.68, 1.0)
 CARD = (0.055, 0.055, 0.075)
@@ -142,6 +145,11 @@ class Menu:
             rows.append(Row("Lyrics screen", "on" if on else "off", act=self.noop, kind="toggle", value=on, key="lyrics"))
             rows.append(Row("Subtitles", subs_mod.summary(self.vol.lyrics_lang, self.sub_style()), act=self.subs_page,
                             opens=True))
+        if self._has("audio_out"):
+            mode, status = self.vol.audio_out()
+            idx = next((n for n, (v, _) in enumerate(OUTPUTS) if v == mode), 0)
+            rows.append(Row("Audio output", OUTPUTS[idx][1] + (f" · {status}" if status else ""), act=self.noop,
+                            kind="choice", value=idx, vmax=len(OUTPUTS) - 1, key="out", options=OUTPUTS))
         if self._has("volume_now"):
             label, pct, muted = self.vol.volume_now()
             rows.append(Row(label, "not connected" if pct is None else "muted" if muted else f"{pct} %",
@@ -168,9 +176,6 @@ class Menu:
             Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True, sep=True),
             Row("Playlists", act=self.playlists_page, opens=True),
             Row("For you", act=self.auto_page, opens=True),
-            Row("Music videos", act=lambda: self.items_page("Music videos", "/api/collection/videos",
-                                                              {"cmd": "play_collection", "collection": "videos"}),
-                opens=True),
         ]
         return Page("TV Player", rows, build=self.root)
 
@@ -222,13 +227,16 @@ class Menu:
         return Page("Playlists", loader=load)
 
     def auto_page(self):
+        """For you: the server's automatic lists, then Music videos (moved here from the first page, owner 2026-11-12)."""
         async def load(page):
             data = await self.fetch("/api/auto")
             page.rows = [Row(clip(a["name"]), f"{a.get('count', 0)}",
                              act=(lambda a=a: self.items_page(
                                  a["name"], f"/api/collection/{a['key']}",
                                  {"cmd": "play_collection", "collection": a["key"]})), opens=True)
-                         for a in data] or [Row("Nothing here yet")]
+                         for a in data]
+            page.rows.append(Row("Music videos", act=lambda: self.items_page(
+                "Music videos", "/api/collection/videos", {"cmd": "play_collection", "collection": "videos"}), opens=True))
         return Page("For you", loader=load)
 
     def items_page(self, title, path, play, by_index=False):
@@ -306,6 +314,8 @@ class Menu:
                 await self.vol.set_lyrics_lang(LANGS[new][0])
             elif new != row.value and k == "eq" and row.options:
                 self.send_sound("preset", row.options[new][0])
+            elif new != row.value and k == "out" and self._has("set_audio_out"):
+                await self.vol.set_audio_out(row.options[new][0])
             elif new != row.value and k in subs_mod.CHOICES and row.options and self._has("set_sub_style"):
                 await self.vol.set_sub_style(k, row.options[new][0])
             return True

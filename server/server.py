@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.28.1"
+VERSION = "0.28.2"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -937,6 +937,34 @@ def mtv_sink_state():
         return None
     st = sink_state("tv")
     return {"connected": True, "name": st["name"], "output": st["output"], "route": mtv_routed()}
+
+
+async def sink_connect_headphones():
+    """The TV Player chose Headphones and they are not ready: ask the sink to connect them once (the player repeats
+    this at most once more within its one-minute window). A USB dongle connects by itself on `connect`; with BlueZ the
+    paired headphones: one already connected first (A2DP missing, Connect adds it), else the one whose name the output
+    had, else the first. Returns the address / "dongle" asked for, or None when nothing was sent."""
+    sink = SINKS.get("tv")
+    if sink is None or ABTEST["running"]:
+        log.info("atv-audio: connect for the TV Player skipped (%s)", "blind test" if sink else "atv-audio not connected")
+        return None
+    out = (SINK_INFO.get("tv") or {}).get("output") or {}
+    if out.get("ready"):
+        return None
+    audio = SINK_AUDIO.get("tv") or {}
+    if audio.get("dongle") is not None:
+        await send(sink, {"type": "audio_cmd", "op": "connect"})
+        log.info("atv-audio: connect (dongle) for the TV Player")
+        return "dongle"
+    devs = [d for d in audio.get("devices") or [] if d.get("paired") and d.get("audio")]
+    if not devs:
+        log.info("atv-audio: connect for the TV Player: no paired headphones")
+        return None
+    dev = (next((d for d in devs if d.get("connected")), None)
+           or next((d for d in devs if out.get("name") and d.get("name") == out.get("name")), None) or devs[0])
+    await send(sink, {"type": "audio_cmd", "op": "connect", "address": dev["address"]})
+    log.info("atv-audio: connect %s (%s) for the TV Player", dev["address"], dev.get("name"))
+    return dev["address"]
 
 
 def box_extra(s):
@@ -2165,6 +2193,8 @@ async def on_message(s, data, role, ws=None):
         vol = clean_volume(data)
         if vol is not None and mtv_routed():  # only while its sound is on the headphones (else it is mpv's own volume)
             await sink_volume(vol)
+    elif role == "player" and s.kind == "mtv" and kind == "sink_connect":  # Headphones chosen on the TV, not ready yet
+        await sink_connect_headphones()
     elif role == "player" and kind == "output" and s.kind == "mtv":  # screen, sound device, volume as it is now
         MTV_OUT[ws] = clean_mtv_output(data)
         await broadcast_state(s)

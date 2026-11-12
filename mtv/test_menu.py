@@ -53,16 +53,16 @@ async def main():
     check(not m.open and m.render() == "", "closed: nothing drawn")
     await m.show()
     labels = [r.label for r in m.page.rows]
-    check(labels == ["Shuffle", "Repeat", "Queue", "Playlists", "For you", "Music videos"],
-          f"root rows: settings first, the four lists last, no Play / Pause or Stop ({labels})")
-    check(m.page.rows[2].sub == "3 items" and [r.sep for r in m.page.rows] == [False, False, True, False, False, False],
+    check(labels == ["Shuffle", "Repeat", "Queue", "Playlists", "For you"],
+          f"root rows: settings first, the three lists last (Music videos is in For you), no Play / Pause or Stop ({labels})")
+    check(m.page.rows[2].sub == "3 items" and [r.sep for r in m.page.rows] == [False, False, True, False, False],
           "root subs: queue size; the divider is above Queue only")
     drawn = m.render()
     check("}Song 1" in drawn and "}Artist 1" in drawn and "NOW PLAYING" in drawn, "header: now playing, title, artist")
 
     # ---- wrap, shuffle / repeat stay open, root follows state
     await m.key("up")
-    check(m.page.sel == 5, "Up on the first row wraps to the last")
+    check(m.page.sel == 4, "Up on the first row wraps to the last")
     await m.key("down")
     m.page.sel = 1
     await m.key("ok")
@@ -74,7 +74,7 @@ async def main():
     await m.key("ok")
     check(sent[-1] == {"cmd": "shuffle", "type": "cmd"} and m.open, "Shuffle row: command, menu stays open")
     await m.key("up")
-    check(m.page.sel == 5, "Up on the first row wraps to the last (again)")
+    check(m.page.sel == 4, "Up on the first row wraps to the last (again)")
     await m.key("down")
     check(m.page.sel == 0, "Down on the last row wraps to the first")
     check(await m.key("right") is False and m.open, "Right on a toggle row does nothing")
@@ -172,7 +172,7 @@ async def main():
     await m.show()
     m.page.sel = 4
     await m.key("ok")
-    check([r.label for r in m.page.rows] == ["Loved", "Recently added"], "For you lists")
+    check([r.label for r in m.page.rows] == ["Loved", "Recently added", "Music videos"], "For you lists, Music videos last")
     await m.key("ok")
     m.page.sel = 2
     await m.key("ok")
@@ -185,9 +185,11 @@ async def main():
     await m.key("ok")
     check([r.label for r in m.page.rows] == ["Empty"] and await m.key("ok") is False, "empty list: one inert row")
     await m.show()
-    m.page.sel = 5
+    m.page.sel = 4
     await m.key("ok")
-    check(m.page.title == "Music videos" and m.page.rows[0].label == "▶  Shuffle all" and len(m.page.rows) == 6,
+    m.page.sel = 2
+    await m.key("ok")
+    check(m.page.title == "Music videos" and [p.title for p in m.pages] == ["TV Player", "For you", "Music videos"] and m.page.rows[0].label == "▶  Shuffle all" and len(m.page.rows) == 6,
           "Music videos: Shuffle all + 5 videos")
     await m.key("ok")
     check(sent[-1] == {"cmd": "play_collection", "collection": "videos", "shuffle": True, "type": "cmd"} and not m.open,
@@ -212,7 +214,7 @@ async def main():
     eqm = Mn.Menu(fetch, sent.append, lambda: eq_state)
     await eqm.show()
     labels = [r.label for r in eqm.page.rows]
-    check(labels == ["Boost", "Loudness", "Equalizer", "Shuffle", "Repeat", "Queue", "Playlists", "For you", "Music videos"],
+    check(labels == ["Boost", "Loudness", "Equalizer", "Shuffle", "Repeat", "Queue", "Playlists", "For you"],
           f"Equalizer sits after Loudness, before Shuffle ({labels})")
     eq = eqm.page.rows[2]
     check(eq.kind == "choice" and [o[1] for o in eq.options] == ["Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom"]
@@ -284,7 +286,50 @@ async def main():
     ys = lambda ass, word: [float(x) for x in re.findall(r"\\pos\([\d.]+,([\d.]+)\)[^}]*\}" + word, ass)]
     check(ys(with_sep, "Queue")[0] - ys(without, "Queue")[0] == Mn.SEP_GAP and ys(with_sep, "Repeat") == ys(without, "Repeat"),
           f"divider: Queue and the rows below move down {Mn.SEP_GAP} px, the settings stay")
-    check(ys(with_sep, "Music videos")[0] + 24 < 1024 - 50, "divider: the last row still ends above the key hints")
+    check(ys(with_sep, "For you")[0] + 24 < 1024 - 50, "divider: the last row still ends above the key hints")
+
+    # ---- Audio output (owner 2026-11-12): a choice row HDMI / Headphones, the status after the value
+    class Out:
+        def __init__(self):
+            self.mode, self.status, self.calls = "hdmi", "", []
+
+        def audio_out(self):
+            return self.mode, self.status
+
+        async def set_audio_out(self, mode):
+            self.calls.append(mode)
+            self.mode, self.status = mode, ("connecting…" if mode == "headphones" else "")
+
+    out = Out()
+    om = Mn.Menu(fetch, sent.append, lambda: state, volume=out)
+    await om.show()
+    labels = [r.label for r in om.page.rows]
+    check(labels[0] == "Audio output" and om.page.rows[0].kind == "choice" and om.page.rows[0].sub == "HDMI"
+          and om.page.rows[0].value == 0, f"Audio output row: a choice, HDMI ({labels})")
+    n0 = len(sent)
+    await om.key("left")
+    await om.key("ok")
+    check(out.calls == [] and len(sent) == n0 and om.open, "Left at HDMI and OK do nothing")
+    await om.key("right")
+    check(out.calls == ["headphones"] and om.page.rows[0].sub == "Headphones · connecting…" and om.page.rows[0].value == 1,
+          f"Right -> Headphones, the row shows the status at once ({om.page.rows[0].sub})")
+    await om.key("right")
+    check(out.calls == ["headphones"], "stops at Headphones")
+    out.status = "not connected"
+    om.refresh_root()
+    check(om.page.rows[0].sub == "Headphones · not connected", "status after the minute: not connected")
+    await om.key("left")
+    check(out.calls == ["headphones", "hdmi"] and om.page.rows[0].sub == "HDMI", "Left -> HDMI")
+    full = Mn.Menu(fetch, sent.append, lambda: dict(state, sound={"preset": "off", "boost": 0, "loudness": "raise"}),
+                   volume=type("V", (Out,), {"lyrics_lang": "auto", "lyrics_on": False, "sub_style": None,
+                                             "volume_now": lambda self: ("Volume", 80, False)})())
+    await full.show()
+    labels = [r.label for r in full.page.rows]
+    check(labels[:5] == ["Lyrics screen", "Subtitles", "Audio output", "Volume", "Boost"] and len(labels) <= Mn.ROWS,
+          f"Audio output sits right after Subtitles; the first page still fits ({len(labels)} rows: {labels})")
+    full_ass = full.render()
+    check(ys(full_ass, "For you") and ys(full_ass, "For you")[0] + 24 < 1024 - 50,
+          "full first page: the last row ends above the key hints")
 
     # ---- escaping
     check(Mn.esc("a{\\b}c\nd") == "a\\{\\\u200bb\\}c d", "ASS escaping of braces, backslash, newline")

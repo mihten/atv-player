@@ -77,16 +77,16 @@ async def main():
     # ---- the menu's Volume row (HDMI): mpv's volume
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
-    check(labels[:3] == ["Lyrics screen", "Subtitles", "Volume"] and "Pause" not in labels and "Stop" not in labels,
-          f"menu: Volume after Lyrics screen and Subtitles, no Pause / Stop row ({labels[:4]})")
-    vrow = p.menu.page.rows[2]
+    check(labels[:4] == ["Lyrics screen", "Subtitles", "Audio output", "Volume"] and "Pause" not in labels and "Stop" not in labels,
+          f"menu: Volume after Lyrics screen, Subtitles, Audio output, no Pause / Stop row ({labels[:4]})")
+    vrow = p.menu.page.rows[3]
     check(vrow.sub == "60 %" and vrow.level, "the row shows 60 % and is a level row")
-    p.menu.page.sel = 2
+    p.menu.page.sel = 3
     drawn = p.menu.render()
     check("}◀ ▶" in drawn and "}adjust" in drawn and "}OK" in drawn and "}mute" in drawn,
           "on the row the hint chips say: ◀ ▶ adjust, OK mute")
     await M.on_key(p, "right", False)
-    check(p.volume == 65 and mpv.sets("volume")[-1] == 65 and p.menu.page.rows[2].sub == "65 %", "Right: +5 %, mpv volume set, the row follows")
+    check(p.volume == 65 and mpv.sets("volume")[-1] == 65 and p.menu.page.rows[3].sub == "65 %", "Right: +5 %, mpv volume set, the row follows")
     check(p.menu.open and not cmds(sent)[2:], "the menu stays open and no queue command is sent")
     await M.on_key(p, "left", False)
     await M.on_key(p, "left", False)
@@ -94,12 +94,12 @@ async def main():
     outs = [m for m in sent if m.get("type") == "output"]
     check(outs and outs[-1]["volume"] == 55, "the new volume is reported to the server (web remote follows)")
     await M.on_key(p, "ok", False)
-    check(p.muted and mpv.sets("mute")[-1] is True and p.menu.page.rows[2].sub == "muted", "OK on the row: mute, shown as muted")
+    check(p.muted and mpv.sets("mute")[-1] is True and p.menu.page.rows[3].sub == "muted", "OK on the row: mute, shown as muted")
     await M.on_key(p, "right", False)
     check(not p.muted and p.volume == 60 and mpv.sets("mute")[-1] is False, "a step unmutes")
     await M.on_key(p, "ok", False)
     await M.on_key(p, "ok", False)
-    check(not p.muted and p.menu.page.rows[2].sub == "60 %", "OK twice: back to 60 %")
+    check(not p.muted and p.menu.page.rows[3].sub == "60 %", "OK twice: back to 60 %")
     p.volume = 98
     await M.on_key(p, "right", False)
     await M.on_key(p, "right", False)
@@ -134,9 +134,9 @@ async def main():
     c.t += 3
     sent.clear()
     await p.menu.show()
-    row = p.menu.page.rows[2]
+    row = p.menu.page.rows[3]
     check(row.label == "Headphones volume" and row.sub == "40 %", f"menu row: headphones' volume ({row.label}, {row.sub})")
-    p.menu.page.sel = 2
+    p.menu.page.sel = 3
     await M.on_key(p, "right", False)
     check(volumes(sent) == [{"type": "sink_volume", "percent": 45, "muted": False}], "menu Right on the row -> sink_volume 45")
     await M.on_key(p, "ok", False)
@@ -154,9 +154,9 @@ async def main():
     await M.on_key(p, "ch_up", False)
     check(not volumes(sent) and texts[-1] == "Headphones not connected", "headphones away: CH+ says so, sends nothing")
     await p.menu.show()
-    row = p.menu.page.rows[2]
+    row = p.menu.page.rows[3]
     check(row.sub == "not connected", f"menu row: not connected ({row.sub})")
-    p.menu.page.sel = 2
+    p.menu.page.sel = 3
     await M.on_key(p, "right", False)
     await M.on_key(p, "ok", False)
     check(not volumes(sent), "menu: nothing sent while they are away")

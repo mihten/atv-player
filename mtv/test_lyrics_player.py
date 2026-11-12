@@ -217,32 +217,38 @@ async def main():
                                  ["p:11", "Pop"], ["custom", "Custom"]]}
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
-    check(labels[:8] == ["Lyrics screen", "Subtitles", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]
-          and labels[8:] == ["Queue", "Playlists", "For you", "Music videos"],
-          f"menu: Lyrics screen first, settings, then Queue / Playlists / For you / Music videos ({labels})")
+    check(labels[:9] == ["Lyrics screen", "Subtitles", "Audio output", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]
+          and labels[9:] == ["Queue", "Playlists", "For you"],
+          f"menu: Lyrics screen first, settings (Audio output after Subtitles), then Queue / Playlists / For you ({labels})")
     check(len(labels) <= M.menu_mod.ROWS, f"the first page fits on the screen ({len(labels)} rows)")
+    p.menu.page.sel = 2
+    check(p.menu.page.rows[2].label == "Audio output" and p.menu.page.rows[2].sub == "HDMI", "Audio output row: HDMI")
+    await M.on_key(p, "right", False)
+    check(p.link.on and p.menu.page.rows[2].sub.startswith("Headphones"), f"Audio output Right: the real player switches ({p.menu.page.rows[2].sub})")
+    await M.on_key(p, "left", False)
+    check(not p.link.on and p.menu.page.rows[2].sub == "HDMI", "Audio output Left: back to HDMI")
     sent.clear()
-    p.menu.page.sel = 3
+    p.menu.page.sel = 4
     await M.on_key(p, "right", False)
     await M.on_key(p, "right", False)
     snd = [m for m in sent if m.get("cmd") == "sound"]
-    check([m.get("boost") for m in snd] == [3, 4] and p.menu.page.rows[3].sub == "+4 dB",
+    check([m.get("boost") for m in snd] == [3, 4] and p.menu.page.rows[4].sub == "+4 dB",
           f"Boost Right x2: quick presses add up (3, 4) before the server answers ({[m.get('boost') for m in snd]})")
     p.state["sound"]["boost"] = 4
     c.t += 5
     p.menu.refresh_root()
     for _ in range(6):
         await M.on_key(p, "right", False)
-    check([m.get("boost") for m in sent if m.get("cmd") == "sound"][-1] == 8 and p.menu.page.rows[3].sub == "+8 dB",
+    check([m.get("boost") for m in sent if m.get("cmd") == "sound"][-1] == 8 and p.menu.page.rows[4].sub == "+8 dB",
           "Boost stops at +8 dB")
     p.state["sound"]["boost"] = 0
     c.t += 5
     p.menu.refresh_root()
     sent.clear()
     await M.on_key(p, "left", False)
-    check(not [m for m in sent if m.get("cmd") == "sound"] and p.menu.page.rows[3].sub == "off",
-          f"Boost at 0: Left sends nothing ({[m for m in sent if m.get('cmd') == 'sound']}, {p.menu.page.rows[3].sub})")
-    p.menu.page.sel = 4
+    check(not [m for m in sent if m.get("cmd") == "sound"] and p.menu.page.rows[4].sub == "off",
+          f"Boost at 0: Left sends nothing ({[m for m in sent if m.get('cmd') == 'sound']}, {p.menu.page.rows[4].sub})")
+    p.menu.page.sel = 5
     await M.on_key(p, "ok", False)
     check(last_cmd(sent) == {"type": "cmd", "cmd": "sound", "loudness": "off"} and p.menu.open, "Loudness OK: off (menu stays open)")
     p.state["sound"]["loudness"] = "off"
@@ -250,10 +256,10 @@ async def main():
     p.menu.refresh_root()
     await M.on_key(p, "ok", False)
     check(last_cmd(sent) == {"type": "cmd", "cmd": "sound", "loudness": "raise"}, "Loudness OK again: raise quiet tracks")
-    p.menu.page.sel = 5
+    p.menu.page.sel = 6
     sent.clear()
     await M.on_key(p, "right", False)
-    check(last_cmd(sent) == {"type": "cmd", "cmd": "sound", "preset": "a:momentum4"} and p.menu.page.rows[5].sub == "Momentum 4",
+    check(last_cmd(sent) == {"type": "cmd", "cmd": "sound", "preset": "a:momentum4"} and p.menu.page.rows[6].sub == "Momentum 4",
           "Equalizer Right: Momentum 4 sent through the real player, the row shows it")
     await M.on_key(p, "ok", False)
     check(len([m for m in sent if m.get("cmd") == "sound"]) == 1, "OK on the Equalizer row sends nothing")
