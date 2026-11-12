@@ -116,6 +116,16 @@ class FakeOutputs:
                       ("alsa_output.usb", "USB DAC", {"device.bus": "usb"}, {})]
         self.default = "bluez_output.AA.1"
         self.set_calls = []
+        self.codec_calls = []
+        self.offered = [{"codec": "aptx_hd", "label": "aptX HD", "profile": "a2dp-sink"},
+                        {"codec": "aptx_adaptive", "label": "aptX Adaptive", "profile": "a2dp-sink-aptx_adaptive"}]
+
+    async def codec_choices(self):
+        return ("bluez_card.AA", list(self.offered)) if self.offered else None
+
+    async def set_codec(self, codec):
+        self.codec_calls.append(codec)
+        return any(c["codec"] == codec for c in self.offered)
 
     async def set_default(self, key):
         self.set_calls.append(key)
@@ -349,6 +359,83 @@ class FakeBus:
 
     def get_object(self, service, path):
         return self.dev
+
+
+def _card(name="bluez_card.AA_BB", active="a2dp-sink-aptx_adaptive", **profiles):
+    """'pactl -f json list cards' shape (profiles: name -> description), as seen on the live box 2026-11-12."""
+    base = {"off": "Off", "a2dp-sink-sbc": "High Fidelity Playback (A2DP Sink, codec SBC)",
+            "a2dp-sink-sbc_xq": "High Fidelity Playback (A2DP Sink, codec SBC-XQ)",
+            "a2dp-sink-aptx_adaptive_ll": "High Fidelity Playback (A2DP Sink, codec aptX Adaptive (Low Latency))",
+            "a2dp-sink-aptx": "High Fidelity Playback (A2DP Sink, codec aptX)",
+            "a2dp-sink": "High Fidelity Playback (A2DP Sink, codec aptX HD)",
+            "a2dp-sink-aptx_adaptive": "High Fidelity Playback (A2DP Sink, codec aptX Adaptive)"}
+    base.update(profiles)
+    return {"name": name, "active_profile": active,
+            "profiles": {k: ({"description": v, "available": True} if isinstance(v, str) else v) for k, v in base.items()}}
+
+
+class CodecChoicesTest(unittest.IsolatedAsyncioTestCase):
+    def test_hd_and_adaptive_found_by_description(self):
+        card, ch = A.parse_card_codecs(json.dumps([{"name": "alsa_card.pci", "profiles": {}}, _card()]))
+        self.assertEqual(card, "bluez_card.AA_BB")
+        self.assertEqual(ch, [{"codec": "aptx_hd", "label": "aptX HD", "profile": "a2dp-sink"},
+                              {"codec": "aptx_adaptive", "label": "aptX Adaptive", "profile": "a2dp-sink-aptx_adaptive"}],
+                         "plain a2dp-sink = aptX HD by its description; LL, aptX, SBC, SBC-XQ and Off are not offered")
+
+    def test_unavailable_or_missing_codec_not_offered(self):
+        _, ch = A.parse_card_codecs(json.dumps([_card(**{"a2dp-sink-aptx_adaptive": {"description": "x (A2DP Sink, codec aptX Adaptive)", "available": False}})]))
+        self.assertEqual([c["codec"] for c in ch], ["aptx_hd"], "an unavailable profile is not offered")
+        # the plain a2dp-sink is the BEST codec, not always aptX HD: here it is LDAC -> no aptX HD choice
+        _, ch = A.parse_card_codecs(json.dumps([_card(**{"a2dp-sink": "High Fidelity Playback (A2DP Sink, codec LDAC)"})]))
+        self.assertEqual([c["codec"] for c in ch], ["aptx_adaptive"])
+
+    def test_no_bluetooth_card_or_bad_json(self):
+        self.assertIsNone(A.parse_card_codecs(json.dumps([{"name": "alsa_card.pci", "profiles": {}}])))
+        self.assertIsNone(A.parse_card_codecs("not json"))
+        self.assertIsNone(A.parse_card_codecs(""))
+        self.assertIsNone(A.parse_card_codecs("{}"))
+
+    async def test_set_codec_uses_the_cards_own_profile_name(self):
+        calls = []
+
+        async def fake_run(*args, **kw):
+            calls.append(args)
+            return json.dumps([_card()]) if args[-3:] == ("-f", "json", "list", "cards")[-3:] or "cards" in args else ""
+        old = A._run
+        A._run = fake_run
+        try:
+            w = A.OutputWatch.__new__(A.OutputWatch)
+            w.cfg = types.SimpleNamespace(output="pipewire")
+            A.shutil.which = lambda n: "/usr/bin/pactl"
+            self.assertTrue(await w.set_codec("aptx_hd"))
+            self.assertEqual(calls[-1][-3:], ("set-card-profile", "bluez_card.AA_BB", "a2dp-sink"))
+            self.assertTrue(await w.set_codec("aptx_adaptive"))
+            self.assertEqual(calls[-1][-1], "a2dp-sink-aptx_adaptive")
+            n = len(calls)
+            for bad in ("sbc", "a2dp-sink; reboot", "", "off"):
+                self.assertFalse(await w.set_codec(bad), bad)
+            self.assertFalse([c for c in calls[n:] if "set-card-profile" in c], "nothing but the two codecs ever reaches pactl")
+        finally:
+            A._run = old
+
+    async def test_audio_control_set_codec_and_info(self):
+        sent, outs, again = [], FakeOutputs(), []
+
+        async def redetect():
+            again.append(1)
+        a = A.AudioControl(outs, sent.append, FakeButtons(), redetect)
+        await a.handle({"type": "audio_cmd", "op": "refresh"})
+        self.assertEqual(sent[-1]["codecs"], [{"codec": "aptx_hd", "label": "aptX HD"}, {"codec": "aptx_adaptive", "label": "aptX Adaptive"}],
+                         "the choices (without the profile name) go to the server in audio_info")
+        await a.handle({"type": "audio_cmd", "op": "set_codec", "output": "aptx_adaptive"})
+        self.assertEqual(outs.codec_calls, ["aptx_adaptive"])
+        self.assertTrue(again, "output re-detected after the switch")
+        self.assertIsNone(sent[-1]["error"])
+        await a.handle({"type": "audio_cmd", "op": "set_codec", "output": "ldac"})
+        self.assertIn("do not offer", sent[-1]["error"])
+        outs.offered = []
+        await a.handle({"type": "audio_cmd", "op": "refresh"})
+        self.assertEqual(sent[-1]["codecs"], [], "no Bluetooth card: no choices")
 
 
 class DisconnectSticksTest(unittest.TestCase):

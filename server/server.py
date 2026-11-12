@@ -60,7 +60,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.28.2"
+VERSION = "0.28.3"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -860,7 +860,7 @@ def sinks_list():
 
 def clean_audio_info(data):
     """The sink's audio_info: {outputs: [{key, name, kind, codec, default}], devices: [{address, name, paired, connected,
-    audio}], scanning, busy, error, can_bluetooth, can_outputs, dongle: {name, state, codec, firmware} | None (a USB
+    audio}], scanning, busy, error, can_bluetooth, can_outputs, codecs: [{codec, label}] (aptx_hd / aptx_adaptive), dongle: {name, state, codec, firmware} | None (a USB
     Bluetooth dongle that reports its headphones, e.g. BTD 700)}. Bounded and typed, the rest dropped."""
     def s(v, n=120):
         return str(v)[:n] if v is not None else None
@@ -873,9 +873,11 @@ def clean_audio_info(data):
     dg = data.get("dongle")
     dongle = ({"name": s(dg.get("name"), 60), "state": s(dg.get("state"), 20), "codec": s(dg.get("codec"), 40),
                "firmware": s(dg.get("firmware"), 20)} if isinstance(dg, dict) else None)
+    codecs = [{"codec": s(c.get("codec"), 30), "label": s(c.get("label"), 30)}   # aptX HD / aptX Adaptive the headphones offer
+              for c in (data.get("codecs") or [])[:4] if isinstance(c, dict) and c.get("codec") in ("aptx_hd", "aptx_adaptive")]
     return {"outputs": outs, "devices": devs, "scanning": bool(data.get("scanning")), "busy": s(data.get("busy"), 200),
             "error": s(data.get("error"), 300), "can_bluetooth": bool(data.get("can_bluetooth")),
-            "can_outputs": bool(data.get("can_outputs")), "dongle": dongle}
+            "can_outputs": bool(data.get("can_outputs")), "codecs": codecs, "dongle": dongle}
 
 
 # ---------------------------------------------------------------- the "atv-audio" session (box)
@@ -3765,8 +3767,14 @@ async def api_atv_audio(request):
         return web.json_response({"ok": True})
     if ABTEST["running"]:
         raise web.HTTPConflict(text="a blind test is running")
-    if op not in ("refresh", "set_output", "scan", "pair", "connect", "disconnect", "forget"):
+    if op not in ("refresh", "set_output", "set_codec", "scan", "pair", "connect", "disconnect", "forget"):
         raise web.HTTPBadRequest(text="unknown op")
+    if op == "set_codec":
+        if body.get("output") not in ("aptx_hd", "aptx_adaptive"):
+            raise web.HTTPBadRequest(text="codec must be aptx_hd or aptx_adaptive")
+        box = SESSIONS["box"]
+        if tv_owns_output() or box.playing or box.want_play:   # the switch cuts the sound for a few seconds
+            raise web.HTTPConflict(text="Pause first: switching the codec cuts the sound for a few seconds")
     sink = SINKS.get("tv")
     if sink is None:
         raise web.HTTPServiceUnavailable(text="atv-audio is not connected")

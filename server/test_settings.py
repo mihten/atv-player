@@ -227,13 +227,24 @@ async def main(tmp):
             check(code == 200 and {"type": "audio_cmd", "op": "connect", "address": "AA:BB"} in msgs, "audio_cmd relayed")
             code, _ = await req(http, "POST", "/api/atv-audio", json={"op": "rm -rf"})
             check(code == 400, "unknown op refused")
+            # codec switch (aptX HD <-> aptX Adaptive): relayed with the codec id only, anything else refused
+            code, _ = await req(http, "POST", "/api/atv-audio", json={"op": "set_codec", "output": "aptx_adaptive"})
+            msgs = await H.drain(sink)
+            check(code == 200 and {"type": "audio_cmd", "op": "set_codec", "output": "aptx_adaptive"} in msgs, "set_codec relayed")
+            code, _ = await req(http, "POST", "/api/atv-audio", json={"op": "set_codec", "output": "sbc; rm -rf"})
+            check(code == 400 and not await H.drain(sink), "set_codec with another codec / a command string refused, nothing relayed")
+
             await sink.send_json({"type": "audio_info", "outputs": [{"key": "bluez_output.x", "name": "Headphones",
                                   "kind": "bluetooth", "default": True}], "devices": [{"address": "AA:BB", "name": "HP",
                                   "paired": True, "connected": False, "audio": True}], "can_bluetooth": True,
-                                  "can_outputs": True, "junk": "x" * 5000})
+                                  "can_outputs": True, "junk": "x" * 5000,
+                                  "codecs": [{"codec": "aptx_hd", "label": "aptX HD", "profile": "a2dp-sink"},
+                                             {"codec": "aptx_adaptive", "label": "aptX Adaptive"}, {"codec": "evil"}]})
             await asyncio.sleep(0.3)
             a = (await H.state(http, "box"))["sink"]["audio"]
             check(a and a["devices"][0]["name"] == "HP" and "junk" not in a, f"audio_info in the box state ({a})")
+            check(a and a["codecs"] == [{"codec": "aptx_hd", "label": "aptX HD"}, {"codec": "aptx_adaptive", "label": "aptX Adaptive"}],
+                  f"codecs relayed, unknown codec and extra keys dropped ({a and a.get('codecs')})")
             check(a and a.get("dongle") is None, "no dongle -> dongle None")
             await sink.send_json({"type": "audio_info", "outputs": [], "devices": [], "can_bluetooth": False,
                                   "can_outputs": False, "dongle": {"name": "BTD 700", "state": "streaming",

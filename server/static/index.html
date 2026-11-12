@@ -1728,6 +1728,11 @@ async function audioSheet() {
       : sess === "phone" ? `<div class="set-hint">The iPhone plays on the phone itself (or CarPlay): nothing to set here.</div>`
       : sess === "tv" ? `<div class="set-hint">The Apple TV chooses its sound itself: Settings › Sound › Sound output. With atv-audio it plays on the headphones below.</div>`
       : `<div class="set-hint">The Web Player always plays on the headphones below.</div>`;
+    // aptX HD <-> aptX Adaptive of the connected Bluetooth headphones (the sink offers it only when the headset has both)
+    const cur = k.output && k.output.kind === "bluetooth" && k.output.ready ? String(k.output.codec || "") : "";
+    const cods = cur && (a.codecs || []).length > 1 ? a.codecs : [];
+    const codecRow = cods.length ? sec("Codec") + `<div class="set-seg">${cods.map((c) => `<button class="pill${c.codec === cur ? " primary" : ""}" data-a="codec" data-codec="${esc(c.codec)}">${esc(c.label)}</button>`).join("")}</div>` +
+      `<div class="set-hint">Playing on ${esc(codecLabel(cur))}. Switching cuts the sound for a few seconds (the headphones chime); pause first. aptX Adaptive plays 24 bit / 96 kHz when Hi-Res is on in the headphones' app.</div>` : "";
     const heads = sess === "phone" ? "" : sec("Headphones · atv-audio") +
       (!k.connected ? `<div class="set-hint">${progs.length ? "Switching…" : "atv-audio is not running."}</div>` :
         `<div class="set-hint">${dg ? "Headphones on the atv-audio server's USB dongle." : "Bluetooth headphones paired with the atv-audio server (its own adapter, not the TV Player's)."} The Apple TV, the Web Player and the TV Player play on them when their sound is set to atv-audio.</div>` +
@@ -1736,6 +1741,7 @@ async function audioSheet() {
           `<div class="set-btns"><button class="pill" data-a="scan"${a.scanning ? " disabled" : ""}>${a.scanning ? "Looking…" : "Find headphones"}</button><span class="grow"></span></div>` +
           `<div class="set-hint">${esc(a.busy || (a.scanning ? "Put the headphones in pairing mode." : "New headphones: put them in pairing mode, then Find headphones."))}</div>`
           : `<div class="set-hint">Headphone control is not available on this atv-audio.</div>`) +
+        codecRow +
         ((a.can_outputs && (a.outputs || []).length > 1) ? sec("Sound output") + `<select class="pill" id="aOut" style="max-width:none" aria-label="Sound output">${outs}</select>` : "") +
         (a.error ? `<div class="set-err">${esc(a.error)}</div>` : ""));
     $("sheetBody").innerHTML = `<div class="st" data-audio-sheet="1">Audio${sessName ? ` · ${esc(sessName)}` : ""}</div>` + intro + heads +
@@ -1767,6 +1773,7 @@ async function audioSheet() {
       b.disabled = true;
       return sapi("POST", "/api/mtv-sound", { output: b.dataset.out }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
     }
+    if (b.dataset.a === "codec") { b.disabled = true; toast("Switching the codec…"); return audioCmd({ op: "set_codec", output: b.dataset.codec }); }
     if (b.dataset.a === "use") { b.disabled = true; toast("Moving the headphones…"); return audioCmd({ op: "set_sink", sink: b.dataset.sink }); }
     if (b.dataset.a === "forget" && !confirm("Forget these headphones? They have to be paired again.")) return;
     b.disabled = true; audioCmd({ op: b.dataset.a, address: b.dataset.addr });

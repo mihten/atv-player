@@ -52,6 +52,7 @@ CONFIRM = 2            # consecutive ticks above SEEK_ABOVE before a seek (one n
 STALE_CLOCK = 3.0      # s without a fresh "playing" clock: the TV is gone, pause
 TICK = 0.1
 OUTPUT_POLL = 3.0
+CODEC_CHOICES = {"aptx_hd": "aptX HD", "aptx_adaptive": "aptX Adaptive"}   # what the web remote offers to switch between
 READY_CACHE = 1.0      # s of demuxer cache that counts as buffered
 LIMIT = 0.8913         # -1 dBFS
 AO_RETRY = 30.0        # s an output mpv could not open is reported not ready
@@ -637,6 +638,23 @@ class OutputWatch:
         self.sinks = []          # last 'pactl list sinks' result (Settings -> atv-audio: sound output list)
         self.default = None
         self.dongle = None       # btd700.Btd700: its headphone state decides `ready` (the ALSA card is always there)
+
+    async def codec_choices(self):
+        """(card, [{codec, label, profile}]) of the connected Bluetooth headphones, or None."""
+        if not self.has_pactl:
+            return None
+        text = await _run(*self._pactl(), "-f", "json", "list", "cards")
+        return parse_card_codecs(text) if text else None
+
+    async def set_codec(self, codec):
+        """Switch the headphones to `codec` (aptx_hd / aptx_adaptive) with the card profile; True when pactl took it.
+        The profile name comes from the card's own list, never from the caller."""
+        found = await self.codec_choices()
+        if not found:
+            return False
+        card, choices = found
+        pick = next((c for c in choices if c["codec"] == codec), None)
+        return bool(pick) and await _run(*self._pactl(), "set-card-profile", card, pick["profile"]) is not None
 
     async def set_default(self, key):
         """Settings -> atv-audio -> Sound output: make `key` PipeWire's / Pulse's default sink (mpv follows it)."""
@@ -1742,6 +1760,30 @@ class UserOff:
                 os.replace(tmp, self.file)
 
 
+def parse_card_codecs(text):
+    """Codec choices of the Bluetooth card from 'pactl -f json list cards': (card name, [{codec, label, profile}]) for the
+    aptX HD and aptX Adaptive profiles the headset offers (profile `available`), or None. The codec comes from the profile
+    description ("... codec aptX HD)"), never from the profile name: the plain `a2dp-sink` is the best codec, not a fixed one."""
+    try:
+        cards = json.loads(text or "[]")
+    except ValueError:
+        return None
+    for c in cards if isinstance(cards, list) else []:
+        if not (isinstance(c, dict) and str(c.get("name", "")).startswith("bluez_card.")):
+            continue
+        choices = []
+        for prof, p in (c.get("profiles") or {}).items():
+            if not (isinstance(p, dict) and str(prof).startswith("a2dp-sink") and p.get("available", True)):
+                continue
+            m = re.search(r"codec ([^)]+)\)", p.get("description") or "")
+            cid = re.sub(r"[^a-z0-9]+", "_", m.group(1).lower()).strip("_") if m else ""
+            if cid in CODEC_CHOICES:
+                choices.append({"codec": cid, "label": CODEC_CHOICES[cid], "profile": prof})
+        choices.sort(key=lambda x: list(CODEC_CHOICES).index(x["codec"]))
+        return c["name"], choices
+    return None
+
+
 class AudioControl:
     """Settings -> atv-audio in the web remote: the sound output (PipeWire / Pulse sinks) and the headphones (through
     the helper). Its state goes to the server as `audio_info` (only when it changed), commands arrive as `audio_cmd`."""
@@ -1759,6 +1801,11 @@ class AudioControl:
         self.bt = None
         self.error = None
         self.last = None
+        self.codecs = []            # [{codec, label}] the connected headphones offer (aptX HD / aptX Adaptive)
+
+    async def refresh_codecs(self):
+        found = await self.outputs.codec_choices() if hasattr(self.outputs, "codec_choices") else None
+        self.codecs = [{"codec": c["codec"], "label": c["label"]} for c in (found[1] if found else [])]
 
     def info(self):
         outs = []
@@ -1773,6 +1820,7 @@ class AudioControl:
         return {"type": "audio_info", "outputs": outs, "devices": bt.get("devices") or [],
                 "scanning": bool(bt.get("scanning")), "busy": bt.get("busy"), "error": self.error or bt.get("error"),
                 "can_bluetooth": self.bt is not None, "can_outputs": self.outputs.has_pactl,
+                "codecs": self.codecs,
                 "dongle": self.dongle.info() if self.dongle else None}
 
     def update(self, force=False):
@@ -1814,6 +1862,7 @@ class AudioControl:
             self.update(force=True)
             return
         if op == "refresh":
+            await self.refresh_codecs()
             if self.dongle and self.dongle.present:
                 with contextlib.suppress(OSError, asyncio.TimeoutError):
                     await self.dongle.refresh()
@@ -1828,6 +1877,14 @@ class AudioControl:
                 self.error = "that sound output is not available"
             elif self.on_output:
                 await self.on_output()
+            self.update(force=True)
+        elif op == "set_codec":
+            # aptX HD <-> aptX Adaptive: the card profile of the connected headphones (a 2-4 s gap with the headset's chime)
+            if not hasattr(self.outputs, "set_codec") or not await self.outputs.set_codec(str(msg.get("output") or "")):
+                self.error = "the headphones do not offer that codec"
+            elif self.on_output:
+                await self.on_output()
+            await self.refresh_codecs()
             self.update(force=True)
         elif op in self.BT_OPS:
             if self.on_bt_op and msg.get("address"):
@@ -2047,6 +2104,8 @@ async def run(cfg):
                 if sink.set_output(await outputs.detect()):
                     await sink.tick()
                 await pin_output_volume()
+                if sink.output and sink.output.get("kind") == "bluetooth" and sink.output.get("ready"):
+                    await audio.refresh_codecs()   # what the connected headphones offer (a headset setting can change it)
                 audio.update()
             except Exception as e:
                 log(f"output check: {e!r}")

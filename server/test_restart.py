@@ -66,7 +66,7 @@ async def main(tmp):
             ids = sorted(it["id"] for it in items.values())
             code, st = await req(http, "GET", "/api/status")
             started = st["started"]
-            check(st["version"] == "0.28.2", f"version 0.28.2 ({st['version']})")
+            check(st["version"] == "0.28.3", f"version 0.28.2 ({st['version']})")
 
             # admin lock: a locked browser cannot restart
             code, _ = await req(http, "POST", "/api/settings/password", json={"password": "secret123"})
@@ -91,7 +91,7 @@ async def main(tmp):
             check(code is not None, f"the restart request gets an answer ({r if code is None else code})")
             if code is None:
                 code, r = 0, {"ok": False, "started": 0, "version": ""}
-            check(code == 200 and r["ok"] is True and r["started"] == started and r["version"] == "0.28.2",
+            check(code == 200 and r["ok"] is True and r["started"] == started and r["version"] == "0.28.3",
                   f"restart answers before the exit ({code} {r})")
             check(state_file.exists() and json.loads(state_file.read_text()).get("queue") == ids,
                   "state.json (tv queue) written again before the exit")
