@@ -1366,7 +1366,7 @@ class Sink:
 
 TV_STATE = ("route", "lip_sync", "sound", "load", "clock")  # replayed in this order when the TV gets the output back
 DISCONNECT_SETTLE = 0.5  # s between the dongle leaving "streaming" and the disconnect command
-PLAY_GUARD = 10.0  # s after the headphones (re)connected: a Play from their buttons is ignored (no auto start)
+PLAY_GUARD = 10.0  # kept for older callers; since 2026-11-12 every headphone Play is ignored (Buttons.on_cmd)
 
 
 class Router:
@@ -1633,12 +1633,12 @@ class Buttons:
     def on_cmd(self, cmd):
         sink = self.router.sink
         if cmd == "play":
-            since = None if sink.output_ready_at is None else sink.mono() - sink.output_ready_at
-            if not sink.output_ok or (since is not None and since < PLAY_GUARD):
-                sink.log(f"button play ignored: headphones just (re)connected"
-                         f" ({'output not ready' if not sink.output_ok else f'{since:.1f} s ago'})")
-                self.last = None  # resend our state: the headphones think they play now
-                return
+            # Owner decision 2026-11-12: the headphones NEVER start playback. Putting them on (wear sensor), switching
+            # them on while worn and a tap all send the same Play, so no Play from them is passed on. Pause (taken off,
+            # tap), Next, Previous and seek still work; playback starts from the TV remote, web remote or apps.
+            sink.log("button play ignored: the headphones never start playback")
+            self.last = None  # resend our state: the headphones think they play now
+            return
         session = self.router.button_session()
         sink.log(f"button {cmd} -> {session}")
         self.send({"type": "button", "cmd": cmd, "session": session})
@@ -1708,6 +1708,37 @@ class Buttons:
                 await asyncio.wait_for(self.proc.wait(), 3)
 
 
+class UserOff:
+    """Headphones disconnected on purpose in the web remote (owner 2026-11-12: Disconnect must not be undone by the
+    program). Saved in <state>/headphones-off.json so a sink restart remembers it. The automatic paths (start-up,
+    standby hand-back, retries) leave these headphones alone; Connect, Pair or Forget from the web remote clear it."""
+
+    def __init__(self, state_dir):
+        self.file = os.path.join(state_dir, "headphones-off.json") if state_dir else None
+        self.addrs = set()
+        if self.file:
+            with contextlib.suppress(OSError, ValueError, TypeError):
+                with open(self.file) as f:
+                    self.addrs = {str(a).upper() for a in json.load(f)}
+
+    def __contains__(self, address):
+        return bool(address) and str(address).upper() in self.addrs
+
+    def on_op(self, op, address):
+        a = str(address).upper()
+        before = set(self.addrs)
+        if op == "disconnect":
+            self.addrs.add(a)
+        elif op in ("connect", "pair", "forget"):
+            self.addrs.discard(a)
+        if self.addrs != before and self.file:
+            with contextlib.suppress(OSError):
+                tmp = self.file + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(sorted(self.addrs), f)
+                os.replace(tmp, self.file)
+
+
 class AudioControl:
     """Settings -> atv-audio in the web remote: the sound output (PipeWire / Pulse sinks) and the headphones (through
     the helper). Its state goes to the server as `audio_info` (only when it changed), commands arrive as `audio_cmd`."""
@@ -1720,6 +1751,7 @@ class AudioControl:
         self.on_output = on_output  # async (): re-detect the output after a change
         self.dongle = None          # btd700.Btd700: headphones through the dongle (connect / disconnect, no pairing)
         self.on_disconnect = None   # async (): before a dongle disconnect: pause what plays, close the output
+        self.on_bt_op = None        # (op, address): a headphone action asked for in the web remote (UserOff)
         self.on_connect = None      # (): after a dongle connect: the output may open again
         self.bt = None
         self.error = None
@@ -1795,6 +1827,8 @@ class AudioControl:
                 await self.on_output()
             self.update(force=True)
         elif op in self.BT_OPS:
+            if self.on_bt_op and msg.get("address"):
+                self.on_bt_op(op, str(msg.get("address")))
             if not (self.buttons and self.buttons.bt(op, msg.get("address"))):
                 self.error = "headphone control is not available (python3-dbus / BlueZ)"
                 self.update(force=True)
@@ -1838,6 +1872,8 @@ async def run(cfg):
 
     audio = AudioControl(outputs, sink_send, buttons, output_now)
     router.audio = audio
+    user_off = UserOff(cfg.state_dir)
+    audio.on_bt_op = user_off.on_op
     if buttons:
         buttons.on_bt = audio.on_bt
     if outputs.has_pactl and cfg.volume_mode != "mpv":
@@ -1918,10 +1954,11 @@ async def run(cfg):
             if dongle.present and not dongle.ready:
                 await dongle.connect(True)
         elif buttons:
-            devs = bt_devices()
+            devs = [d for d in bt_devices() if d["address"] not in user_off]  # Disconnect in the web remote sticks
             for d in devs:
                 buttons.bt("unblock", d["address"])
-            addr = standby["last_bt"] or (devs[0]["address"] if devs else None)
+            last = standby["last_bt"] if standby["last_bt"] not in user_off else None
+            addr = last or (devs[0]["address"] if devs else None)
             if addr and not sink.output_ok:
                 buttons.bt("connect", addr)
 

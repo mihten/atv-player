@@ -225,11 +225,12 @@ class FakeRouter:
 
 class SinkWiringTest(unittest.IsolatedAsyncioTestCase):
     def test_playpause_toggles_against_the_queue_state(self):
-        for playing, want in ((True, "pause"), (False, "play")):
+        # playing -> pause; paused -> play, which the headphones may never start (owner 2026-11-12): nothing sent
+        for playing, want in ((True, [{"type": "button", "cmd": "pause", "session": "tv"}]), (False, [])):
             sent = []
             b = A.Buttons(FakeRouter(playing), sent.append, helper=False)
             b.on_key("playpause")
-            self.assertEqual(sent, [{"type": "button", "cmd": want, "session": "tv"}])
+            self.assertEqual(sent, want)
 
     def test_keys_map(self):
         sent = []

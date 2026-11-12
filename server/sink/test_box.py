@@ -170,7 +170,9 @@ class ButtonsTest(unittest.IsolatedAsyncioTestCase):
         b = A.Buttons(router, out.append)
         return sink, clock, router, box, b, out
 
-    async def test_play_ignored_right_after_connect(self):
+    async def test_headphones_never_start_playback(self):
+        """Owner 2026-11-12: a Play from the headphones (wear sensor = same Play as a tap) is never passed on,
+        right after a connect or long after; Pause still is."""
         sink, clock, router, box, b, out = self.setup()
         sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": None, "ready": False})
         sink.set_output({"kind": "bluetooth", "name": "Headphones", "codec": "aptx_hd", "ready": True})
@@ -179,9 +181,17 @@ class ButtonsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out, [])
         b.on_cmd("pause")
         self.assertEqual(out, [{"type": "button", "cmd": "pause", "session": "box"}])
-        clock.t += A.PLAY_GUARD
+        clock.t += 600
+        b.last = {"status": "Paused"}
         b.on_cmd("play")
-        self.assertEqual(out[-1], {"type": "button", "cmd": "play", "session": "box"})
+        self.assertEqual(out, [{"type": "button", "cmd": "pause", "session": "box"}], "Play long after connect: still dropped")
+        self.assertIsNone(b.last, "state is resent so the headphones learn it still pauses")
+        await router.from_tv({"type": "route", "sink": True})
+        await router.from_tv({"type": "load", "item": TVITEM, "position": 0, "autoplay": False})
+        b.on_cmd("play")
+        self.assertEqual(len(out), 1, "TV session: Play dropped too")
+        b.on_key("playpause")  # dongle tap / wear sensor while paused = play
+        self.assertEqual(len(out), 1, "dongle play/pause toggle never starts playback")
 
     async def test_play_ignored_without_output(self):
         sink, clock, router, box, b, out = self.setup()

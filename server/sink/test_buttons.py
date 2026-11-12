@@ -316,5 +316,85 @@ class A2dpWatchTest(unittest.TestCase):
         self.assertEqual(self.timers, [])
 
 
+class FakeDevice:
+    """One BlueZ device object: Device1 (Connect) + Properties (Get / Set Blocked)."""
+
+    def __init__(self, blocked=False):
+        self.blocked, self.calls = blocked, []
+
+    def GetManagedObjects(self):
+        return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}},
+                "/org/bluez/hci0/dev_AA": {"org.bluez.Device1": {"Address": "AA", "Paired": True, "Connected": True}}}
+
+    def Get(self, iface, name):
+        return {"Blocked": self.blocked, "Alias": "Headphones X"}[name]
+
+    def Set(self, iface, name, value):
+        assert name == "Blocked"
+        self.blocked = bool(value)
+        self.calls.append(("blocked", self.blocked))
+
+    def Connect(self, reply_handler=None, error_handler=None, timeout=None):
+        self.calls.append(("connect", self.blocked))
+        reply_handler()
+
+    def Disconnect(self, reply_handler=None, error_handler=None, timeout=None):
+        self.calls.append(("disconnect", self.blocked))
+        reply_handler()
+
+
+class FakeBus:
+    def __init__(self, dev):
+        self.dev = dev
+
+    def get_object(self, service, path):
+        return self.dev
+
+
+class DisconnectSticksTest(unittest.TestCase):
+    """Owner 2026-11-12: Disconnect in the web remote must not be undone (trusted headphones reconnect ~1.5 s after a
+    plain Disconnect): Disconnect blocks, Connect / Pair unblock first."""
+
+    def setUp(self):
+        dbus.Interface = lambda obj, iface: obj
+        dbus.Boolean, dbus.ObjectPath = bool, str
+        self.dev = FakeDevice()
+        self.h = B.Headphones(FakeBus(self.dev), lambda ms, fn: None)
+
+    def test_disconnect_blocks_and_connect_unblocks(self):
+        with redirect_stdout(io.StringIO()):
+            self.h.do_disconnect("AA")
+            self.assertTrue(self.dev.blocked, "disconnect = blocked (no auto reconnect)")
+            self.assertNotIn(("disconnect", False), self.dev.calls, "not a plain Disconnect")
+            self.h.do_connect("AA")
+        self.assertFalse(self.dev.blocked)
+        self.assertEqual(self.dev.calls[-1], ("connect", False), "unblocked BEFORE connecting")
+
+
+class UserOffTest(unittest.IsolatedAsyncioTestCase):
+    def test_remembered_across_restart(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            u = A.UserOff(d)
+            u.on_op("disconnect", "aa:bb")
+            self.assertIn("AA:BB", u)
+            self.assertIn("AA:BB", A.UserOff(d), "a sink restart remembers it")
+            u.on_op("scan", "AA:BB")
+            self.assertIn("AA:BB", A.UserOff(d))
+            for op in ("connect", "pair", "forget"):
+                u.on_op("disconnect", "AA:BB")
+                u.on_op(op, "AA:BB")
+                self.assertNotIn("AA:BB", A.UserOff(d), f"{op} clears it")
+            self.assertNotIn(None, A.UserOff(None))
+
+    async def test_web_remote_ops_reach_it(self):
+        sent, b, seen = [], FakeButtons(), []
+        a = A.AudioControl(FakeOutputs(), sent.append, b)
+        a.on_bt_op = lambda op, addr: seen.append((op, addr))
+        await a.handle({"type": "audio_cmd", "op": "disconnect", "address": "AA"})
+        self.assertEqual(seen, [("disconnect", "AA")])
+        self.assertEqual(b.calls[-1], ("disconnect", "AA"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

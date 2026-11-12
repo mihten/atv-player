@@ -495,6 +495,7 @@ class Headphones:
         path, dev = self.device(address)
         props = dbus.Interface(self.bus.get_object("org.bluez", path), dbus.PROPERTIES_IFACE)
         name = str(props.Get("org.bluez.Device1", "Alias"))
+        self.unblock_first(path, address)
         if not self.agent_ok:
             self.setup_agent()
         self.pair_until = time.monotonic() + PAIR_WINDOW
@@ -519,15 +520,21 @@ class Headphones:
 
     def do_connect(self, address):
         path, dev = self.device(address)
+        self.unblock_first(path, address)
         self.busy = "Connecting…"
         self.emit(force=True)
         dev.Connect(reply_handler=lambda: self.done(), error_handler=self.fail("connect"), timeout=30)
 
     def do_disconnect(self, address):
-        path, dev = self.device(address)
-        self.busy = "Disconnecting…"
-        self.emit(force=True)
-        dev.Disconnect(reply_handler=lambda: self.done(), error_handler=self.fail("disconnect"), timeout=20)
+        """Disconnect = BLOCK (owner 2026-11-12): trusted headphones reconnect by themselves ~1.5 s after a plain
+        Disconnect. Blocking disconnects them and refuses their connections; the pairing stays. Connect / Pair unblock."""
+        self._blocked(address, True)
+
+    def unblock_first(self, path, address):
+        props = dbus.Interface(self.bus.get_object("org.bluez", path), dbus.PROPERTIES_IFACE)
+        if bool(props.Get("org.bluez.Device1", "Blocked")):
+            props.Set("org.bluez.Device1", "Blocked", dbus.Boolean(False))
+            note(f"unblocked {address} (connect asked for)")
 
     def _blocked(self, address, on):
         path, _ = self.device(address)
