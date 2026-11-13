@@ -2110,6 +2110,8 @@ $("rescan").onclick = async () => {
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     const parts = [];
+    if (j.sync && j.sync.ok) parts.push(j.sync.changes ? `copied ${j.sync.changes} file change(s) from the source` : "source unchanged");
+    if (j.sync && !j.sync.ok) parts.push(`sync failed (${j.sync.error}), scanned the current copy`);
     if (j.added_visible) parts.push(`added ${j.added_visible}: ${j.new.join(", ")}${j.added_visible > j.new.length ? ", …" : ""}`);
     if (j.added > j.added_visible) parts.push(`${j.added - j.added_visible} duplicate(s) hidden`);
     if (j.removed) parts.push(`removed ${j.removed}`);

@@ -21,6 +21,7 @@ import mimetypes
 import os
 import random
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -60,7 +61,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.28.3"
+VERSION = "0.28.4"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -2621,15 +2622,86 @@ async def shot_file(request):
     return web.FileResponse(SHOT_DIR / name, headers={"Cache-Control": "no-cache"})
 
 
+# Optional sync before a manual rescan, for libraries that are a local COPY of another place (e.g. a NAS mirrored to
+# a local disk by a root job). The server only asks: it writes a token to <ATV_SYNC_SPOOL>/request; the site's own
+# job (root, e.g. a systemd .path unit with PathExists= on that file) reads and deletes the request, copies, and
+# writes <ATV_SYNC_STATUS> = {"token": .., "state": "waiting|running|done|failed", "changes": N, "message": ".."}.
+# Both unset (the default): no sync, Rescan scans the folders as they are.
+SYNC_SPOOL = os.environ.get("ATV_SYNC_SPOOL", "")
+SYNC_STATUS = os.environ.get("ATV_SYNC_STATUS", "")
+SYNC_START_WAIT = float(os.environ.get("ATV_SYNC_START_WAIT") or 20)  # no answer from the job by then: give up
+SYNC_TIMEOUT = float(os.environ.get("ATV_SYNC_TIMEOUT") or 1800)  # a first big copy can take long
+SYNC_LOCK = asyncio.Lock()
+
+
+def read_sync_status():
+    try:
+        st = json.loads(Path(SYNC_STATUS).read_text())
+        return st if isinstance(st, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+async def sync_library():
+    """Ask the site's sync job to refresh the library folders and wait for it. None when no sync is configured,
+    else {"ok": bool, "changes": int, "error": str}. Concurrent callers share one run after the running one."""
+    if not (SYNC_SPOOL and SYNC_STATUS):
+        return None
+    async with SYNC_LOCK:
+        token = secrets.token_hex(8)
+        request_file = Path(SYNC_SPOOL) / "request"
+        try:
+            os.makedirs(SYNC_SPOOL, mode=0o755, exist_ok=True)
+            tmp = Path(SYNC_SPOOL) / ".request.tmp"
+            tmp.write_text(token)
+            os.replace(tmp, request_file)
+        except OSError as e:
+            log.warning("sync: cannot write the request: %s", e)
+            return {"ok": False, "changes": 0, "error": f"cannot ask for a sync ({e.strerror or e})"}
+        log.info("sync: requested (%s)", token)
+        t0, answered = time.monotonic(), False
+        while True:
+            await asyncio.sleep(0.5)
+            st = read_sync_status()
+            if st and st.get("token") == token:
+                answered = True
+                if st.get("state") in ("done", "failed"):
+                    ok = st.get("state") == "done"
+                    res = {"ok": ok, "changes": int(st.get("changes") or 0),
+                           "error": "" if ok else str(st.get("message") or "sync failed")[:300]}
+                    log.info("sync: %s after %.1f s", res, time.monotonic() - t0)
+                    return res
+            waited = time.monotonic() - t0
+            if not answered and waited > SYNC_START_WAIT:
+                request_file.unlink(missing_ok=True)
+                log.warning("sync: no answer from the sync job after %.0f s", waited)
+                return {"ok": False, "changes": 0, "error": "the sync job did not answer"}
+            if waited > SYNC_TIMEOUT:
+                log.warning("sync: still running after %.0f s, scanning what is there", waited)
+                return {"ok": False, "changes": 0, "error": f"sync still running after {int(waited // 60)} min"}
+
+
+async def sync_then_scan(force=False):
+    await sync_library()
+    await run_scan(force=force, wait=True)
+
+
 async def api_rescan(request):
     """Default: start a scan in the background. ?wait=1 (web remote ⟳ Rescan button): run it now
-    (waiting for a running one first) and return what changed, with the titles of new items."""
+    (waiting for a running one first) and return what changed, with the titles of new items.
+    With a sync configured (ATV_SYNC_SPOOL/STATUS) both first refresh the library copy; ?sync=0 skips that
+    (the sync job's own rescan request after a scheduled copy)."""
     force = request.query.get("full") == "1"
+    do_sync = request.query.get("sync") != "0"
     if request.query.get("wait") != "1":
-        if not SCANNING:
+        if do_sync and SYNC_SPOOL and SYNC_STATUS:
+            if not SYNC_LOCK.locked():
+                asyncio.create_task(sync_then_scan(force=force))
+        elif not SCANNING:
             asyncio.create_task(run_scan(force=force))
         return web.json_response({"scanning": True})
     before = {i: it["hidden"] for i, it in LIB.items()}
+    sync = await sync_library() if do_sync else None
     await run_scan(force=force, wait=True)
     added = [LIB[i] for i in LIB if i not in before]
     removed = sum(1 for i in before if i not in LIB)
@@ -2637,7 +2709,7 @@ async def api_rescan(request):
     return web.json_response({
         "ok": True, "added": len(added), "added_visible": len(visible), "removed": removed,
         "renamed": len(LAST_SCAN.get("renamed_ids") or []), "updated": LAST_SCAN.get("updated", 0),
-        "items": len(LIB), "seconds": LAST_SCAN.get("seconds"),
+        "items": len(LIB), "seconds": LAST_SCAN.get("seconds"), "sync": sync,
         "new": [" - ".join(x for x in (it.get("artist"), it["title"]) if x) for it in visible[:10]],
     })
 

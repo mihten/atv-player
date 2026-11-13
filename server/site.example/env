@@ -11,3 +11,9 @@ ATV_ROOT_NAMES='{"music": "Music", "videos": "Music videos"}'
 #ATV_SHOT_DIR='/srv/screenshots'
 # Optional: how users see that folder (shown in the web remote toast)
 #ATV_SHOT_SHARE='\\server\share\screenshots'
+# Optional: the library folders are a local COPY of another place (e.g. a NAS mirrored by a root job). Rescan in the
+# web remote then first writes a token to <spool>/request and waits for the job's JSON status file
+# ({"token", "state": waiting|running|done|failed, "changes", "message"}); a systemd .path unit with PathExists= on
+# the request file can start the job. Leave unset when the folders are the real library.
+#ATV_SYNC_SPOOL='/var/lib/atv-media/sync'
+#ATV_SYNC_STATUS='/run/library-sync/status.json'
