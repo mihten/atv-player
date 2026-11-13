@@ -92,7 +92,7 @@ import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 import subs as subs_mod  # noqa: E402
 
-VERSION = "0.16.0"
+VERSION = "0.17.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -1027,6 +1027,10 @@ class Player:
             await self.refresh_menu()
         elif t == "sink_ready":
             await self.link.ready(msg.get("id"))
+        elif t == "notice" and msg.get("text"):  # server: e.g. the Apple TV took the headphones (it paused us already)
+            self.link.notice = str(msg["text"])[:200]
+            self.log(f"notice from the server: {self.link.notice}")
+            await self.draw_notice()
         elif t == "pong":
             self.link.pong(msg)
         elif t == "volume":

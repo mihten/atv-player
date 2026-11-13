@@ -6,9 +6,10 @@ lifts quiet tracks to -14 LUFS, only up, at most +8 dB, in half-dB steps; Equali
 unprocessed. The sink builds gain -> 10 octave-wide equalizer bands -> limiter from the message (sink/atv_audio.py
 sound_chain), exactly as for the TV's own `sound` messages.
 
-Presets: the apps' own presets (tag "a:<id>"), the tone presets of this server (tag "t:<id>", see TONE_PRESETS) and
-libVLC 3.0.x's 18 (tag "p:<index>", modules/audio_filter/equalizer_presets.h, same order and values as
-VLCAudioEqualizer.presets). Preamps of the "a:" / "p:" presets are VLC's raw values: 12 = 0 dB.
+Presets (owner, 2026-11-13: one list in every player): Off, Momentum 4 (tag "a:momentum4", raw VLC preamp: 12 = 0 dB),
+the four tone presets (tag "t:<id>", see TONE_PRESETS) and Custom. libVLC's 18 presets ("p:<index>") and Amplify were
+deleted: a stored one reads as Off. `eq_last` = the last preset in use other than Off (default Momentum 4): the
+output rule (Headphones = Equalizer on) turns the equalizer back on with it.
 """
 
 FREQS = (31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)  # VLC's ISO 10-band table (equalizer.c)
@@ -22,10 +23,10 @@ _Z = 0.0  # VLC stores -1.11022e-15 for "0"
 # Momentum 4 (2026-11-11, owner: replaces the old app curve here): 10-band fit of the parametric EqualizerAPO
 # correction the owner prefers on his laptop (AutoEQ-style KB501x target, APO preamp -1 dB), fitted to the sink's
 # own chain (octave-wide peaking filters at FREQS) with tools/atv-audio/apo_vs_sink_eq.py: rms 0.6 dB, max 2.1 dB
-# from 25 Hz to 18 kHz. Raw preamp 9 = -3 dB. The apps' Momentum 4 (VLC) still carries the older curve.
+# from 25 Hz to 18 kHz. Raw preamp 9 = -3 dB. The apps send these same values when the sink plays their sound (0.18.45+);
+# their own VLC equalizer uses a separate fit of the same APO curve (Shared/SoundSettings.swift).
 APP_PRESETS = (
     ("momentum4", "Momentum 4", 9.0, (-7, -2, 0, 1, 2, 0, 7, 1, 3, 0)),
-    ("amplify", "Amplify", 17.0, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
 )
 # Tone presets (2026-11-10, owner: the VLC presets below sounded dull on the TV Player: measured against Off with the
 # same settings, Pop cut 1-16 kHz by 5-9 dB, Rock cut 125-500 Hz by 10-15 dB, Full bass cut everything above 500 Hz by 11-23 dB,
@@ -33,6 +34,7 @@ APP_PRESETS = (
 # stacks the boosts). Rules of these four: whole dB (the web remote's Custom editor loads them exactly), NO band is cut, a
 # makeup of 0 / -1 dB only for headroom; measured on six library tracks with tools/tv-player-test/eq-measure.py: the boosted
 # range rises 3-5 dB, the rest stays within 1.5 dB of Off, loudness +0.2..+1.0 LU.
+# The VLC presets were deleted on 2026-11-13 (owner).
 # (id, name, makeup dB, 10 band gains at FREQS)
 TONE_PRESETS = (
     ("bass", "Bass boost", -1.0, (5, 5, 4, 2, 1, 0, 0, 0, 0, 0)),
@@ -40,37 +42,17 @@ TONE_PRESETS = (
     ("bright", "Bright", 0.0, (0, 0, 0, 0, 0, 1, 2, 3, 4, 4)),
     ("vshape", "V-shape", -1.0, (4, 4, 3, 0, 0, 0, 0, 3, 4, 4)),
 )
-VLC_PRESETS = (
-    ("Flat", 12.0, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
-    ("Classical", 12.0, (_Z, _Z, _Z, _Z, _Z, _Z, -7.2, -7.2, -7.2, -9.6)),
-    ("Club", 6.0, (_Z, _Z, 8.0, 5.6, 5.6, 5.6, 3.2, _Z, _Z, _Z)),
-    ("Dance", 5.0, (9.6, 7.2, 2.4, _Z, _Z, -5.6, -7.2, -7.2, _Z, _Z)),
-    ("Full bass", 5.0, (-8.0, 9.6, 9.6, 5.6, 1.6, -4.0, -8.0, -10.4, -11.2, -11.2)),
-    ("Full bass and treble", 4.0, (7.2, 5.6, _Z, -7.2, -4.8, 1.6, 8.0, 11.2, 12.0, 12.0)),
-    ("Full treble", 3.0, (-9.6, -9.6, -9.6, -4.0, 2.4, 11.2, 16.0, 16.0, 16.0, 16.8)),
-    ("Headphones", 4.0, (4.8, 11.2, 5.6, -3.2, -2.4, 1.6, 4.8, 9.6, 12.8, 14.4)),
-    ("Large Hall", 5.0, (10.4, 10.4, 5.6, 5.6, _Z, -4.8, -4.8, -4.8, _Z, _Z)),
-    ("Live", 7.0, (-4.8, _Z, 4.0, 5.6, 5.6, 5.6, 4.0, 2.4, 2.4, 2.4)),
-    ("Party", 6.0, (7.2, 7.2, _Z, _Z, _Z, _Z, _Z, _Z, 7.2, 7.2)),
-    ("Pop", 6.0, (-1.6, 4.8, 7.2, 8.0, 5.6, _Z, -2.4, -2.4, -1.6, -1.6)),
-    ("Reggae", 8.0, (_Z, _Z, _Z, -5.6, _Z, 6.4, 6.4, _Z, _Z, _Z)),
-    ("Rock", 5.0, (8.0, 4.8, -5.6, -8.0, -3.2, 4.0, 8.8, 11.2, 11.2, 11.2)),
-    ("Ska", 6.0, (-2.4, -4.8, -4.0, _Z, 4.0, 5.6, 8.8, 9.6, 11.2, 9.6)),
-    ("Soft", 5.0, (4.8, 1.6, _Z, -2.4, _Z, 4.0, 8.0, 9.6, 11.2, 12.0)),
-    ("Soft rock", 7.0, (4.0, 4.0, 2.4, _Z, -4.0, -5.6, -3.2, _Z, 2.4, 8.8)),
-    ("Techno", 5.0, (8.0, 5.6, _Z, -5.6, -4.8, _Z, 8.0, 9.6, 9.6, 8.8)),
-)
 
 CUSTOM_RANGE = 12  # dB, preamp and every band (the TV's custom editor), 1 dB steps
 FLAT = {"preamp": 0, "bands": [0] * len(FREQS)}
-DEFAULT = {"preset": "off", "boost": 0, "loudness": "raise", "custom": FLAT}  # the apps' defaults
+EQ_ON = "a:momentum4"  # the preset the output rule turns on when nothing else was used yet
+DEFAULT = {"preset": "off", "boost": 0, "loudness": "raise", "custom": FLAT, "eq_last": EQ_ON}  # the apps' defaults
 
 
 def choices():
     """[[value, label], ...] in the apps' display order. Custom = this queue's own curve, kept on the server."""
     return ([["off", "Off"]] + [[f"a:{i}", name] for i, name, _, _ in APP_PRESETS]
-            + [[f"t:{i}", name] for i, name, _, _ in TONE_PRESETS]
-            + [[f"p:{n}", p[0]] for n, p in enumerate(VLC_PRESETS)] + [["custom", "Custom"]])
+            + [[f"t:{i}", name] for i, name, _, _ in TONE_PRESETS] + [["custom", "Custom"]])
 
 
 def _db(value):
@@ -106,6 +88,23 @@ def clean(settings):
             pass
         if settings.get("loudness") in ("off", "raise"):
             s["loudness"] = settings["loudness"]
+        if settings.get("eq_last") != "off" and valid_preset(settings.get("eq_last")):
+            s["eq_last"] = settings["eq_last"]
+    if s["preset"] != "off":
+        s["eq_last"] = s["preset"]
+    return s
+
+
+def for_output(settings, headphones):
+    """The output rule (owner, 2026-11-13): HDMI = Equalizer Off and Boost 0, Headphones = Equalizer on (the last preset
+    in use, else Momentum 4); Loudness stays as it is either way. Applied when the output is CHANGED, so a choice made
+    afterwards on that output stands."""
+    s = clean(settings)
+    if headphones:
+        if s["preset"] == "off":
+            s["preset"] = s["eq_last"]
+    else:
+        s["preset"], s["boost"] = "off", 0
     return s
 
 
@@ -122,12 +121,6 @@ def curve(preset, settings=None):
         for i, _, pre, bands in TONE_PRESETS:
             if preset == f"t:{i}":
                 return float(pre), [float(b) for b in bands]
-    elif preset.startswith("p:"):
-        try:
-            _, pre, bands = VLC_PRESETS[int(preset[2:])]
-            return pre - VLC_PREAMP_OFFSET, list(bands)
-        except (ValueError, IndexError):
-            pass
     return 0.0, [0.0] * len(FREQS)
 
 

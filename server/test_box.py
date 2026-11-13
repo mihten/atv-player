@@ -44,20 +44,31 @@ def unit():
     check(box_sound.message({**m4, "boost": 8}, q)["gain"] == 12.0, "-3 + 8 + 7 = +12 (under the cap)")
     check(box_sound.message(m4, None)["bands"] == [-7.0, -2.0, 0.0, 1.0, 2.0, 0.0, 7.0, 1.0, 3.0, 0.0],
           "Momentum 4 = the 10-band fit of the laptop's EqualizerAPO curve")
-    amp = {"preset": "a:amplify", "boost": 8, "loudness": "raise"}
-    check(box_sound.message(amp, q)["gain"] == 14.0, "Amplify +5 + 8 + 7 = 20 -> capped at +14")
+    bass = {"preset": "t:bass", "boost": 8, "loudness": "raise"}
+    check(box_sound.message(bass, {"lufs": -30.0})["gain"] == 14.0, "Bass boost -1 + 8 + 8 = 15 -> capped at +14")
     off = box_sound.message({"preset": "off", "boost": 0, "loudness": "off"}, q)
     check(off["processed"] is False and off["gain"] == 0 and off["bands"] == [0.0] * 10, "all off = unprocessed")
-    club = box_sound.message({"preset": "p:2", "boost": 0, "loudness": "off"}, None)
-    check(club["gain"] == -6.0 and club["bands"][2] == 8.0, "VLC Club: preamp 6 = -6 dB, 125 Hz +8")
-    check(box_sound.message({"preset": "p:1", "boost": 0, "loudness": "off"}, None)["bands"][0] == 0.0,
-          "VLC's -1.11e-15 bands read as 0")
     names = [n for _, n in box_sound.choices()]
-    check(len(names) == 26 and names[:3] == ["Off", "Momentum 4", "Amplify"] and names[-2:] == ["Techno", "Custom"]
-          and names[7:25] == [n for n, *_ in box_sound.VLC_PRESETS],
-          f"presets: Off + 2 app + 4 tone + 18 VLC (the apps' order) + Custom ({len(names)})")
+    check(names == ["Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom"],
+          f"presets (owner 2026-11-13): Off, Momentum 4, the four tone presets, Custom; no VLC presets, no Amplify ({names})")
+    for gone in ("p:2", "p:0", "a:amplify"):
+        s = box_sound.clean({"preset": gone, "boost": 2, "loudness": "off"})
+        check(s["preset"] == "off" and s["boost"] == 2, f"a stored {gone} reads as Off, the rest is kept")
     check(box_sound.clean({"preset": "x", "boost": 99, "loudness": "level"}) == box_sound.DEFAULT | {"boost": 8},
           "clean(): unknown preset -> off, boost clamped 0..8, unknown loudness -> default")
+    # the output rule (owner 2026-11-13): HDMI = EQ off + Boost 0, headphones = EQ on (last preset, else Momentum 4)
+    s = box_sound.clean({"preset": "t:vocal", "boost": 3, "loudness": "off"})
+    check(s["eq_last"] == "t:vocal", "eq_last follows the preset in use")
+    h = box_sound.for_output(s, False)
+    check(h["preset"] == "off" and h["boost"] == 0 and h["loudness"] == "off" and h["eq_last"] == "t:vocal",
+          f"HDMI: equalizer off, boost 0, loudness kept, last preset remembered ({h})")
+    hp = box_sound.for_output(h, True)
+    check(hp["preset"] == "t:vocal" and hp["boost"] == 0, f"headphones: the last preset is back on ({hp})")
+    check(box_sound.for_output(box_sound.DEFAULT, True)["preset"] == "a:momentum4", "headphones, nothing used yet: Momentum 4")
+    keep = box_sound.clean({"preset": "t:bright", "boost": 1})
+    check(box_sound.for_output(keep, True) == keep, "headphones with an equalizer already on: nothing changes")
+    check(box_sound.clean({"preset": "off", "eq_last": "off"})["eq_last"] == "a:momentum4"
+          and box_sound.clean({"preset": "off", "eq_last": "p:3"})["eq_last"] == "a:momentum4", "eq_last never Off / a deleted preset")
     cu = box_sound.clean({"preset": "custom", "custom": {"preamp": 30, "bands": [1.4, -40, "x", 3]}})
     check(cu["custom"] == {"preamp": 12, "bands": [1, -12, 0, 3, 0, 0, 0, 0, 0, 0]},
           f"custom curve: whole dB, clamped ±12, padded to 10 bands ({cu['custom']})")
@@ -107,12 +118,12 @@ async def main(tmp):
             st = await H.state(http, "box")
             check(st["session"] == "box" and st["session_name"] == "Web Player", "session box named Web Player")
             check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv"], "sessions list has the box")
-            check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 26, "box state: sound + presets")
-            check(st["sound_curves"]["a:momentum4"][0] == -3.0 and len(st["sound_curves"]) == 24,
-                  "box state: preset curves for the custom editor (20 = no off / custom)")
+            check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 7, "box state: sound + presets")
+            check(st["sound_curves"]["a:momentum4"][0] == -3.0 and len(st["sound_curves"]) == 5,
+                  "box state: preset curves for the custom editor (5 = no off / custom)")
             names = [n for _, n in st["sound_presets"]]
-            check(names[:7] == ["Off", "Momentum 4", "Amplify", "Bass boost", "Vocal", "Bright", "V-shape"]
-                  and names[-1] == "Custom" and names[7] == "Flat", f"tone presets sit after the app presets, before VLC's ({names[:8]})")
+            check(names == ["Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom"],
+                  f"the presets in the state ({names})")
             tone = {v: box_sound.curve(v) for v, _ in st["sound_presets"] if v.startswith("t:")}
             check(sorted(tone) == ["t:bass", "t:bright", "t:vocal", "t:vshape"]
                   and all(all(b >= 0 and b == int(b) for b in bands) and pre == int(pre) and -2 <= pre <= 0

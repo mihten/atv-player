@@ -348,6 +348,18 @@ async def main():
     check(p.link.on and p.link.connecting, "the menu's set_audio_out uses the same switch")
     await p.set_audio_out("hdmi")
 
+    # ---- server notice (0.29.0: the Apple TV took the headphones; the server paused us already): on the TV until Play
+    n_before = len(of(sent, "notice"))
+    await p.handle({"type": "notice", "text": "The headphones went to the Apple TV — playback paused"})
+    ov = [c_ for c_ in p.mpv.calls if c_[0] == "cmd" and c_[1] == "osd-overlay" and c_[2] == 2]
+    check(p.link.notice == "The headphones went to the Apple TV — playback paused" and ov and ov[-1][3] == "ass-events"
+          and "Apple TV" in ov[-1][4], "a server notice is drawn on the TV (overlay 2)")
+    check(len(of(sent, "notice")) == n_before, "... and not echoed back to the server (it set it already)")
+    await p.handle({"type": "notice", "text": ""})
+    check(p.link.notice is not None, "an empty server notice changes nothing")
+    await p.link.acknowledge("play")
+    check(p.link.notice is None, "Play clears it like the player's own notices")
+
     # ---- the server link goes away
     p._send = None
     await p.link.connection_lost()

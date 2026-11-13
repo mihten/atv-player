@@ -82,10 +82,10 @@ async def main(tmp):
                   "box and TV queues untouched")
 
             # ---- sound settings: own, saved, sent to the player; the box keeps its own
-            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "p:2", "boost": 3, "loudness": "off"})
+            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "t:bass", "boost": 3, "loudness": "off"})
             snd, _ = await until(mtv, "sound")
-            check(snd is not None and snd["gain"] == -3.0 and snd["bands"][2] == 8.0,
-                  f"mtv gets the new sound (Club preamp -6 + boost 3 = -3 dB): {snd and snd['gain']}")
+            check(snd is not None and snd["gain"] == 2.0 and snd["bands"][0] == 5.0,
+                  f"mtv gets the new sound (Bass boost -1 + boost 3 = +2 dB): {snd and snd['gain']}")
             await H.drain(remote)
             check((await H.state(http, "mtv"))["sound"]["boost"] == 3, "mtv sound saved in its state")
             check((await H.state(http, "box"))["sound"] == box_sound.DEFAULT, "box sound unchanged")

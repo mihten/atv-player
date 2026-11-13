@@ -34,6 +34,13 @@ H.WS = H.BASE.replace("http", "ws")
 failed = 0
 
 
+def tv_side(msgs):
+    """What would mean the sink moved to the Apple TV: its state, a load or a route (the TV Player's own state updates and
+    controls reach the sink as long as it follows the TV Player)."""
+    return [m["type"] for m in msgs
+            if (m["type"] == "state" and m["state"]["session"] == "tv") or m["type"] in ("load", "route", "clock")]
+
+
 def check(cond, label):
     global failed
     print(("PASS " if cond else "FAIL ") + label)
@@ -96,9 +103,13 @@ async def main(tmp):
             await until(tv, "load")
             await tv.send_json({"type": "status", "item": ids[2], "playing": True, "position": 0.5, "duration": 4})
             await H.drain(tv)
+            await H.drain(sink)
             status, text = await post(http, "/api/mtv-sound", {"output": "headphones"})
-            check(status == 409 and "Apple TV" in text, f"headphones refused while the Apple TV plays through the sink ({status} {text})")
-            check(not of_type(await H.drain(mtv), "sound_out"), "... and the player was not told")
+            msg, _ = await until(mtv, "sound_out")
+            check(status == 200 and msg == {"type": "sound_out", "mode": "headphones"},
+                  f"headphones accepted while the Apple TV plays through the sink: the last Play takes them ({status} {msg})")
+            check(not [m for m in await H.drain(sink) if m["type"] in ("sound_out", "state", "load")],
+                  "... choosing them moves nothing on the sink")
             await tvremote.send_json({"type": "cmd", "cmd": "pause"})
             await tv.send_json({"type": "status", "item": ids[2], "playing": False, "position": 0.5, "duration": 4})
             await H.drain(tv)
@@ -161,19 +172,19 @@ async def main(tmp):
             check(of_type(await H.drain(sink), "lip_sync") == [{"type": "lip_sync", "ms": 400}], "lip sync clamped to +400")
             await mtv.send_json({"type": "lip_sync", "ms": "x"})
             check(not await H.drain(sink), "garbage lip sync dropped")
-            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "p:2", "boost": 3, "loudness": "off"})
+            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "t:bass", "boost": 3, "loudness": "off"})
             got = await H.drain(sink)
-            check(of_type(got, "sound") and of_type(got, "sound")[0]["gain"] == -3.0, "a sound change reaches the sink")
+            check(of_type(got, "sound") and of_type(got, "sound")[0]["gain"] == 2.0, "a sound change reaches the sink")
             await remote.send_json({"type": "cmd", "cmd": "pause"})
             check(of_type(await H.drain(sink), "control")[:1] == [{"type": "control", "action": "pause"}], "pause reaches the sink")
             await H.drain(mtv)
 
-            # ---- the Apple TV's messages no longer reach the sink while the TV Player owns it
+            # ---- the Apple TV's messages no longer reach the sink while the TV Player holds it (choosing atv-audio alone
+            # takes nothing; a Play would, see below)
             await tv.send_json({"type": "route", "sink": True})
             await tv.send_json({"type": "clock", "item": ids[3], "position": 1, "at": 70, "state": "playing"})
-            await tvremote.send_json({"type": "cmd", "cmd": "play_ids", "ids": ids[:1]})
-            await until(tv, "load")
-            check(not await H.drain(sink), "Apple TV route / clock / load: not forwarded while the TV Player owns the sink")
+            got = tv_side(await H.drain(sink))
+            check(not got, f"Apple TV route / clock: not forwarded while the TV Player holds the sink ({got})")
 
             # ---- ready goes to the TV Player
             await H.drain(mtv)
@@ -236,10 +247,68 @@ async def main(tmp):
             got = await H.drain(mtv)
             check([m for m in of_type(got, "state") if m["state"]["sink"]["output"]["ready"] is True], "output back: ready again")
 
-            # ---- route false: the sink follows the Apple TV again
+            # ---- both on the headphones: the last one to press Play takes them, the other is paused with a notice
+            await remote.send_json({"type": "cmd", "cmd": "play"})
+            await mtv.send_json({"type": "status", "item": ids[2], "playing": True, "position": 1.5, "duration": 4})
+            await H.drain(mtv)
+            await tv.send_json({"type": "route", "sink": True})
+            await H.drain(tv)
+            got = tv_side(await H.drain(sink))
+            check(not got, f"the Apple TV choosing atv-audio while the TV Player plays: the sink stays with the TV Player ({got})")
+            await tvremote.send_json({"type": "cmd", "cmd": "play_ids", "ids": ids[:1]})
+            await until(tv, "load")
+            got = await H.drain(sink)
+            check(got and got[0]["type"] == "state" and got[0]["state"]["session"] == "tv",
+                  f"Apple TV Play: the sink follows the Apple TV ({[m['type'] for m in got]})")
+            check(of_type(got, "load") and of_type(got, "load")[-1]["item"]["id"] == ids[0], "... with the Apple TV's item")
+            seen = await H.drain(mtv)
+            check({"type": "control", "action": "pause"} in seen, "the TV Player is paused")
+            nt = of_type(seen, "notice")
+            check(nt and nt[0]["text"] == "The headphones went to the Apple TV — playback paused", f"... and shows the notice ({nt})")
+            st = await H.state(http, "mtv")
+            check(st["notice"] and "Apple TV" in st["notice"]["text"] and st["sink"]["route"] is False and st["want_play"] is False
+                  if "want_play" in st else st["notice"] and "Apple TV" in st["notice"]["text"] and st["sink"]["route"] is False,
+                  f"web remote: the TV Player's notice, its route shows false ({st['notice']}, {st['sink']['route']})")
+            await sink.send_json({"type": "ready", "item": ids[0]})
+            rd, _ = await until(tv, "sink_ready")
+            check(rd == {"type": "sink_ready", "id": ids[0]}, f"the sink's ready -> the Apple TV now ({rd})")
+            await mtv.send_json({"type": "status", "item": ids[2], "playing": True, "position": 1.6, "duration": 4})
+            await H.drain(mtv)
+            got = await H.drain(sink)
+            check(not [m for m in got if m["type"] == "state" and m["state"]["session"] == "mtv"],
+                  f"a TV Player status still in flight from before its pause takes nothing back (guard) ({[m['type'] for m in got]})")
+            await mtv.send_json({"type": "status", "item": ids[2], "playing": False, "position": 1.6, "duration": 4})
+            await tv.send_json({"type": "status", "item": ids[0], "playing": True, "position": 0.2, "duration": 4})
+            await H.drain(mtv)
+            await H.drain(tv)
+            await H.drain(sink)
+            await asyncio.sleep(2.1)  # past the guard
+            await remote.send_json({"type": "cmd", "cmd": "play"})
+            got = await H.drain(sink)
+            check(got and got[0]["type"] == "state" and got[0]["state"]["session"] == "mtv",
+                  f"TV Player Play: it takes the headphones back ({[m['type'] for m in got]})")
+            seen = await H.drain(tv)
+            nt = of_type(seen, "notice")
+            check({"type": "control", "action": "pause"} in seen and nt and nt[0]["text"] == "The headphones went to the TV Player — playback paused",
+                  f"the Apple TV is paused with the notice ({nt})")
+            await tv.send_json({"type": "status", "item": ids[0], "playing": False, "position": 0.3, "duration": 4})
+            await H.drain(tv)
+            await tv.send_json({"type": "sink_codec", "codec": "aptx_adaptive"})
+            nt, _ = await until(tv, "notice")
+            check(nt and "in use by the TV Player" in nt["text"], f"Apple TV codec request while the TV Player holds them: refused ({nt})")
+            check(not of_type(await H.drain(sink), "audio_cmd"), "... nothing sent to the sink")
+            await tv.send_json({"type": "route", "sink": False})
+            await H.drain(tv)
+            got = tv_side(await H.drain(sink))
+            check(not got, f"the Apple TV leaves atv-audio: the TV Player keeps the headphones ({got})")
+
+            # ---- route false: the sink follows the Apple TV again; the output rule (HDMI = EQ off + Boost 0)
+            await remote.send_json({"type": "cmd", "cmd": "pause"})
+            await H.drain(mtv)
             await H.drain(sink)
             await mtv.send_json({"type": "route", "sink": False})
             got = await H.drain(sink)
+            rule_sent = of_type(await H.drain(mtv), "sound")
             types = [m["type"] for m in got]
             check(types and types[0] == "state" and got[0]["state"]["session"] == "tv", f"route false: the sink gets the Apple TV's state again ({types})")
             check(of_type(got, "route") and of_type(got, "route")[-1]["sink"] is False, "... and the Apple TV's route (false)")
@@ -248,6 +317,21 @@ async def main(tmp):
             check(not [m for m in await H.drain(sink) if m["type"] in ("load", "control")], "the TV Player's next is no longer sent to the sink")
             await mtv.send_json({"type": "sink_volume", "percent": 70, "muted": False})
             check(not of_type(await H.drain(sink), "volume"), "sink_volume while the sound is on HDMI is ignored (it is not the headphones')")
+            snd = (await H.state(http, "mtv"))["sound"]
+            check(snd["preset"] == "off" and snd["boost"] == 0 and snd["loudness"] == "off" and snd["eq_last"] == "t:bass",
+                  f"output rule, HDMI: equalizer off, boost 0, loudness as it was ({snd})")
+            check(rule_sent and rule_sent[-1]["processed"] is False, f"... the player gets the unprocessed sound ({rule_sent})")
+            await mtv.send_json({"type": "route", "sink": True})
+            snd = (await H.state(http, "mtv"))["sound"]
+            check(snd["preset"] == "t:bass" and snd["boost"] == 0, f"output rule, headphones: the last equalizer back on ({snd})")
+            await mtv.send_json({"type": "route", "sink": True})
+            await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "off"})
+            await H.drain(remote)
+            await mtv.send_json({"type": "route", "sink": True})
+            check((await H.state(http, "mtv"))["sound"]["preset"] == "off",
+                  "a repeated route (reconnect) is no change: an equalizer turned off on the headphones stays off")
+            await mtv.send_json({"type": "route", "sink": False})
+            await H.drain(sink)
 
             # ---- the player leaves while routed: the sink goes back to the Apple TV
             await mtv.send_json({"type": "route", "sink": True})
@@ -260,6 +344,26 @@ async def main(tmp):
             check((await H.state(http, "mtv"))["players"] == 0, "no TV Player")
             status, _ = await post(http, "/api/mtv-sound", {"output": "hdmi"})
             check(status == 503, "the choice with no TV Player running -> 503")
+
+            # ---- codec from the Apple TV (Settings, it holds the headphones and is paused): set_codec to the sink
+            await tv.send_json({"type": "route", "sink": True})
+            await tv.send_json({"type": "status", "item": ids[0], "playing": True, "position": 0.5, "duration": 4})
+            await H.drain(tv)
+            await H.drain(sink)
+            await tv.send_json({"type": "sink_codec", "codec": "aptx_adaptive"})
+            nt, _ = await until(tv, "notice")
+            check(nt and "pause first" in nt["text"], f"codec while the Apple TV plays: refused ({nt})")
+            await tv.send_json({"type": "status", "item": ids[0], "playing": False, "position": 0.6, "duration": 4})
+            await H.drain(tv)
+            await tv.send_json({"type": "sink_codec", "codec": "ldac"})
+            nt, _ = await until(tv, "notice")
+            check(nt and "unknown codec" in nt["text"], "an unknown codec: refused")
+            await H.drain(sink)
+            await tv.send_json({"type": "sink_codec", "codec": "aptx_adaptive"})
+            cmd, _ = await until(sink, "audio_cmd")
+            check(cmd == {"type": "audio_cmd", "op": "set_codec", "output": "aptx_adaptive"}, f"paused: set_codec reaches the sink ({cmd})")
+            await tv.send_json({"type": "route", "sink": False})
+            await H.drain(tv)
 
             # ---- Stop (and Play after it)
             mtv = await H.connect(http, "role=player&kind=mtv")
