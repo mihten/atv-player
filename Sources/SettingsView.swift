@@ -230,6 +230,7 @@ struct LyricsSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
+    @AppStorage(PlayerSettings.subLang2Key) private var subLang2 = ""
     @AppStorage(PlayerSettings.subSizeKey) private var size = 0
     @AppStorage(PlayerSettings.subFontKey) private var font = ""
     @AppStorage(PlayerSettings.subColorKey) private var color = PlayerSettings.defaultColor
@@ -253,6 +254,15 @@ struct LyricsSettingsView: View {
                     ("English", "eng"),
                     ("Croatian", "hrv"),
                 ])
+                // drawn by the app on top of the video (VLC shows one track); no player rebuild, so not in appliedKey
+                ChoiceRow("Second language (on top)", selection: $subLang2, options: [
+                    ("Off", ""),
+                    ("English", "eng"),
+                    ("Croatian", "hrv"),
+                ])
+            } footer: {
+                Text("Second language: a second line at the top of a music video that has lyrics in that language (timed lyrics only). The main language stays at the bottom.")
+                    .font(.system(size: 22)).foregroundStyle(.secondary)
             }
             Section {
                 ChoiceRow("Text size", selection: $size, options: [

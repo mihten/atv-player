@@ -70,6 +70,21 @@ Equalizer (preset and custom curve), Boost and Loudness are kept per output; vol
 The switch happens by itself when the output changes, also during playback (new values on the running player, no
 pause). The server log shows `sound profile: <old> -> <new>`.
 
+**Equalizer presets** (the same list in the apps, the web player and the TV Player): Off, **Momentum 4** (a fit of an
+EqualizerAPO headphone correction), **Bass boost**, **Vocal**, **Bright**, **V-shape** and **Custom**. The apps use a fit of
+each curve for VLC's equalizer; when atv-audio plays the sound they send the server's own values, so a preset sounds the
+same on every player. VLC's 18 presets and Amplify were removed; a stored one reads as Off.
+
+**Output rule** (Apple TV and TV Player, when the sound output is changed on purpose): the TV's own sound (Apple TV /
+HDMI) turns the Equalizer off and Boost to 0; the headphones (atv-audio) turn the Equalizer on with the last preset used
+there (Momentum 4 the first time). Loudness is never touched, and anything changed afterwards on that output stays.
+
+## Two lyrics languages (Apple TV)
+
+Settings → Lyrics → **Second language (on top)**: English or Croatian at the top of a music video while the main
+language stays at the bottom. VLC shows one subtitle track; the app draws the second line itself from the server's
+timed lyrics (`/api/lyrics/<id>`), so it only appears for videos with timed lyrics in that language.
+
 ## Offline (iPhone downloads)
 
 For trips without the home server, the iPhone app downloads lists for offline listening:
@@ -234,6 +249,11 @@ plugins, e.g. Debian's `libspa-0.2-bluetooth`).
   Play or Back. Play then plays normally (without sound while the headphones are still off, no second
   notice); headphones back on while it plays = sound again by itself within a few seconds at the right place
   (while paused: from the next Play).
+- **Codec** (only with atv-audio on Bluetooth headphones that offer both): aptX HD or aptX Adaptive. The switch pauses
+  playback, changes the codec (2-4 s without sound, the headphones chime) and plays on.
+- **Shared with the TV Player**: both can have their sound on the same headphones. The last one to press Play gets
+  them; the other one pauses with the notice "The headphones went to the … — playback paused". Choosing the output
+  alone takes nothing away.
 - **Volume** (click the centre button in the player: the quick menu's first row, only with atv-audio):
   ◀ ▶ −/+5 %, click = mute. It is the output's own volume (with Bluetooth through PipeWire: the headphones'
   volume, no extra digital attenuation); the web remote shows the same as a slider.
@@ -255,7 +275,7 @@ the headphones).
 
 The sink is also a player: the web remote's queue selector lists **atv-audio** (while the sink runs), and that
 queue plays on the sink's output with no Apple TV or iPhone involved. Browse, play, queue, playlists and the volume
-slider work as for the apps. The player card adds **EQ** (the apps' presets: Off, Momentum 4, Amplify and VLC's 18),
+slider work as for the apps. The player card adds **EQ** (the presets above: Off, Momentum 4, the four tone presets, Custom),
 **Boost** (0 … +8 dB) and **Loudness** (raises quiet recordings, never turns anything down), saved on the server
 for this queue only; the Apple TV keeps its own settings.
 

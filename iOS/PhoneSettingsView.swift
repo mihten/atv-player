@@ -363,7 +363,6 @@ struct PhoneSoundSettingsView: View {
                 Picker("Equalizer", selection: $eqPreset) {
                     Text("Off").tag("off")
                     ForEach(SoundSettings.appPresets, id: \.id) { Text($0.name).tag("a:\($0.id)") }
-                    ForEach(SoundSettings.presets, id: \.index) { Text($0.name).tag("p:\($0.index)") }
                     Text("Custom").tag("custom")
                 }
                 NavigationLink("Edit custom equalizer") { PhoneEqualizerView() }
@@ -554,9 +553,6 @@ struct PhoneEqualizerView: View {
             Menu("Load preset") {
                 ForEach(SoundSettings.appPresets, id: \.id) { p in
                     Button(p.name) { load("a:\(p.id)") }
-                }
-                ForEach(SoundSettings.presets, id: \.index) { p in
-                    Button(p.name) { load("p:\(p.index)") }
                 }
             }
         }

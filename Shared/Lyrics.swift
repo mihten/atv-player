@@ -70,6 +70,25 @@ struct LyricsResponse: Decodable {
         }
         return tracks.first(where: { $0.isDefault }) ?? tracks.first(where: { $0.forced }) ?? tracks.first
     }
+
+    /// The second language's timed track (Apple TV: drawn on top of the video while VLC shows `shownOrd`): a synced,
+    /// full (not forced) track in `language` that is not the one on screen already; nil when the file has none.
+    func second(language: String, shownOrd: Int?) -> LyricsTrack? {
+        guard let codes = PlayerSettings.languageCodes[language] else { return nil }
+        let matching = tracks.filter { $0.synced && codes.contains($0.lang) && ($0.ord == nil || $0.ord != shownOrd) }
+        return matching.first(where: { !$0.forced && $0.isDefault }) ?? matching.first(where: { !$0.forced })
+    }
+}
+
+extension LyricsTrack {
+    /// Lines on screen at `time` (seconds): every cue with start <= time < end, joined (overlapping cues stack).
+    func text(at time: Double) -> String {
+        cues.filter { cue in
+            guard let s = cue.s, let e = cue.e else { return false }
+            return s <= time && time < e
+        }
+        .map(\.t).joined(separator: "\n")
+    }
 }
 
 /// Lyrics fetched so far (in memory). The current and the next item are fetched ahead, so switching songs

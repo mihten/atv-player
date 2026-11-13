@@ -113,6 +113,8 @@ final class PlayerEngine: NSObject, ObservableObject {
     fileprivate var sinkLossArmed = true
     private var sinkWaitTask: Task<Void, Never>?
     private var sinkWaitStart: Double = 0
+    /// Settings → Sound output → Codec: pause, switch, resume (setSinkCodec).
+    fileprivate var codecTask: Task<Void, Never>?
     /// The TV's mode switch finished while waiting for the sink: VLC starts on `ready` or at the timeout.
     private var sinkStartPending = false
     /// Last item the sink reported ready, and whether it already had the current item when its load came in.
@@ -216,11 +218,18 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     /// Sound profile for the output in use (SoundProfiles): on a switch the new profile's Equalizer, Boost and
     /// Loudness go to the running player like a Settings change (a rebuild only between processed and unprocessed).
-    func updateSoundProfile(_ why: String) {
+    /// `outputChanged` (Apple TV, Sound output changed on purpose): the owner's output rule on top of the profile:
+    /// the TV's own sound = Equalizer Off + Boost 0, atv-audio = Equalizer on (SoundSettings.applyOutputRule).
+    func updateSoundProfile(_ why: String, outputChanged: Bool = false) {
         guard let target = SoundProfiles.currentTarget() else { return }
         let from = SoundProfiles.activeName
-        guard SoundProfiles.activate(target) else { return }
-        log("sound profile: \(from) -> \(target.name) [\(why)]: \(SoundSettings.summary)")
+        let switched = SoundProfiles.activate(target)
+        var rule: String?
+        #if os(tvOS)
+        if outputChanged { rule = SoundSettings.applyOutputRule(headphones: AtvAudio.selected) }
+        #endif
+        guard switched || rule != nil else { return }
+        log("sound profile: \(from) -> \(target.name) [\(why)]\(rule.map { " + output rule: \($0)" } ?? ""): \(SoundSettings.summary)")
         applySettings()
     }
 
@@ -1081,6 +1090,7 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     /// Re-read Settings. Subtitle style options need a new VLC instance; playback resumes at the same position.
     func applySettings() {
+        SoundSettings.noteInUse()  // the preset the output rule turns back on
         let options = PlayerSettings.vlcOptions() + SoundSettings.limiterOptions()
         let sound = SoundSettings.configKey
         guard options != vlcOptions || sound != appliedSound else {
@@ -1517,8 +1527,10 @@ extension PlayerEngine {
     private func sinkSound(force: Bool = false) {
         #if os(tvOS)
         let processed = SoundSettings.processed
-        let gain = processed ? SoundSettings.gainPlan(loudnessGain: levelGain).total : 0
-        let bands: [Float] = processed ? SoundSettings.curve().1 : Array(repeating: 0, count: SoundSettings.frequencies.count)
+        // atv-audio's own curve for an app preset (0.18.45): the server's values, so the Apple TV on the headphones
+        // sounds like the web player / TV Player with the same preset
+        let gain = processed ? SoundSettings.gainPlan(loudnessGain: levelGain, forSink: true).total : 0
+        let bands: [Float] = processed ? SoundSettings.curve(forSink: true).1 : Array(repeating: 0, count: SoundSettings.frequencies.count)
         func r(_ value: Float) -> Double { (Double(value) * 100).rounded() / 100 }
         let key = "\(processed)|\(r(gain))|\(bands.map(r))"
         guard force || key != sentSound else { return }
@@ -1718,6 +1730,42 @@ extension PlayerEngine {
         notice = text
     }
 
+    /// Server notice (0.29.0+), e.g. "The headphones went to the TV Player — playback paused" (the server paused us
+    /// already) or a refused codec switch: shown like the atv-audio notices, until Play / Back.
+    func serverNotice(_ text: String) {
+        log("notice from the server: \(text)")
+        showNotice(String(text.prefix(200)))
+    }
+
+    /// Settings → Sound output → Codec (atv-audio on Bluetooth headphones that offer aptX HD and aptX Adaptive). The
+    /// switch cuts the sound for 2-4 s, so: pause, ask the server, wait until state.sink shows the codec (max 12 s),
+    /// resume if it was playing.
+    func setSinkCodec(_ codec: String) {
+        guard sinkActive, connection?.state?.sink?.output?.codec != codec else { return }
+        let resume = wantPlaying && current != nil
+        if resume { pause(source: "settings: codec") }
+        log("atv-audio: codec -> \(codec)\(resume ? ", paused until the switch is done" : "")")
+        codecTask?.cancel()
+        codecTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)  // the paused status reaches the server first
+            guard let self, !Task.isCancelled else { return }
+            self.connection?.send(["type": "sink_codec", "codec": codec])
+            var done = false
+            for _ in 0..<48 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if Task.isCancelled { return }
+                if self.connection?.state?.sink?.output?.codec == codec, self.connection?.state?.sink?.isUsable == true {
+                    done = true
+                    break
+                }
+            }
+            self.log("atv-audio: codec \(codec) \(done ? "in use" : "not confirmed within 12 s"); \(AtvAudio.statusText(self.connection?.state?.sink))")
+            guard resume, !self.wantPlaying else { return }
+            if done { try? await Task.sleep(nanoseconds: 800_000_000) }  // the sink reopens its output
+            self.play(source: "settings: codec switched")
+        }
+    }
+
     /// ⏯ / Play ("play") or Back out of the player ("back") clears the notice. True when one was shown.
     @discardableResult
     func acknowledgeNotice(_ how: String) -> Bool {
@@ -1776,8 +1824,10 @@ extension PlayerEngine {
     /// Settings → Sound output: applies at once. During playback it pauses with a notice that stays until Play
     /// (going to atv-audio mid-song: VLC muted, the sink opens the current item at the TV's position).
     func soundOutputChanged() {
-        defer { updateSoundProfile("sound output") }  // Apple TV and atv-audio keep their own Equalizer / Boost / Loudness
-        guard sinkChosen != sinkActive else { return }
+        // Apple TV and atv-audio keep their own Equalizer / Boost / Loudness; a real change also applies the output rule
+        let changed = sinkChosen != sinkActive
+        defer { updateSoundProfile("sound output", outputChanged: changed) }
+        guard changed else { return }
         let playing = wantPlaying && current != nil
         if playing { pause(source: "settings: sound output") }
         setSinkActive(sinkChosen, log: "atv-audio: Sound output -> \(sinkChosen ? "atv-audio, VLC muted" : "Apple TV, VLC sound on")\(current.map { " at '\($0.title)'" } ?? ""); \(AtvAudio.statusText(connection?.state?.sink))")

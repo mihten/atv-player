@@ -22,7 +22,7 @@ enum SoundProfiles {
 
     /// What a profile holds (the custom curve and its format marker belong to it, so "Custom" is per profile too).
     static let valueKeys = [SoundSettings.presetKey, SoundSettings.customKey, SoundSettings.customFormatKey,
-                            SoundSettings.loudnessKey, SoundSettings.boostKey]
+                            SoundSettings.loudnessKey, SoundSettings.boostKey, SoundSettings.lastKey]
 
     struct Target: Equatable {
         let key: String

@@ -214,10 +214,22 @@ struct SinkState: Codable, Equatable {
     var output: SinkOutput? = nil
     /// The TV's Sound output is atv-audio (server 0.16.6+).
     var route: Bool? = nil
+    /// The sink's audio_info; the app reads only the codecs the headphones offer (server 0.28.3+).
+    var audio: SinkAudio? = nil
 
     var isConnected: Bool { connected == true }
     /// Connected and its output device present and usable.
     var isUsable: Bool { isConnected && output?.ready == true }
+}
+
+struct SinkAudio: Codable, Equatable {
+    /// aptX HD / aptX Adaptive the connected headphones offer: [{codec: "aptx_hd", label: "aptX HD"}, …]
+    var codecs: [SinkCodec]? = nil
+}
+
+struct SinkCodec: Codable, Equatable, Hashable {
+    var codec: String? = nil
+    var label: String? = nil
 }
 
 /// The sink's output device: kind "bluetooth" | "usb" | "other", codec nil when unknown (USB dongles).
@@ -245,6 +257,8 @@ struct ServerMessage: Decodable {
     let n: Int?
     let t: Double?
     let id: Int?
+    /// notice: text the player shows until Play (server 0.29.0+: e.g. the TV Player took the headphones).
+    let text: String?
 }
 
 struct ItemList: Decodable {

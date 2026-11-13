@@ -75,14 +75,21 @@ struct SoundSettingsView: View {
                 if soundOutput == AtvAudio.sinkOutput {
                     ChoiceRow("Lip sync", selection: lipSyncChoice,
                               options: AtvAudio.lipSyncValues.map { (AtvAudio.lipSyncLabel($0), $0) })
+                    // aptX HD <-> aptX Adaptive (headphones that offer both): pause, switch, resume (2-4 s without sound)
+                    if let sink = connection.state?.sink, sink.output?.kind == "bluetooth",
+                       let codecs = sink.audio?.codecs?.filter({ $0.codec != nil }), codecs.count > 1 {
+                        ChoiceRow("Codec", selection: Binding(get: { connection.state?.sink?.output?.codec ?? "" },
+                                                              set: { engine.setSinkCodec($0) }),
+                                  options: codecs.map { ($0.label ?? $0.codec ?? "", $0.codec ?? "") })
+                    }
                 }
             } header: {
                 Text("Sound output")
             } footer: {
                 Text((soundOutput == AtvAudio.sinkOutput
-                     ? "atv-audio plays the sound, the Apple TV shows the picture and stays silent (also while atv-audio is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early."
+                     ? "atv-audio plays the sound, the Apple TV shows the picture and stays silent (also while atv-audio is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early. Codec: the switch pauses playback for a few seconds. The TV Player can use the same headphones: the last one to press Play gets them."
                      : "atv-audio: a separate box plays the sound (e.g. aptX headphones), the Apple TV shows the picture. It can be chosen while it is connected.")
-                     + " Equalizer, Boost and Loudness are kept separately for Apple TV and atv-audio.")
+                     + " Equalizer, Boost and Loudness are kept separately for Apple TV and atv-audio; choosing Apple TV turns the Equalizer and Boost off, choosing atv-audio turns the Equalizer on.")
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }
         }
@@ -221,7 +228,7 @@ struct CustomEqualizerView: View {
     }
 }
 
-/// Built-in curves to start the custom equalizer from: the app's own presets, then VLC's (Flat first).
+/// Built-in curves to start the custom equalizer from (the app's presets).
 /// Shown inside the equalizer editor, laid out like Settings → Sound.
 struct PresetPickerList: View {
     let pick: (String) -> Void
@@ -233,14 +240,7 @@ struct PresetPickerList: View {
                     Button(p.name) { pick("a:\(p.id)") }
                 }
             } header: {
-                Text("ATV Player")
-            }
-            Section {
-                ForEach(SoundSettings.presets, id: \.index) { p in
-                    Button(p.name) { pick("p:\(p.index)") }
-                }
-            } header: {
-                Text("VLC")
+                Text("Presets")
             }
         }
         .font(.system(size: 30))

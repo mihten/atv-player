@@ -224,6 +224,11 @@ final class ServerConnection: ObservableObject {
             if let id = message.id { engine?.sinkReady(id) }
             #endif
             break
+        case "notice":
+            #if os(tvOS)
+            if let text = message.text { engine?.serverNotice(text) }
+            #endif
+            break
         default:
             break
         }

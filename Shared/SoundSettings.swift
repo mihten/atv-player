@@ -8,7 +8,8 @@ import MobileVLCKit
 /// Equalizer + Boost + loudness settings (stored in UserDefaults, applied by PlayerEngine). Whenever the sound is
 /// processed a limiter runs after the equalizer.
 enum SoundSettings {
-    static let presetKey = "eqPreset"      // "off" | "custom" | "p:<VLC preset index>"
+    static let presetKey = "eqPreset"      // "off" | "custom" | "a:<app preset id>" (0.18.45: VLC's "p:<index>" are gone)
+    static let lastKey = "eqLast"          // last preset in use other than Off: the output rule turns it back on
     static let customKey = "eqCustom"      // "preamp;b0,b1,…,b9" in dB
     static let loudnessKey = "loudnessMode" // "off" | "raise" (0.18.33 "level" becomes "raise")
     static let boostKey = "soundPreamp"    // Int dB 0…8, added to any equalizer choice (0.18.32 "Preamp", same key)
@@ -23,8 +24,6 @@ enum SoundSettings {
 
     static var preset: String { defaults.string(forKey: presetKey) ?? "off" }
 
-    static var presets: [VLCAudioEqualizer.Preset] { VLCAudioEqualizer.presets }
-
     // MARK: Boost, limiter, gain split
 
     static let boostRange = 0...8
@@ -34,7 +33,7 @@ enum SoundSettings {
 
     /// Equalizer Off + Boost 0 + Loudness Off = no audio filters at all. Anything else runs the fixed chain
     /// equalizer → limiter, and every later change only sets values on it (see PlayerEngine.applySound).
-    static var processed: Bool { preset != "off" || boost > 0 || loudness != .off }
+    static var processed: Bool { (preset != "off" && known(preset)) || boost > 0 || loudness != .off }
 
     static let filterChain = "equalizer:compressor"
 
@@ -97,8 +96,9 @@ enum SoundSettings {
         }
     }
 
-    static func gainPlan(loudnessGain: Float) -> GainPlan {
-        GainPlan(preset: curve().0, boost: Float(boost), loudness: loudnessGain)
+    /// `forSink`: the curve atv-audio plays (its own filters, see AppPreset.sinkBands), else VLC's.
+    static func gainPlan(loudnessGain: Float, forSink: Bool = false) -> GainPlan {
+        GainPlan(preset: curve(forSink: forSink).0, boost: Float(boost), loudness: loudnessGain)
     }
 
     /// Footnote under Boost. `loudnessGain`: PlayerEngine.levelGain (the playing track's).
@@ -142,41 +142,95 @@ enum SoundSettings {
     }
 
     /// (preamp in app scale, bands) of the selected curve: preset, custom, or flat for Off / an unknown tag.
-    static func curve() -> (Float, [Float]) {
+    /// `forSink`: an app preset's atv-audio curve (the custom curve is the same for both).
+    static func curve(forSink: Bool = false) -> (Float, [Float]) {
         switch preset {
         case "off": return (0, Array(repeating: 0, count: frequencies.count))
         case "custom": return customValues()
-        default: return presetValues(preset) ?? (0, Array(repeating: 0, count: frequencies.count))
+        default:
+            if forSink, let app = appPreset(preset) { return (app.sinkPreamp, app.sinkBands) }
+            return presetValues(preset) ?? (0, Array(repeating: 0, count: frequencies.count))
         }
     }
 
-    /// App presets (tag "a:<id>"): raw VLC preamp + 10 band gains (60 Hz … 16 kHz).
+    /// App presets (tag "a:<id>"), the same list in every player (owner, 2026-11-13; server/box_sound.py):
+    /// `vlcPreamp` (raw, 12 = 0 dB) + `bands` drive VLC's equalizer here; `sinkPreamp` (dB, 0 = equalizer off) +
+    /// `sinkBands` are the server's values, sent when atv-audio plays the sound (its octave-wide peaking filters
+    /// respond differently from VLC's band-passes, so the same numbers would not sound the same).
     struct AppPreset {
         let id: String
         let name: String
         let vlcPreamp: Float
         let bands: [Float]
+        let sinkPreamp: Float
+        let sinkBands: [Float]
     }
 
-    /// "Momentum 4" (Sennheiser headphones; was misnamed "Momentus 4", id "momentus4", until v0.9.4 —
-    /// `migrate()` rewrites the stored selection): an EqualizerAPO headphone curve (31-band GraphicEQ
-    /// +3…+7.68 dB peaking 1.6–2.5 kHz), fitted by tools/eq_fit.py to the ISO bands the app's equalizer
-    /// really uses (31 Hz … 16 kHz) for APO preamp 0 dB (how the owner listens), 0.5 dB steps: max 0.61 dB /
-    /// rms 0.34 dB from APO. Raw preamp 16 (+4): as loud as APO; the limiter keeps loud tracks from clipping.
+    /// Momentum 4 (2026-11-13): the parametric EqualizerAPO correction the owner uses on his laptop (AutoEQ-style,
+    /// APO preamp -1 dB), the curve the web player / TV Player use since server 0.28.1. VLC fit (tools/eq_fit.py's
+    /// equalizer.c model against that curve, 0.5 dB steps): max 1.4 dB / rms 0.4 dB from 25 Hz to 18 kHz. The four
+    /// tone presets: VLC fits of what the server's filters play for them (max 0.7 dB). The VLC presets and Amplify
+    /// were deleted (owner): a stored one becomes Off (`migrate`).
     static let appPresets: [AppPreset] = [
-        AppPreset(id: "momentum4", name: "Momentum 4", vlcPreamp: 16,
-                  bands: [-1, -1, -0.5, 0.5, 1, 2, 3.5, 2, -0.5, -1.5]),
-        // "Amplify": flat (a pure gain, no filtering) as loud as Momentum 4: its preamp +1 dB, the relation
-        // measured in 0.18.23 (Momentum 4's curve K-weighted over music spectra plays ~1 dB above its preamp).
-        AppPreset(id: "amplify", name: "Amplify", vlcPreamp: 17,
-                  bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        AppPreset(id: "momentum4", name: "Momentum 4", vlcPreamp: 5.5,
+                  bands: [-3.5, -1, 2.5, 2.5, 5, 1, 10, 3.5, 5.5, 3.5],
+                  sinkPreamp: -3, sinkBands: [-7, -2, 0, 1, 2, 0, 7, 1, 3, 0]),
+        AppPreset(id: "bass", name: "Bass boost", vlcPreamp: 10.5,
+                  bands: [5, 6, 4.5, 2, 1, 0.5, 0.5, 0.5, 0.5, 0.5],
+                  sinkPreamp: -1, sinkBands: [5, 5, 4, 2, 1, 0, 0, 0, 0, 0]),
+        AppPreset(id: "vocal", name: "Vocal", vlcPreamp: 12,
+                  bands: [0.5, 0, 0, 0, 1, 2, 3.5, 2, 1, 0],
+                  sinkPreamp: 0, sinkBands: [0, 0, 0, 0, 1, 2, 3, 2, 1, 0]),
+        AppPreset(id: "bright", name: "Bright", vlcPreamp: 12,
+                  bands: [0, 0, 0, 0, 0, 1, 2, 3, 5, 4],
+                  sinkPreamp: 0, sinkBands: [0, 0, 0, 0, 0, 1, 2, 3, 4, 4]),
+        AppPreset(id: "vshape", name: "V-shape", vlcPreamp: 10.5,
+                  bands: [4.5, 5, 3, 0, 0.5, 0.5, 0, 3, 5.5, 4.5],
+                  sinkPreamp: -1, sinkBands: [4, 4, 3, 0, 0, 0, 0, 3, 4, 4]),
     ]
+
+    static let defaultOn = "a:momentum4"
+
+    /// A stored preset tag that no longer exists (VLC's "p:<index>", "a:amplify", typos) reads as Off.
+    static func known(_ value: String) -> Bool {
+        value == "off" || value == "custom" || appPreset(value) != nil
+    }
+
+    /// The preset the output rule turns on: the last one used other than Off, else Momentum 4.
+    static var lastOn: String {
+        let v = defaults.string(forKey: lastKey) ?? defaultOn
+        return v != "off" && known(v) ? v : defaultOn
+    }
+
+    /// Remember the preset in use (not Off) as the one to turn back on.
+    static func noteInUse() {
+        if preset != "off", known(preset), defaults.string(forKey: lastKey) != preset { defaults.set(preset, forKey: lastKey) }
+    }
+
+    /// Owner rule (2026-11-13) for an output CHANGED on purpose: the TV's own sound (HDMI) = Equalizer Off + Boost 0,
+    /// headphones (atv-audio) = Equalizer on with `lastOn`; Loudness stays. Returns what changed, for the log.
+    @discardableResult
+    static func applyOutputRule(headphones: Bool) -> String? {
+        if headphones {
+            guard preset == "off" else { return nil }
+            defaults.set(lastOn, forKey: presetKey)
+            return "equalizer \(presetName(lastOn))"
+        }
+        guard preset != "off" || boost != 0 else { return nil }
+        noteInUse()
+        defaults.set("off", forKey: presetKey)
+        defaults.set(0, forKey: boostKey)
+        return "equalizer off, boost 0"
+    }
 
     /// Renamed app presets: old stored tag → new tag. Run once at startup, before anything reads the preset.
     static func migrate() {
         let renamed = ["a:momentus4": "a:momentum4"]
         if let old = defaults.string(forKey: presetKey), let new = renamed[old] {
             defaults.set(new, forKey: presetKey)
+        }
+        if let old = defaults.string(forKey: presetKey), !known(old) {
+            defaults.set("off", forKey: presetKey)  // 0.18.45: VLC presets and Amplify deleted
         }
         defaults.removeObject(forKey: "stereoWiden")  // the stereo widener was removed in 0.18.20
         defaults.removeObject(forKey: "soundLimiter")  // 0.18.32's Limiter switch: the limiter is always on now
@@ -197,22 +251,16 @@ enum SoundSettings {
     /// Band centre frequencies (Hz) of VLC's 10-band equalizer.
     static var frequencies: [Float] { VLCAudioEqualizer().bands.map(\.frequency) }
 
-    /// Every equalizer choice in display order (Apple TV Settings → Sound and the quick panel's list).
+    /// Every equalizer choice in display order (Settings → Sound and the quick panel's list).
     static var presetChoices: [(label: String, value: String)] {
-        [("Off", "off")]
-            + appPresets.map { ($0.name, "a:\($0.id)") }
-            + presets.map { ($0.name, "p:\($0.index)") }
-            + [("Custom", "custom")]
+        [("Off", "off")] + appPresets.map { ($0.name, "a:\($0.id)") } + [("Custom", "custom")]
     }
 
     static func presetName(_ value: String) -> String {
         switch value {
         case "off": return "Off"
         case "custom": return "Custom"
-        case _ where value.hasPrefix("a:"): return appPreset(value)?.name ?? "Off"
-        default:
-            let index = UInt32(value.dropFirst(2)) ?? 0
-            return presets.first { $0.index == index }?.name ?? "Off"
+        default: return appPreset(value)?.name ?? "Off"
         }
     }
 
@@ -237,15 +285,10 @@ enum SoundSettings {
         defaults.set("2", forKey: customFormatKey)
     }
 
-    /// Curve of a VLC preset, used to start the custom editor from the current sound.
+    /// VLC curve of an app preset (also starts the custom editor from the current sound).
     static func presetValues(_ value: String) -> (Float, [Float])? {
-        if let app = appPreset(value) {
-            return (app.vlcPreamp - vlcPreampOffset, app.bands)
-        }
-        guard value.hasPrefix("p:"), let index = UInt32(value.dropFirst(2)),
-              let preset = presets.first(where: { $0.index == index }) else { return nil }
-        let eq = VLCAudioEqualizer(preset: preset)
-        return (eq.preAmplification - vlcPreampOffset, eq.bands.map(\.amplification))
+        guard let app = appPreset(value) else { return nil }
+        return (app.vlcPreamp - vlcPreampOffset, app.bands)
     }
 
     /// The equalizer for a fresh player (nil = unprocessed). On a running player PlayerEngine sets the same values

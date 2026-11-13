@@ -42,6 +42,7 @@ struct NowPlayingView: View {
                     // a clean picture at once (no decoder restart, no blocks until the next keyframe).
                     VideoSurface(engine: engine).ignoresSafeArea()
                     PictureCover().ignoresSafeArea()
+                    if !lyricsMode { SecondSubtitleLine(item: item) }
                 }
                 if lyricsMode {
                     if item.isVideo { Color.black.ignoresSafeArea() }  // the Classic backdrop is transparent
@@ -167,6 +168,51 @@ struct NowPlayingView: View {
             if !Task.isCancelled {
                 withAnimation { overlay = false }
             }
+        }
+    }
+}
+
+/// Settings → Lyrics → Second language (owner, 2026-11-13: English and Croatian at once): VLC 3 renders one subtitle
+/// track, so the second language is drawn here, at the top, from the server's lyrics (/api/lyrics), timed to VLC's clock.
+/// Only for videos whose file has a timed track in that language other than the one VLC shows.
+struct SecondSubtitleLine: View {
+    let item: MediaItem
+    @EnvironmentObject var engine: PlayerEngine
+    @ObservedObject private var store = LyricsStore.shared
+    @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
+    @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
+    @AppStorage(PlayerSettings.subLang2Key) private var subLang2 = ""
+
+    private var track: LyricsTrack? {
+        guard subsOn, !subLang2.isEmpty, subLang2 != subLang || subLang.isEmpty else { return nil }
+        let shown = PlayerSettings.subtitleOrdinal(for: item)
+        return store.cache[item.id]?.second(language: subLang2, shownOrd: shown)
+    }
+
+    var body: some View {
+        ZStack {
+            if let track {
+                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                    let text = track.text(at: engine.livePosition)
+                    VStack {
+                        if !text.isEmpty {
+                            Text(text)
+                                .font(.system(size: 46, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .shadow(color: .black, radius: 2)
+                                .shadow(color: .black.opacity(0.8), radius: 6)
+                                .padding(.horizontal, 160)
+                        }
+                        Spacer()
+                    }
+                    .padding(.top, 70)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .task(id: "\(item.id)|\(subLang2)") {
+            if subsOn, !subLang2.isEmpty { store.prefetch(item) }
         }
     }
 }

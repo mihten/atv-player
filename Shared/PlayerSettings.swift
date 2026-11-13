@@ -7,6 +7,7 @@ enum PlayerSettings {
     static let keepVideoAudioKey = "keepVideoAudioInBackground"
     static let subsOnKey = "subsOn"
     static let subLangKey = "subLang"  // "" = file default, "eng", "hrv"
+    static let subLang2Key = "subLang2"  // Apple TV: second language drawn on top of the video ("" = off, "eng", "hrv")
     static let subSizeKey = "subSize"
     static let subFontKey = "subFont"
     static let subColorKey = "subColor"
@@ -39,6 +40,7 @@ enum PlayerSettings {
     }
     static var subtitlesOn: Bool { defaults.object(forKey: subsOnKey) as? Bool ?? true }
     static var subtitleLanguage: String { defaults.string(forKey: subLangKey) ?? "" }
+    static var secondLanguage: String { defaults.string(forKey: subLang2Key) ?? "" }
 
     /// Language codes a file may use for each choice (ISO 639-2/B and /T, 639-1, old Serbo-Croatian).
     static let languageCodes: [String: Set<String>] = [
