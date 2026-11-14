@@ -92,7 +92,7 @@ import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 import subs as subs_mod  # noqa: E402
 
-VERSION = "0.17.0"
+VERSION = "0.17.1"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -104,6 +104,47 @@ DEFAULT_TONE = ["--hdr-compute-peak=no", "--tone-mapping=clip", "--gamut-mapping
 
 def log(msg):
     print(f"mtv-player: {msg}", file=sys.stderr, flush=True)
+
+
+AUDIO_THREAD = "ao"      # name of mpv's audio output thread (recreated when audio is re-initialised)
+RT_CHECK_EVERY = 2.0     # s between scans for a new audio thread
+
+
+def raise_audio_threads(pid, prio, proc_root="/proc", get=os.sched_getscheduler, set_=os.sched_setscheduler):
+    """Put every thread of `pid` named AUDIO_THREAD on SCHED_FIFO `prio`. Returns (raised tids, error or None).
+    Threads already on SCHED_FIFO are left alone; a vanished thread is skipped."""
+    raised, err = [], None
+    try:
+        tids = os.listdir(os.path.join(proc_root, str(pid), "task"))
+    except OSError:
+        return raised, None
+    for tid in tids:
+        try:
+            with open(os.path.join(proc_root, str(pid), "task", tid, "comm")) as f:
+                if f.read().strip() != AUDIO_THREAD:
+                    continue
+            if get(int(tid)) == os.SCHED_FIFO:
+                continue
+            set_(int(tid), os.SCHED_FIFO, os.sched_param(prio))
+            raised.append(int(tid))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as e:
+            err = e
+    return raised, err
+
+
+async def audio_rt_loop(pid, prio, stop_when):
+    """Keep mpv's audio thread realtime for the life of this mpv process."""
+    warned = False
+    while not stop_when():
+        raised, err = raise_audio_threads(pid, prio)
+        for tid in raised:
+            log(f"audio thread {tid} -> SCHED_FIFO {prio}")
+        if err and not warned:
+            warned = True
+            log(f"audio thread stays normal priority: {err} (container needs lxc.prlimit.rtprio >= {prio})")
+        await asyncio.sleep(RT_CHECK_EVERY)
 
 
 def flag(value, default=True):
@@ -130,6 +171,12 @@ class Config:
         self.keys_device = env.get("MTV_KEYS_DEVICE") or ""
         self.flirc_util = env.get("MTV_FLIRC_UTIL") or shutil.which("flirc_util") or "/usr/local/bin/flirc_util"
         self.extra = shlex.split(env.get("MTV_MPV_ARGS") or "")
+        # SCHED_FIFO priority for mpv's audio output thread ("ao"); 0 = off. Needs RLIMIT_RTPRIO >= this in the container
+        # (lxc.prlimit.rtprio), else the player logs once and plays on with normal scheduling.
+        try:
+            self.audio_rtprio = max(0, min(99, int(env.get("MTV_AUDIO_RTPRIO") or 70)))
+        except ValueError:
+            self.audio_rtprio = 70
         dev = env.get("MTV_IR_DEVICE")
         self.ir_device = "" if (dev or "").lower() in ("off", "0", "no", "none") else (dev or "/dev/lirc0")
         try:
@@ -1345,6 +1392,7 @@ async def _mpv_loop(cfg, player, stop, sock):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(sock)
         started = time.monotonic()
+        rt_task = None
         proc = await asyncio.create_subprocess_exec(*mpv_args(cfg, sock, player.volume, player.mpv_muted))
         ipc = MpvObserver(on_event=player.on_mpv_event)
         try:
@@ -1360,12 +1408,17 @@ async def _mpv_loop(cfg, player, stop, sock):
             if not await ipc.get_property("current-vo"):  # no screen (connector / mode / DRM busy): sound only
                 raise MpvError("no picture output (check the connector, the mode and that nothing else holds DRM)")
             log(f"mpv {proc.pid} up on {await ipc.get_property('current-vo')}")
+            if cfg.audio_rtprio:
+                rt_task = asyncio.ensure_future(audio_rt_loop(proc.pid, cfg.audio_rtprio,
+                                                              lambda: proc.returncode is not None))
             await player.attach(ipc)
             done, _ = await asyncio.wait([asyncio.ensure_future(proc.wait()), asyncio.ensure_future(stop.wait())],
                                          return_when=asyncio.FIRST_COMPLETED)
         except (OSError, MpvError) as e:
             log(f"mpv: {e!r}")
         finally:
+            if rt_task:
+                rt_task.cancel()
             player.detach()
             await ipc.close()
             if proc.returncode is None:
