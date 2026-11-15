@@ -142,7 +142,7 @@ struct HomeView: View {
     }
 
     private var browseTiles: some View {
-        let size = CGSize(width: (width - 120) / 4, height: 130)
+        let size = CGSize(width: (width - 160) / 5, height: 130)  // five tiles, four 40 pt gaps
         return HStack(spacing: 40) {
             NavigationLink { PlaylistsView() } label: {
                 BrowseTileLabel(title: "Playlists", symbol: "music.note.list", size: size)
@@ -152,6 +152,9 @@ struct HomeView: View {
             }
             NavigationLink { VideoListView() } label: {
                 BrowseTileLabel(title: "Music videos", symbol: "play.rectangle", size: size)
+            }
+            NavigationLink { QueueView() } label: {
+                BrowseTileLabel(title: "Queue", symbol: "list.number", size: size)
             }
             NavigationLink { SettingsView() } label: {
                 BrowseTileLabel(title: "Settings", symbol: "gearshape", size: size)

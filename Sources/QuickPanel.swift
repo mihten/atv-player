@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Quick menu over the player: Close menu, Volume (ATV-Server only), ♥ Love, shuffle, the lyrics / subtitle track,
+/// Quick menu over the player: Close menu, Volume (ATV-Server only), ♥ Love, shuffle, Queue (opens the full queue), the lyrics / subtitle track,
 /// audio output (Apple TV / ATV-Server), equalizer, loudness, boost and the version of the song. Opens on a click of
 /// the centre button with Close menu focused (owner, 0.19.1; row clicks are ignored for a moment so the opening click
 /// never closes it again); ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
@@ -8,9 +8,9 @@ import SwiftUI
 /// inline list (click opens a short list under the row; ▲▼ picks, click confirms, Back closes only the list).
 /// The rows are full-width buttons in one column, so ◀▶ never has a focusable neighbour and reaches onMoveCommand.
 ///
-/// Height (1080p safe area = 960 pt): rows ~52 pt (30 pt text + 2 × 8) + 6 spacing. 10 rows + title + hint + padding
-/// ≈ 64 + 29 + 10 × 52 + 11 × 6 + 30 ≈ 710 pt; an open list adds ≤ 166 pt (≈ 4 entries of 41 pt, it scrolls inside)
-/// ≈ 880 pt at most.
+/// Height (1080p safe area = 960 pt): rows ~52 pt (30 pt text + 2 × 8) + 6 spacing. 11 rows + title + hint + padding
+/// ≈ 64 + 29 + 11 × 52 + 12 × 6 + 30 ≈ 767 pt; an open list adds ≤ 166 pt (≈ 4 entries of 41 pt, it scrolls inside)
+/// ≈ 933 pt at most (11 rows only with the Volume row = ATV-Server; 10 rows otherwise ≈ 875 pt).
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -31,9 +31,11 @@ struct QuickPanel: View {
     /// When the panel appeared: the click that opened it must not reach the first row (see `guarded`).
     @State private var openedAt = Date()
     let close: () -> Void
+    /// Queue row: the panel closes and the player shows the full queue (0.19.3).
+    var openQueue: () -> Void = {}
 
     enum Row: String {
-        case closeMenu, volume, love, shuffle, subtitles, audioOutput, equalizer, loudness, boost, version
+        case closeMenu, volume, love, shuffle, queue, subtitles, audioOutput, equalizer, loudness, boost, version
     }
 
     struct VolumeEdit: Equatable {
@@ -58,6 +60,13 @@ struct QuickPanel: View {
     private var versions: [MediaVersion] {
         guard let item = engine.current, item.hasVersions else { return [] }
         return item.versions ?? []
+    }
+    /// "12 of 58" (the playing entry of the queue), "—" when empty.
+    private var queuePosition: String {
+        let count = connection.state?.queue?.count ?? 0
+        let index = connection.state?.index ?? -1
+        guard count > 0 else { return "—" }
+        return index >= 0 && index < count ? "\(index + 1) of \(count)" : "\(count)"
     }
     private var loudnessOn: Bool { loudness != SoundSettings.Loudness.off.rawValue }
     private var subtitleIndex: Int {
@@ -116,6 +125,10 @@ struct QuickPanel: View {
         }
         row(.shuffle, "Shuffle", "shuffle", shuffleOn ? "On" : "Off") {
             connection.command("shuffle", ["on": !shuffleOn])
+        }
+        row(.queue, "Queue", "list.number", queuePosition) {
+            log("queue opened")
+            openQueue()
         }
         let subAt = subtitleIndex
         row(.subtitles, "Lyrics / subtitles", "captions.bubble", Self.subtitleChoices[subAt].0,

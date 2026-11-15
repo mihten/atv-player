@@ -77,7 +77,7 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertTrue(focused.contains("Love"), "▼ from Close menu should reach Love (no Volume row in the demo), has '\(focused)'")
 
         let screen = app.windows.firstMatch.frame
-        let order = ["closeMenu", "love", "shuffle", "subtitles", "audioOutput", "equalizer", "loudness", "boost", "version"]
+        let order = ["closeMenu", "love", "shuffle", "queue", "subtitles", "audioOutput", "equalizer", "loudness", "boost", "version"]
         var lastY = -CGFloat.infinity
         for id in order {
             let frame = row(id).frame
@@ -96,6 +96,9 @@ final class QuickPanelTests: XCTestCase {
 
         press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Shuffle"), "▼ from Love should reach Shuffle, has '\(focused)'")
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Queue"), "▼ from Shuffle should reach Queue, has '\(focused)'")
+        XCTAssertTrue(value("queue").contains(" of "), "Queue should show the playing entry 'n of N', has '\(value("queue"))'")
 
         // Lyrics / subtitles: ◀▶ value, stops at the ends
         press(.down, wait: 1)
@@ -179,5 +182,21 @@ final class QuickPanelTests: XCTestCase {
         report("q10 after Back")
         XCTAssertFalse(row("equalizer").exists, "Back should close the panel")
         XCTAssertEqual(app.state, .runningForeground)
+
+        // Queue (0.19.3): the row opens the full queue over the player, focus on the playing entry; Back closes it
+        remote.press(.select)
+        XCTAssertTrue(row("queue").waitForExistence(timeout: 5), "the panel should open again")
+        for _ in 0..<3 { press(.down, wait: 1) }
+        XCTAssertTrue(focused.contains("Queue"), "▼▼▼ from Close menu should reach Queue, has '\(focused)'")
+        press(.select, wait: 3)
+        report("q11 queue open")
+        let queueList = app.descendants(matching: .any).matching(identifier: "queue.list").firstMatch
+        XCTAssertTrue(queueList.waitForExistence(timeout: 5), "a click on Queue should open the queue")
+        XCTAssertFalse(row("queue").exists, "... and close the panel")
+        XCTAssertTrue(focused.contains("Now playing"), "the queue should open on the playing entry, has '\(focused)'")
+        press(.menu, wait: 2)
+        report("q12 queue closed")
+        XCTAssertFalse(queueList.exists, "Back should close the queue")
+        XCTAssertEqual(app.state, .runningForeground, "... back to the player, not out of the app")
     }
 }

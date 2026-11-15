@@ -78,6 +78,11 @@ struct ContentView: View {
                     Label("Music videos", systemImage: "play.rectangle")
                 }
                 NavigationLink {
+                    QueueView()
+                } label: {
+                    Label("Queue", systemImage: "list.number")
+                }
+                NavigationLink {
                     SettingsView()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
@@ -318,6 +323,8 @@ struct SidebarProgress: View {
 /// Puts the Now Playing sidebar on the right of a menu screen while something is loaded.
 struct WithNowPlaying: ViewModifier {
     @EnvironmentObject var engine: PlayerEngine
+    /// false: no sidebar (the queue over the player: the player is right behind it).
+    var shown = true
     /// The card is not focusable for the first moments, so tvOS puts the initial focus on the list
     /// (same pattern as Settings, proven on the TV); then ◀ reaches the card.
     @State private var cardReady = false
@@ -325,7 +332,7 @@ struct WithNowPlaying: ViewModifier {
     func body(content: Content) -> some View {
         HStack(alignment: .top, spacing: 50) {
             content
-            if engine.current != nil {
+            if shown, engine.current != nil {
                 NowPlayingSidebar(enabled: cardReady).padding(.trailing, 40)
             }
         }
@@ -337,7 +344,7 @@ struct WithNowPlaying: ViewModifier {
 }
 
 extension View {
-    func withNowPlaying() -> some View { modifier(WithNowPlaying()) }
+    func withNowPlaying(shown: Bool = true) -> some View { modifier(WithNowPlaying(shown: shown)) }
 }
 
 /// Folders → library roots (as configured on the server).

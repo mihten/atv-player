@@ -17,6 +17,9 @@ struct NowPlayingView: View {
     /// Lyrics instead of cover / video; remembered on this device, switched by holding the remote's centre button.
     @AppStorage("lyricsMode") private var lyricsMode = false
     @State private var panel = false
+    /// The full queue over the player (quick menu → Queue); a jump closes it again.
+    @State private var showQueue = false
+    @EnvironmentObject var artwork: ArtworkStore
     /// When the current press of the centre button began (nil = not pressed).
     @State private var pressStart: Date?
 
@@ -25,12 +28,24 @@ struct NowPlayingView: View {
             player
                 .disabled(panel)
             if panel {
-                QuickPanel { closePanel() }
+                QuickPanel(close: { closePanel() }, openQueue: {
+                    closePanel()
+                    showQueue = true
+                })
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
         }
         .animation(.easeOut(duration: 0.2), value: panel)
         .overlay(alignment: .top) { EngineNotice() }
+        .fullScreenCover(isPresented: $showQueue) {
+            NavigationStack {
+                QueueView(onJump: { showQueue = false })
+            }
+            .environmentObject(connection)
+            .environmentObject(engine)
+            .environmentObject(artwork)
+            .environment(\.appTheme, theme)
+        }
     }
 
     private var player: some View {
