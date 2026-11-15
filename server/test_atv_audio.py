@@ -176,7 +176,7 @@ async def main(tmp):
             tv_state, ph_state = await state(http, "tv"), await state(http, "phone")
             check(tv_state["sink"] == {"connected": False, "name": None, "output": None, "route": False, "audio": None,
                                        "sinks": []}
-                  and ph_state["sink"] == tv_state["sink"],
+                  and ph_state["sink"] == dict(tv_state["sink"], away=False),  # 0.30.2: + away (here: at home)
                   "state.sink: not connected on tv, the same on the phone (0.30.1: the iPhone can use it too)")
 
             # ---- the TV's config/clock messages before any sink: remembered for the replay
@@ -213,7 +213,7 @@ async def main(tmp):
             check(nosinks((last_state(tv_msgs) or {}).get("sink")) == want, "sink status reaches the TV player's state")
             check(nosinks((last_state(rm_msgs) or {}).get("sink")) == want, "... and the TV web remote's state")
             ph_sink = (last_state(ph_msgs) or {}).get("sink")
-            check(nosinks(ph_sink) == dict(want, route=False),
+            check(nosinks(ph_sink) == dict(want, route=False, away=False),
                   f"... and the phone's: the same sink, route false (the phone did not choose it) ({ph_sink})")
             await sink.send_json({"type": "sink", "name": "atv-audio", "output": dict(out, ready=False)})
             check((last_state(await drain(tv)) or {}).get("sink", {}).get("output", {}).get("ready") is False,
@@ -331,7 +331,7 @@ async def main(tmp):
             check(st["sink"]["name"] != "old-sink" and not of(await drain(tv), "sink_ready"),
                   "... the replaced sink's late status / ready are ignored")
             ph = await state(http, "phone")
-            check(ph["sink"] == dict(st["sink"], route=False), "session=phone sink went to the tv session (the phone only mirrors it)")
+            check(ph["sink"] == dict(st["sink"], route=False, away=False), "session=phone sink went to the tv session (the phone only mirrors it)")
             await tv.send_json({"type": "status", "item": ids["S2"], "playing": True, "position": 1.0, "duration": 9})
             await asyncio.sleep(0.2)
             await sink2.close()

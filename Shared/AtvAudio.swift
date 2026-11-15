@@ -25,8 +25,11 @@ enum AtvAudio {
     static var selected: Bool { defaults.string(forKey: outputKey) == sinkOutput }
 
     /// The sink really plays this device's sound: chosen, with the media server (no sink without it) and on the home
-    /// network (away from home the iPhone plays its own sound: the headphones are at home).
-    static var inUse: Bool { selected && !Config.localMode && !Config.isRemote }
+    /// network (away from home the iPhone plays its own sound: the headphones are at home). Away = the app uses the
+    /// internet address, or the server says the connection comes from outside the home network (0.30.2).
+    static var inUse: Bool { selected && !Config.localMode && !isAway }
+
+    static var isAway: Bool { Config.isRemote || Config.serverSaysAway }
 
     static var lipSyncMs: Int {
         guard defaults.object(forKey: lipSyncKey) != nil else { return defaultLipSync }

@@ -12,6 +12,9 @@ enum Config {
     nonisolated(unsafe) static var localMode = false
     /// iPhone "Offline (downloads)" library: also localMode (device queue, no server at all), items from the downloads.
     nonisolated(unsafe) static var offlineMode = false
+    /// The media server sees this iPhone's connection coming from outside the home network (server 0.30.2+,
+    /// state.sink.away): ATV-Server is not used then, whatever address the app thinks it uses.
+    nonisolated(unsafe) static var serverSaysAway = false
     /// Away from home with "audio only": music videos are streamed as audio and shown like songs.
     static var streamAudioOnly: Bool { isRemote && RemoteSettings.audioOnly }
 
@@ -207,6 +210,8 @@ struct SinkState: Codable, Equatable {
     var route: Bool? = nil
     /// The sink's audio_info; the app reads only the codecs the headphones offer (server 0.28.3+).
     var audio: SinkAudio? = nil
+    /// iPhone: the server sees it outside the home network and refuses its headphones route (server 0.30.2+).
+    var away: Bool? = nil
 
     var isConnected: Bool { connected == true }
     /// Connected and its output device present and usable.

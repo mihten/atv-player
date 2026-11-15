@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import datetime
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -62,7 +63,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.30.1"
+VERSION = "0.30.2"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -1133,8 +1134,75 @@ def box_sink_state():
 
 
 def phone_sink_state():
-    """The iPhone's view of the sink: like the Apple TV's (connected, output, audio), route = its own last choice."""
-    return dict(sink_state("tv"), route=bool((SINK_RELAY.get("phone", {}).get("route") or {}).get("sink")))
+    """The iPhone's view of the sink: like the Apple TV's (connected, output, audio), route = its own last choice,
+    away = it connected from outside the home network (0.30.2: then the headphones are not its output)."""
+    return dict(sink_state("tv"), route=bool((SINK_RELAY.get("phone", {}).get("route") or {}).get("sink")),
+                away=phone_away())
+
+
+# ---------------------------------------------------------------- the iPhone away from home (0.30.2)
+# The headphones are at home: an iPhone that connects from outside the home network must never play on them (no
+# accidental playback at home while away). Home = ATV_HOME_NETS minus ATV_AWAY_HOSTS (e.g. a VPN router that NATs its
+# clients to one LAN address). Behind a reverse proxy (ATV_PROXIES) the client is the last X-Forwarded-For entry; a
+# proxy that sends none counts as away. X-Forwarded-For from anyone else is ignored.
+def _nets(text):
+    out = []
+    for part in re.split(r"[,\s]+", text or ""):
+        if part:
+            try:
+                out.append(ipaddress.ip_network(part, strict=False))
+            except ValueError:
+                log.warning("ignoring bad network %r", part)
+    return out
+
+
+HOME_NETS = _nets(os.environ.get("ATV_HOME_NETS", "10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 ::1/128 fc00::/7"))
+AWAY_HOSTS = _nets(os.environ.get("ATV_AWAY_HOSTS", ""))
+PROXIES = _nets(os.environ.get("ATV_PROXIES", ""))
+PHONE_FROM = {}  # iPhone player socket -> (client address, away); the newest connection last
+
+
+def _addr(text):
+    try:
+        a = ipaddress.ip_address(str(text or "").strip().strip("[]"))
+    except ValueError:
+        return None
+    return (a.ipv4_mapped or a) if a.version == 6 else a
+
+
+def _within(addr, nets):
+    return addr is not None and any(addr.version == n.version and addr in n for n in nets)
+
+
+def client_addr(request):
+    """The client's address: the peer, or behind a trusted proxy the address it put last in X-Forwarded-For (None: a
+    proxy that sent none)."""
+    peer = request.remote
+    if _within(_addr(peer), PROXIES):
+        last = (request.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        return last or None
+    return peer
+
+
+def is_home(addr):
+    a = _addr(addr)
+    return _within(a, HOME_NETS) and not _within(a, AWAY_HOSTS)
+
+
+def phone_away():
+    """The newest connected iPhone player came from outside the home network."""
+    return next(reversed(PHONE_FROM.values()))[1] if PHONE_FROM else False
+
+
+async def phone_away_route_off(addr):
+    """An iPhone connected from outside the home network: its headphones route goes off at once (an older socket of
+    the same iPhone from home may still be open and hold them)."""
+    before = sink_owner()
+    if route_on("phone"):
+        log.info("sink: the iPhone connected from outside the home network (%s): its headphones route is off", addr)
+    SINK_RELAY.setdefault("phone", {})["route"] = {"type": "route", "sink": False}
+    drop_claim("phone")
+    await sink_follow_owner(before)
 
 
 def mtv_sink_state():
@@ -2428,6 +2496,10 @@ async def on_message(s, data, role, ws=None):
         s.want_play = False
         await box_notice(s, str(data.get("text") or "")[:200])
     elif role == "player" and kind in RELAY_TYPES and s.kind in ("tv", "phone"):  # the Apple TV, the iPhone (0.30.1)
+        if s.kind == "phone" and kind == "route" and data.get("sink") and PHONE_FROM.get(ws, (None, False))[1]:
+            log.info("sink: refused the iPhone's route: it is away from home (%s)", PHONE_FROM[ws][0])
+            data = {"type": "route", "sink": False}  # away from home: never the headphones (its volume then never
+            # reaches them either: the volume branch above needs its route on)
         before = sink_owner()
         await relay_to_sink(s, data)
         if kind == "route":
@@ -2502,7 +2574,15 @@ async def ws_handler(request):
         kind = q.get("session") if q.get("session") in KINDS else "tv"
         REMOTES[ws] = kind
     s = SESSIONS[kind]
-    log.info("%s (%s) connected from %s", role, kind, request.remote)
+    addr = client_addr(request)
+    away = False
+    if role == "player" and kind == "phone":
+        away = not is_home(addr)
+        PHONE_FROM[ws] = (addr, away)
+    log.info("%s (%s) connected from %s%s%s", role, kind, request.remote,
+             "" if addr == request.remote else f" for {addr or 'an unknown client'}", " (away from home)" if away else "")
+    if away:
+        await phone_away_route_off(addr)
     if role == "sink":
         await sink_connected(s, ws, sid)
     else:
@@ -2564,6 +2644,7 @@ async def ws_handler(request):
                 return ws
             PLAYERS.pop(ws, None)
             MTV_OUT.pop(ws, None)
+            PHONE_FROM.pop(ws, None)
             if not s.players:
                 s.playing = False
                 s.want_play = False

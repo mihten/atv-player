@@ -17,3 +17,10 @@ ATV_ROOT_NAMES='{"music": "Music", "videos": "Music videos"}'
 # the request file can start the job. Leave unset when the folders are the real library.
 #ATV_SYNC_SPOOL='/var/lib/atv-media/sync'
 #ATV_SYNC_STATUS='/run/library-sync/status.json'
+# Optional (0.30.2): the iPhone never plays on the server's headphones when it connects from outside the home network.
+# Home = ATV_HOME_NETS (default: all private ranges) minus ATV_AWAY_HOSTS (e.g. a VPN router that NATs its clients to
+# one LAN address: those clients count as away). Behind a reverse proxy list its addresses in ATV_PROXIES: the client
+# is then the last X-Forwarded-For entry (a proxy request without one counts as away).
+#ATV_HOME_NETS='10.0.0.0/24'
+#ATV_AWAY_HOSTS='10.0.0.11'
+#ATV_PROXIES='10.0.0.2 10.0.0.3'

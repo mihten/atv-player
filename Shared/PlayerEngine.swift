@@ -1765,7 +1765,13 @@ extension PlayerEngine {
     /// state.sink changed (or the first state on a new socket): config again when the sink (re)connects; its loss or
     /// its output's pauses playback with the notice (VLC stays muted).
     func sinkChanged(from old: SinkState?, to new: SinkState?) {
-        if new?.isConnected == true, old?.isConnected != true { sendSinkConfig() }
+        let away = new?.away == true
+        if away != Config.serverSaysAway {  // the server's view of where this iPhone is (0.30.2): output again
+            Config.serverSaysAway = away
+            log("atv-audio: the server sees this device \(away ? "away from home" : "at home")")
+            sendSinkConfig()
+            updateSoundProfile(away ? "away from home" : "at home")
+        } else if new?.isConnected == true, old?.isConnected != true { sendSinkConfig() }
         guard sinkActive else { return }
         if old?.isUsable == true, new?.isUsable != true {
             log("atv-audio: \(new?.isConnected == true ? "output gone" : "disconnected"); VLC stays muted; \(AtvAudio.statusText(new))")

@@ -422,6 +422,7 @@ struct PhoneSoundSettingsView: View {
     /// ATV-Server can be chosen while it is connected; a stored choice stays (and is shown) without it.
     @ViewBuilder private var outputSection: some View {
         let chosen = soundOutput == AtvAudio.sinkOutput
+        let away = locator.isRemote || sink?.away == true
         Section {
             Picker("Sound output", selection: $soundOutput) {
                 Text("iPhone").tag(AtvAudio.tvOutput)
@@ -429,11 +430,11 @@ struct PhoneSoundSettingsView: View {
                     Text(sink?.isConnected == true ? "ATV-Server" : "ATV-Server (not connected)").tag(AtvAudio.sinkOutput)
                 }
             }
-            .disabled(locator.isRemote)
-            Text(locator.isRemote ? "Away from home the iPhone plays the sound" : AtvAudio.statusText(sink))
+            .disabled(away)
+            Text(away ? "Away from home the iPhone plays the sound" : AtvAudio.statusText(sink))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            if chosen, !locator.isRemote {
+            if chosen, !away {
                 Picker("Lip sync", selection: Binding(get: { AtvAudio.clampLipSync(lipSync) }, set: { lipSync = $0 })) {
                     ForEach(AtvAudio.lipSyncValues, id: \.self) { Text(AtvAudio.lipSyncLabel($0)).tag($0) }
                 }
