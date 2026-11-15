@@ -278,12 +278,13 @@ struct AboutSettingsView: View {
                          ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
                     info("Web remote", "\(Config.remoteAddress) on a phone or PC")
                     info("Queues", "The Apple TV and the iPhone each have their own")
+                    info("Queue", "Main menu or quick menu: click an entry to play it")
                 }
             }
             Section("Siri Remote in the player") {
                 info("▼  ▲", "Next / previous")
                 info("◀  ▶", "Jump back / forward (Settings → Playback)")
-                info("Click", "close menu, ♥ love, volume, shuffle, lyrics language, audio output, sound, video version")
+                info("Click", "Quick menu: ♥ love, volume, shuffle, queue, lyrics language, audio output, sound, video version")
                 info("Hold", "Lyrics on / off")
                 info("⏯", "Pause / resume, also in the menus")
             }
