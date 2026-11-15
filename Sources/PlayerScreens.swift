@@ -53,8 +53,8 @@ struct AuroraPlayer: View {
                         if let artist = item.artist, !artist.isEmpty {
                             Text(artist).font(theme.font(40, .semibold)).opacity(0.82).lineLimit(1)
                         }
-                        if let album = item.album, !album.isEmpty {
-                            Text(album).font(theme.font(30)).opacity(0.55).lineLimit(1)
+                        if let line = item.albumLine {
+                            Text(line).font(theme.font(30)).opacity(0.55).lineLimit(1)
                         }
                         Facts(item: item, theme: theme).padding(.top, 6)
                     }
@@ -130,7 +130,7 @@ struct NoirPlayer: View {
                         .lineLimit(2)
                         .minimumScaleFactor(0.42)
                         .frame(maxWidth: 1180, alignment: .leading)
-                    Text(([item.album].compactMap { $0 } + item.facts).joined(separator: "   /   "))
+                    Text(([item.album, item.yearText].compactMap { $0 } + item.facts).joined(separator: "   /   "))
                         .font(.system(size: 24, weight: .medium, design: .monospaced))
                         .opacity(0.5)
                         .lineLimit(1)
@@ -256,7 +256,7 @@ struct StatusEyebrow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            EqualizerBars(animating: engine.isPlaying && motion, color: accent, width: 6, height: 28)
+            EqualizerBars(animating: engine.isPlaying, color: accent, width: 6, height: 28)
             Text(engine.isPlaying ? "NOW PLAYING" : "PAUSED")
                 .font(theme.eyebrow(24))
                 .tracking(5)
@@ -277,18 +277,16 @@ struct Facts: View {
     }
 }
 
-/// Video + audio codec badges ("AV1" "OPUS") for the info bar over a music video, then the version chip
-/// ("▶ 2 videos" on a song, "Live at Wembley 1986" on a video with other versions).
-struct CodecBadges: View {
+/// The server's badges and the version chip as one row of chips, for the middle of the progress row of the info bar over
+/// a music video (between the elapsed and the remaining time).
+struct BadgeChips: View {
     let item: MediaItem
     let theme: AppTheme
     var size: CGFloat = 18
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(item.codecBadges + [item.versionBadge].compactMap { $0 }, id: \.self) {
-                FactChip(text: $0, theme: theme, size: size)
-            }
+            ForEach(item.facts, id: \.self) { FactChip(text: $0, theme: theme, size: size) }
         }
         .fixedSize()
     }
@@ -300,6 +298,8 @@ struct PlayerProgress: View {
     @ObservedObject var clock: PlaybackClock
     let accent: Color
     let style: Style
+    /// Chips drawn exactly in the middle between the elapsed and the remaining time (the info bar over a music video).
+    var chipsFor: MediaItem? = nil
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -322,6 +322,9 @@ struct PlayerProgress: View {
                 .font(.system(size: 24, weight: .medium, design: theme.fontDesign))
                 .monospacedDigit()
                 .opacity(0.65)
+                .overlay {
+                    if let chipsFor { BadgeChips(item: chipsFor, theme: theme, size: 18) }
+                }
             }
         }
         .animation(.linear(duration: 0.5), value: clock.position)
@@ -418,9 +421,9 @@ struct ThemedInfoBar: View {
                         if let artist = item.artist {
                             Text(artist).font(theme.font(30)).opacity(0.7).lineLimit(1)
                         }
-                        CodecBadges(item: item, theme: theme)
                     }
-                    PlayerProgress(clock: engine.clock, accent: accent, style: theme == .vinyl ? .needle : .glow)
+                    PlayerProgress(clock: engine.clock, accent: accent, style: theme == .vinyl ? .needle : .glow,
+                                   chipsFor: item)
                     HStack(spacing: 26) {
                         if let next = connection.state?.upcoming?.first {
                             Text("Next: \(next.title)").lineLimit(1)

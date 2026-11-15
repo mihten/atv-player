@@ -164,12 +164,7 @@ final class LocalQueue {
             shuffle = on
             changed()
         case "repeat":
-            var mode = msg["mode"] as? String ?? ""
-            if !["off", "all", "one"].contains(mode) {
-                mode = ["off": "all", "all": "one", "one": "off"][repeatMode] ?? "all"
-            }
-            repeatMode = mode
-            changed()
+            break  // always repeat all (0.30.0)
         case "prefer_videos":
             let on = msg["on"].map { Self.bool($0) } ?? !preferVideos
             if on != preferVideos {
@@ -286,18 +281,12 @@ final class LocalQueue {
 
     private func advance(user: Bool) {
         guard !queue.isEmpty else { return }
-        if repeatMode == "one" && !user {
-            // same item again
-        } else if index + 1 < queue.count {
+        if index + 1 < queue.count {
             index += 1
-        } else if repeatMode == "all" {
-            if shuffle { queue = smartShuffle(queue) }  // new lap: the items just heard go to the back
+        } else {  // always repeat all: a new lap
+            if shuffle { queue = smartShuffle(queue) }  // the items just heard go to the back
             index = 0
             if preferVideos || !swapped.isEmpty { applyPrefer(whole: true) }
-        } else {
-            index = queue.count - 1
-            stopPlayback()
-            return
         }
         startCurrent()
     }
@@ -526,7 +515,7 @@ final class LocalQueue {
         original = saved.original
         index = saved.index
         shuffle = saved.shuffle
-        repeatMode = ["off", "all", "one"].contains(saved.repeatMode) ? saved.repeatMode : "all"
+        repeatMode = "all"  // a queue saved with "off" / "one" by an older app plays endlessly too
         position = saved.position
         preferVideos = saved.preferVideos ?? false
         swapped = [:]
@@ -605,7 +594,7 @@ extension LocalLibrary: LocalItemSource {
 
     func collectionIDs(_ msg: [String: Any]) -> [Int]? {
         let name = msg["collection"] as? String ?? "all"
-        guard name != "playlist" else { return nil }  // playlists need the server
+        guard name != "playlist", name != "mix" else { return nil }  // playlists and mixes need the server
         let recursive = (msg["recursive"] as? Bool) != false
         return collection(name, root: msg["root"] as? String, folder: msg["folder"] as? String,
                           recursive: recursive).map(\.id)

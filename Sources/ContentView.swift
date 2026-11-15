@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject var artwork: ArtworkStore
     @Environment(\.appTheme) private var theme
     @State private var showPlayer = false
+    @State private var showMixSettings = false  // a mix with nothing in it opens Settings → Mixes
     @State private var demoPush = false
     @State private var autoLists: [AutoList] = []
     @State private var libraryVersion = LocalLibrary.shared.version
@@ -94,17 +95,22 @@ struct ContentView: View {
                 }
             }
             Section {
-                Button { shuffle("all") } label: {
-                    Label("Shuffle everything", systemImage: "shuffle")
-                }
-                Button { shuffle("music") } label: {
-                    Label("Shuffle music", systemImage: "music.note")
+                if !locator.localMode, let mixes = connection.state?.mixes, mixes.count >= 2 {
+                    ForEach(0..<2, id: \.self) { index in
+                        let mix = mixes[index]
+                        Button {
+                            if mix.isEmpty { showMixSettings = true } else { connection.startMix(index + 1) }
+                        } label: {
+                            Label("\(mix.name ?? "Mix \(index + 1)") · \(mix.detail)", systemImage: "shuffle")
+                        }
+                    }
                 }
                 Button { shuffle("videos") } label: {
                     Label("Shuffle music videos", systemImage: "film")
                 }
             }
         }
+        .navigationDestination(isPresented: $showMixSettings) { SettingsView(start: .mixes) }
         .withNowPlaying()
         .navigationTitle("ATV Player")
         .task(id: "\(locator.localMode)|\(connection.autoVersion)|\(libraryVersion)") { autoLists = await AutoList.load() }
@@ -179,7 +185,7 @@ struct NowPlayingSidebar: View {
                     Text("Now playing").font(.system(size: 24, weight: .semibold)).opacity(0.6)
                 } else {
                     HStack(spacing: 12) {
-                        EqualizerBars(animating: engine.isPlaying && motion, color: theme.accent(artwork.palette),
+                        EqualizerBars(animating: engine.isPlaying, color: theme.accent(artwork.palette),
                                       width: 4, height: 18)
                         Text(engine.isPlaying ? "NOW PLAYING" : "PAUSED")
                             .font(theme.eyebrow(20)).tracking(4)

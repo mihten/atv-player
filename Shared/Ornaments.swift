@@ -32,20 +32,32 @@ extension MediaItem {
     /// nil when the server has no art for this item (saves a request that would 404).
     var artURLIfAny: URL? { art == false ? nil : artURL }
     var symbol: String { isVideo ? "film" : "music.note" }
-    /// "FLAC · 2021" style facts for the player. Codecs as in `codecBadges`: a video shows video + audio
-    /// codec ("AV1", "FLAC"), a song its audio codec once.
+    /// The chips for the player: the server's badges, then the version chip ("▶ 2 videos" / "Live at Wembley 1986").
     var facts: [String] {
-        var out = codecBadges
-        if lossless == true { out.append("Lossless") }
-        if let year, year.count >= 4 { out.append(String(year.prefix(4))) }
-        if let versionBadge { out.append(versionBadge) }  // "▶ 2 videos" / "Live at Wembley 1986"
+        var out = shownBadges
+        if let versionBadge { out.append(versionBadge) }
         return out
+    }
+
+    /// "Album · 2021" for the line under the artist (nil when there is neither).
+    var albumLine: String? {
+        let parts = [album, yearText].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// "2021" from the year tag (the year is no badge: it goes with the album line).
+    var yearText: String? {
+        guard let year, year.count >= 4 else { return nil }
+        return String(year.prefix(4))
     }
 }
 
 /// "Now playing" indicator: bars that dance while playing and rest when paused.
 struct EqualizerBars: View {
+    /// Playing: the bars move. They follow the system's Reduce Motion, not "Theme effects" (that one is only the Aurora
+    /// background and the Vinyl record, so it can be grayed out on the other looks).
     var animating: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var color: Color = .accentColor
     var bars = 4
     var width: CGFloat = 4
@@ -53,6 +65,7 @@ struct EqualizerBars: View {
     var spacing: CGFloat = 3
 
     var body: some View {
+        let animating = animating && !reduceMotion
         TimelineView(.animation(minimumInterval: 1.0 / 12, paused: !animating)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(alignment: .bottom, spacing: spacing) {

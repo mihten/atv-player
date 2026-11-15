@@ -189,6 +189,7 @@ struct LibraryTab: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var locator: ServerLocator
     @State private var query = ""
+    @State private var showMixes = false
 
     @Environment(\.appTheme) private var theme
 
@@ -211,6 +212,7 @@ struct LibraryTab: View {
             .demoPush("foryou")
             .withMiniPlayer()
             .task { await library.load() }
+            .sheet(isPresented: $showMixes) { PhoneMixesSheet { showMixes = false } }
         }
     }
 
@@ -229,8 +231,16 @@ struct LibraryTab: View {
                         }
                     }
                     Section {
-                        Button { shuffle("all") } label: { Label("Shuffle everything", systemImage: "shuffle") }
-                        Button { shuffle("music") } label: { Label("Shuffle music", systemImage: "music.note") }
+                        if !locator.localMode, let mixes = connection.state?.mixes, mixes.count >= 2 {
+                            ForEach(0..<2, id: \.self) { index in
+                                let mix = mixes[index]
+                                Button {
+                                    if mix.isEmpty { showMixes = true } else { connection.startMix(index + 1) }
+                                } label: {
+                                    Label("\(mix.name ?? "Mix \(index + 1)") · \(mix.detail)", systemImage: "shuffle")
+                                }
+                            }
+                        }
                         Button { shuffle("videos") } label: { Label("Shuffle music videos", systemImage: "film") }
                     }
                 } else {

@@ -6,7 +6,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
     case aurora, noir, vinyl, classic
 
     static let key = "appTheme"
-    /// Moving backgrounds (Aurora) and spinning records (Vinyl). Off = still pictures.
+    /// "Theme effects": moving backgrounds (Aurora) and spinning records (Vinyl). Off = still pictures.
     static let motionKey = "themeMotion"
 
     var id: String { rawValue }
@@ -45,6 +45,10 @@ enum AppTheme: String, CaseIterable, Identifiable {
     }
 
     var isClassic: Bool { self == .classic }
+
+    /// The look has effects the "Theme effects" setting switches: a moving background (Aurora), a spinning record (Vinyl).
+    /// Noir and Classic have none, so the setting is grayed out there.
+    var hasEffects: Bool { self == .aurora || self == .vinyl }
 
     var fontDesign: Font.Design {
         switch self {

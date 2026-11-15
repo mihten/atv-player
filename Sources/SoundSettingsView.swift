@@ -13,13 +13,13 @@ struct SoundSettingsView: View {
     @AppStorage(AtvAudio.lipSyncKey) private var lipSync = AtvAudio.defaultLipSync
     @AppStorage(SoundProfiles.activeNameKey) private var profileName = SoundProfiles.defaultName
 
-    /// atv-audio can only be chosen while a sink is connected; a stored choice stays (and is shown) without one.
+    /// ATV-Server can only be chosen while a sink is connected; a stored choice stays (and is shown) without one.
     private var outputOptions: [(label: String, value: String)] {
         if connection.state?.sink?.isConnected == true {
-            return [("Apple TV", AtvAudio.tvOutput), ("atv-audio", AtvAudio.sinkOutput)]
+            return [("Apple TV", AtvAudio.tvOutput), ("ATV-Server", AtvAudio.sinkOutput)]
         }
         var options: [(label: String, value: String)] = [("Apple TV", AtvAudio.tvOutput)]
-        if soundOutput == AtvAudio.sinkOutput { options.append(("atv-audio (not connected)", AtvAudio.sinkOutput)) }
+        if soundOutput == AtvAudio.sinkOutput { options.append(("ATV-Server (not connected)", AtvAudio.sinkOutput)) }
         return options
     }
 
@@ -35,39 +35,9 @@ struct SoundSettingsView: View {
     private var equalizerOptions: [(label: String, value: String)] { SoundSettings.presetChoices }
 
     var body: some View {
+        // One list, no headings (a heading over a single setting only wasted screen space): Sound output first, then
+        // what the sound goes through. The explanations are in Settings → About → Help.
         SettingsPage {
-            Section {
-                ChoiceRow("Equalizer", selection: $preset, options: equalizerOptions)
-                Button {
-                    nav.push(.page(.equalizer))
-                } label: {
-                    HStack(spacing: 20) {
-                        Text("Edit custom equalizer")
-                        Spacer()
-                        Text(preset == "custom" ? "In use" : "").foregroundStyle(.secondary)
-                        Image(systemName: "chevron.right").font(.system(size: 24, weight: .semibold)).foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("Equalizer · \(profileName) profile")
-            }
-            Section {
-                ChoiceRow("Boost", selection: $boost,
-                          options: SoundSettings.boostRange.map { (SoundSettings.dbLabel(Float($0)), $0) })
-            } header: {
-                Text("Gain")
-            } footer: {
-                Text(SoundSettings.gainNote(loudnessGain: engine.levelGain))
-                    .font(.system(size: 22)).foregroundStyle(.secondary)
-            }
-            Section {
-                Toggle("Loudness", isOn: loudnessOn)
-            } header: {
-                Text("Loudness")
-            } footer: {
-                Text(SoundSettings.loudnessNote)
-                    .font(.system(size: 22)).foregroundStyle(.secondary)
-            }
             Section {
                 ChoiceRow("Sound output", selection: $soundOutput, options: outputOptions)
                 Text(AtvAudio.statusText(connection.state?.sink))
@@ -83,13 +53,23 @@ struct SoundSettingsView: View {
                                   options: codecs.map { ($0.label ?? $0.codec ?? "", $0.codec ?? "") })
                     }
                 }
-            } header: {
-                Text("Sound output")
-            } footer: {
-                Text((soundOutput == AtvAudio.sinkOutput
-                     ? "atv-audio plays the sound, the Apple TV shows the picture and stays silent (also while atv-audio is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early. Codec: the switch pauses playback for a few seconds. The TV Player can use the same headphones: the last one to press Play gets them."
-                     : "atv-audio: a separate box plays the sound (e.g. aptX headphones), the Apple TV shows the picture. It can be chosen while it is connected.")
-                     + " Equalizer, Boost and Loudness are kept separately for Apple TV and atv-audio; choosing Apple TV turns the Equalizer and Boost off, choosing atv-audio turns the Equalizer on.")
+                ChoiceRow("Equalizer (\(profileName) profile)", selection: $preset, options: equalizerOptions)
+                Button {
+                    nav.push(.page(.equalizer))
+                } label: {
+                    HStack(spacing: 20) {
+                        Text("Edit custom equalizer")
+                        Spacer()
+                        Text(preset == "custom" ? "In use" : "").foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.system(size: 24, weight: .semibold)).foregroundStyle(.secondary)
+                    }
+                }
+                ChoiceRow("Boost", selection: $boost,
+                          options: SoundSettings.boostRange.map { (SoundSettings.dbLabel(Float($0)), $0) })
+                Text(SoundSettings.gainNote(loudnessGain: engine.levelGain))
+                    .font(.system(size: 22)).foregroundStyle(.secondary)
+                Toggle("Loudness", isOn: loudnessOn)
+                Text(SoundSettings.loudnessNote)
                     .font(.system(size: 22)).foregroundStyle(.secondary)
             }
         }

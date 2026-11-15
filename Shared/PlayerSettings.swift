@@ -20,6 +20,9 @@ enum PlayerSettings {
     static let seekBackKey = "seekBack"
     static let seekForwardKey = "seekForward"
     static let matchFrameRateKey = "matchFrameRate"  // Apple TV only
+    /// Apple TV: songs in its queue play as one of their music videos (Settings -> Playback; default on). The server keeps
+    /// the flag per queue, the app sends it on connect and on a change (ServerConnection.syncPreferVideos).
+    static let preferVideosKey = "preferVideosTV"
 
     static let defaultColor = 0xFFFFFF
     static let defaultOutline = 4
@@ -71,6 +74,7 @@ enum PlayerSettings {
     static var seekForward: Double { Double(defaults.object(forKey: seekForwardKey) as? Int ?? 10) }
     /// Apple TV: ask the TV for the music video's frame rate (off: each switch blanks the TV for a few seconds).
     static var matchFrameRate: Bool { defaults.object(forKey: matchFrameRateKey) as? Bool ?? false }
+    static var preferVideos: Bool { defaults.object(forKey: preferVideosKey) as? Bool ?? true }
 
     /// libVLC options for the subtitle renderer (freetype). Empty = VLC defaults.
     static func vlcOptions() -> [String] {

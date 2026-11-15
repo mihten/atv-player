@@ -82,7 +82,8 @@ struct ThemeSettingsView: View {
         SettingsPage {
             Section {
                 ChoiceRow("Look", selection: $themeRaw, options: AppTheme.allCases.map { ($0.name, $0.rawValue) })
-                Toggle("Moving background and spinning record", isOn: $motion)
+                Toggle("Theme effects", isOn: $motion)
+                    .disabled(!(AppTheme(rawValue: themeRaw) ?? .aurora).hasEffects)  // Aurora and Vinyl only
                 ChoiceRow("Text size in music & folder lists", selection: $listTextSize,
                           options: ListTextSize.allCases.map { ($0.label, $0.rawValue) })
             }
@@ -195,6 +196,8 @@ struct ServerSettingsView: View {
 /// Settings → Playback.
 struct PlaybackSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var connection: ServerConnection
+    @AppStorage(PlayerSettings.preferVideosKey) private var preferVideos = true
     @AppStorage(PlayerSettings.keepMusicKey) private var keepMusic = true
     @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
@@ -210,13 +213,20 @@ struct PlaybackSettingsView: View {
                 ChoiceRow("Right button jumps forward", selection: $seekForward,
                           options: [10, 15, 30, 60].map { ("\($0) seconds", $0) })
                 Toggle("Fast seek", isOn: $fastSeek)
+                Toggle("Prefer videos", isOn: $preferVideos)
             }
             Section {
                 Toggle("Match frame rate", isOn: $matchFrameRate)
                     .accessibilityIdentifier("settings.matchFrameRate")
-            } footer: {
-                Text("Also turn on Apple TV Settings › Video and Audio › Match Content › Match Frame Rate")
+                // the reminder only makes sense while the setting is on
+                if matchFrameRate {
+                    Text("Also turn on Apple TV Settings › Video and Audio › Match Content › Match Frame Rate")
+                        .font(.system(size: 22)).foregroundStyle(.secondary)
+                }
             }
+        }
+        .onChange(of: preferVideos) { _, on in
+            connection.command("prefer_videos", ["on": on])  // the server keeps the flag per queue (also synced on connect)
         }
         .onChange(of: matchFrameRate) { _, on in
             engine.diag("settings: match frame rate -> \(on ? "on" : "off")")
@@ -260,9 +270,6 @@ struct LyricsSettingsView: View {
                     ("English", "eng"),
                     ("Croatian", "hrv"),
                 ])
-            } footer: {
-                Text("Second language: a second line at the top of a music video that has lyrics in that language (timed lyrics only). The main language stays at the bottom.")
-                    .font(.system(size: 22)).foregroundStyle(.secondary)
             }
             Section {
                 ChoiceRow("Text size", selection: $size, options: [

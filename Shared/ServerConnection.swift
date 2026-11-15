@@ -194,6 +194,9 @@ final class ServerConnection: ObservableObject {
             if let newState = message.state {
                 let oldSink = state?.sink
                 state = newState
+                #if os(tvOS)
+                syncPreferVideos(newState)
+                #endif
                 if let item = newState.current { engine?.refreshLinks(item) }
                 #if os(iOS)
                 engine?.syncSystemControls()
@@ -233,6 +236,19 @@ final class ServerConnection: ObservableObject {
             break
         }
     }
+
+    #if os(tvOS)
+    /// Apple TV: Settings -> Playback -> Prefer videos is the owner of the flag (the web remote has no switch any more):
+    /// when the server's flag differs, send ours, at most once every 3 s (the echo comes with the next state).
+    private func syncPreferVideos(_ state: SessionState) {
+        guard !Config.localMode, let server = state.preferVideos else { return }
+        let wanted = PlayerSettings.preferVideos
+        guard server != wanted, Date().timeIntervalSince(preferSentAt) > 3 else { return }
+        preferSentAt = Date()
+        command("prefer_videos", ["on": wanted])
+    }
+    private var preferSentAt = Date.distantPast
+    #endif
 
     func send(_ object: [String: Any]) {
         if let local {

@@ -38,13 +38,13 @@ enum AtvAudio {
         ms > 0 ? "+\(ms) ms" : ms < 0 ? "\u{2212}\(-ms) ms" : "0 ms"
     }
 
-    /// "atv-audio: not connected" / "atv-audio: connected · MOMENTUM 4 · aptX HD" / "… · USB audio · codec unknown".
+    /// "ATV-Server: not connected" / "ATV-Server: connected · Headphones X · aptX HD" / "… · USB audio · codec unknown".
     static func statusText(_ sink: SinkState?) -> String {
-        guard let sink, sink.isConnected else { return "atv-audio: not connected" }
-        guard let output = sink.output else { return "atv-audio: connected · no output found" }
+        guard let sink, sink.isConnected else { return "ATV-Server: not connected" }
+        guard let output = sink.output else { return "ATV-Server: connected · no output found" }
         let device = outputName(output)
-        guard output.ready == true else { return "atv-audio: connected · \(device) · not available" }
-        return "atv-audio: connected · \(device) · \(codecLabel(output.codec))"
+        guard output.ready == true else { return "ATV-Server: connected · \(device) · not available" }
+        return "ATV-Server: connected · \(device) · \(codecLabel(output.codec))"
     }
 
     /// The device name; a USB sound card without a real name is "USB audio".

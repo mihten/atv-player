@@ -37,8 +37,8 @@ struct TVLyricsScreen: View {
                         if let artist = item.artist, !artist.isEmpty {
                             Text(artist).font(theme.font(36, .semibold)).opacity(0.82).lineLimit(1)
                         }
-                        if let album = item.album, !album.isEmpty {
-                            Text(album).font(theme.font(28)).opacity(0.55).lineLimit(1)
+                        if let line = item.albumLine {
+                            Text(line).font(theme.font(28)).opacity(0.55).lineLimit(1)
                         }
                         Facts(item: item, theme: theme).padding(.top, 4)
                     }

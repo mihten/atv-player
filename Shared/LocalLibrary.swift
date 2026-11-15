@@ -458,7 +458,7 @@ enum LocalTagReader {
         return value
     }
 
-    /// VLC FourCC (a | b<<8 | c<<16 | d<<24) -> the ffmpeg-style names CodecName.label knows.
+    /// VLC FourCC (a | b<<8 | c<<16 | d<<24) -> the ffmpeg-style codec names (av1, vp9, h264 ...).
     static func codecName(_ fourcc: UInt32) -> String? {
         guard fourcc != 0 else { return nil }
         let bytes = [fourcc, fourcc >> 8, fourcc >> 16, fourcc >> 24].map { UInt8(truncatingIfNeeded: $0) }
@@ -776,6 +776,22 @@ final class LocalLibrary: ObservableObject {
         byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         version += 1
         itemsChanged?()
+    }
+
+    /// What the library holds per source, songs and videos apart: "This iPhone: 12 songs · 3 videos",
+    /// "SMB share: 340 songs · 40 videos". A source without files is left out.
+    var sourceCounts: [String] {
+        func line(_ title: String, _ root: String) -> String? {
+            let mine = items.filter { $0.root == root }
+            guard !mine.isEmpty else { return nil }
+            let videos = mine.filter { $0.kind == "video" }.count
+            let songs = mine.count - videos
+            var parts: [String] = []
+            if songs > 0 { parts.append("\(songs.formatted()) song\(songs == 1 ? "" : "s")") }
+            if videos > 0 { parts.append("\(videos.formatted()) video\(videos == 1 ? "" : "s")") }
+            return title + ": " + parts.joined(separator: " · ")
+        }
+        return [line("This iPhone", "device"), line("SMB share", "smb")].compactMap { $0 }
     }
 
     private func summary(_ errors: [String]) -> String {

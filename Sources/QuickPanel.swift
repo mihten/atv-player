@@ -1,16 +1,16 @@
 import SwiftUI
 
-/// Quick menu over the player: Volume (atv-audio only), ♥ Love, shuffle, repeat, the lyrics / subtitle track,
-/// equalizer, loudness, boost, fast seek, "Prefer videos" and the version of the song. Opens on a click of the centre
-/// button with Volume focused (Love without atv-audio; row clicks are ignored for a moment so that click never
-/// mutes or hearts); ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
+/// Quick menu over the player: Close menu, Volume (ATV-Server only), ♥ Love, shuffle, the lyrics / subtitle track,
+/// audio output (Apple TV / ATV-Server), equalizer, loudness, boost and the version of the song. Opens on a click of
+/// the centre button with Volume focused (Love without ATV-Server; row clicks are ignored for a moment so that click
+/// never mutes or hearts); ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
 /// Row kinds: toggle (click flips), ◀▶ value (◀ previous / ▶ next, stop at the ends), ◀▶ level bar (Volume, Boost),
 /// inline list (click opens a short list under the row; ▲▼ picks, click confirms, Back closes only the list).
 /// The rows are full-width buttons in one column, so ◀▶ never has a focusable neighbour and reaches onMoveCommand.
 ///
-/// Height (1080p safe area = 960 pt): rows ~52 pt (30 pt text + 2 × 8) + 6 spacing. 11 rows + title + hint + padding
-/// ≈ 64 + 29 + 11 × 52 + 12 × 6 + 30 ≈ 770 pt; an open list adds ≤ 166 pt (≈ 4 entries of 41 pt, it scrolls inside)
-/// ≈ 940 pt at most.
+/// Height (1080p safe area = 960 pt): rows ~52 pt (30 pt text + 2 × 8) + 6 spacing. 10 rows + title + hint + padding
+/// ≈ 64 + 29 + 10 × 52 + 11 × 6 + 30 ≈ 710 pt; an open list adds ≤ 166 pt (≈ 4 entries of 41 pt, it scrolls inside)
+/// ≈ 880 pt at most.
 struct QuickPanel: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -21,7 +21,6 @@ struct QuickPanel: View {
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.boostKey) private var boost = 0
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
-    @AppStorage(PlayerSettings.fastSeekKey) private var fastSeek = true
     @AppStorage(AtvAudio.outputKey) private var soundOutput = AtvAudio.tvOutput
     @FocusState private var focus: Row?
     @FocusState private var listFocus: Int?
@@ -29,14 +28,12 @@ struct QuickPanel: View {
     @State private var openList: Row?
     /// Volume set here, shown until the sink's status has caught up (◀▶ can be faster than its answer).
     @State private var volumeEdit: VolumeEdit?
-    /// Repeat chosen here, until the queue state echoes it (two quick ▶ go All → One → Off).
-    @State private var repeatEdit: (index: Int, at: Date)?
     /// When the panel appeared: the click that opened it must not reach the first row (see `guarded`).
     @State private var openedAt = Date()
     let close: () -> Void
 
     enum Row: String {
-        case volume, love, shuffle, repeatMode, subtitles, equalizer, loudness, boost, fastSeek, preferVideos, version
+        case closeMenu, volume, love, shuffle, subtitles, audioOutput, equalizer, loudness, boost, version
     }
 
     struct VolumeEdit: Equatable {
@@ -44,9 +41,6 @@ struct QuickPanel: View {
         let muted: Bool
         let at: Date
     }
-
-    /// Repeat values in ◀▶ order.
-    private static let repeatModes: [(String, String)] = [("all", "All"), ("one", "One"), ("off", "Off")]
 
     /// Lyrics / subtitle choices in ◀▶ order: (shown, subsOn, language).
     private static let subtitleChoices: [(String, Bool, String)] = [
@@ -58,7 +52,6 @@ struct QuickPanel: View {
     private static let listMaxHeight: CGFloat = 166
 
     private var shuffleOn: Bool { connection.state?.shuffle == true }
-    private var preferVideosOn: Bool { connection.state?.preferVideos == true }
     /// ♥ of the playing item (kept current by the queue state, PlayerEngine.refreshLinks).
     private var lovedOn: Bool { engine.current?.loved == true }
     /// The playing item's versions (song first, then its videos); empty when it has no other version.
@@ -67,10 +60,6 @@ struct QuickPanel: View {
         return item.versions ?? []
     }
     private var loudnessOn: Bool { loudness != SoundSettings.Loudness.off.rawValue }
-    private var repeatIndex: Int {
-        if let edit = repeatEdit, Date().timeIntervalSince(edit.at) < 1.5 { return edit.index }
-        return Self.repeatModes.firstIndex { $0.0 == (connection.state?.repeatMode ?? "all") } ?? 0
-    }
     private var subtitleIndex: Int {
         guard subsOn else { return 3 }
         return Self.subtitleChoices.firstIndex { $0.1 && $0.2 == subLang } ?? 0
@@ -102,7 +91,7 @@ struct QuickPanel: View {
         .focusSection()
         .onAppear {
             openedAt = Date()
-            focus = volumeShown ? .volume : .love  // the first row
+            focus = volumeShown ? .volume : .love  // Volume with ATV-Server, else Love (Close menu sits above them)
         }
         .onExitCommand {
             if openList != nil { closeList() } else { close() }  // Back closes only an open list
@@ -118,6 +107,7 @@ struct QuickPanel: View {
 
     // Rows in three parts (keeps body small for the type checker); the VStack lays them out as one list.
     @ViewBuilder private var playbackRows: some View {
+        row(.closeMenu, "Close menu", "xmark", "") { close() }
         if volumeShown { volumeRow }
         row(.love, "Love", lovedOn ? "heart.fill" : "heart", lovedOn ? "On" : "Off") {
             guard let item = engine.current else { return }
@@ -127,19 +117,6 @@ struct QuickPanel: View {
         row(.shuffle, "Shuffle", "shuffle", shuffleOn ? "On" : "Off") {
             connection.command("shuffle", ["on": !shuffleOn])
         }
-        let repeatAt = repeatIndex
-        row(.repeatMode, "Repeat", Self.repeatModes[repeatAt].0 == "one" ? "repeat.1" : "repeat",
-            Self.repeatModes[repeatAt].1, steps: (repeatAt > 0, repeatAt < Self.repeatModes.count - 1),
-            step: { delta in
-                let next = repeatAt + delta
-                guard Self.repeatModes.indices.contains(next) else { return }
-                let at = Date()
-                repeatEdit = (next, at)
-                connection.command("repeat", ["mode": Self.repeatModes[next].0])
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                    if repeatEdit?.at == at { repeatEdit = nil }  // from now on the queue state
-                }
-            }, action: {})
         let subAt = subtitleIndex
         row(.subtitles, "Lyrics / subtitles", "captions.bubble", Self.subtitleChoices[subAt].0,
             steps: (subAt > 0, subAt < Self.subtitleChoices.count - 1),
@@ -172,6 +149,19 @@ struct QuickPanel: View {
     }
 
     @ViewBuilder private var soundRows: some View {
+        // Apple TV / ATV-Server: the same switch as Settings → Sound → Sound output (a click flips it). ATV-Server can
+        // only be chosen while its sink is connected.
+        let sinkOn = soundOutput == AtvAudio.sinkOutput
+        row(.audioOutput, "Audio output", sinkOn ? "headphones" : "tv", sinkOn ? "ATV-Server" : "Apple TV") {
+            let next = sinkOn ? AtvAudio.tvOutput : AtvAudio.sinkOutput
+            guard sinkOn || connection.state?.sink?.isConnected == true else {
+                log("audio output -> ATV-Server refused: not connected")
+                return
+            }
+            soundOutput = next
+            log("audio output -> \(next == AtvAudio.sinkOutput ? "ATV-Server" : "Apple TV")")
+            engine.soundOutputChanged()
+        }
         row(.equalizer, "Equalizer", "slider.vertical.3", SoundSettings.presetName(eqPreset), opens: true) {
             showList(.equalizer, current: SoundSettings.presetChoices.firstIndex { $0.value == eqPreset } ?? 0)
         }
@@ -206,15 +196,6 @@ struct QuickPanel: View {
     }
 
     @ViewBuilder private var otherRows: some View {
-        row(.fastSeek, "Fast seek", "forward", fastSeek ? "On" : "Off") {
-            fastSeek.toggle()
-            log("fast seek -> \(fastSeek ? "on" : "off")")
-            // PlayerEngine applies it at the next seek (VLC reads it only when an item starts).
-        }
-        row(.preferVideos, "Prefer videos", "play.rectangle", preferVideosOn ? "On" : "Off") {
-            connection.command("prefer_videos", ["on": !preferVideosOn])
-            log("prefer videos -> \(preferVideosOn ? "off" : "on")")
-        }
         let list = versions
         row(.version, "Version", "rectangle.stack", list.isEmpty ? "—" : (engine.current?.versionLabel ?? "—"),
             opens: !list.isEmpty) {
@@ -428,7 +409,7 @@ private struct QuickEntryBody: View {
     }
 }
 
-/// Small shuffle / repeat state icons for the player's info lines (lit = on), and a ♥ when the playing item is loved.
+/// Small shuffle state icon for the player's info lines (lit = on), and a ♥ when the playing item is loved.
 struct PlayModeIcons: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
@@ -436,12 +417,9 @@ struct PlayModeIcons: View {
     var size: CGFloat = 24
 
     var body: some View {
-        let repeatMode = connection.state?.repeatMode ?? "all"
         HStack(spacing: 14) {
             Image(systemName: "shuffle")
                 .foregroundStyle(connection.state?.shuffle == true ? accent : Color.secondary.opacity(0.5))
-            Image(systemName: repeatMode == "one" ? "repeat.1" : "repeat")
-                .foregroundStyle(repeatMode == "off" ? Color.secondary.opacity(0.5) : accent)
             if engine.current?.loved == true {
                 Image(systemName: "heart.fill")
                     .foregroundStyle(accent)

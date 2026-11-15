@@ -5,7 +5,7 @@ import SwiftUI
 /// settings. Pages and choice lists open inside the right half (an own page stack, no nested NavigationStack); Back goes one
 /// page up, also while the Now Playing card has the focus.
 enum SettingsRoute: Hashable {
-    case theme, server, sound, playback, lyrics, about, equalizer
+    case theme, server, mixes, sound, playback, lyrics, about, equalizer
 
     /// `-demoRoute` names (CI screenshots) that open Settings, optionally on a page.
     static func demo(_ screen: String?) -> SettingsRoute?? {
@@ -13,6 +13,7 @@ enum SettingsRoute: Hashable {
         case "settings": .some(nil)
         case "theme": .theme
         case "server": .server
+        case "mixes": .mixes
         case "sound": .sound
         case "playback": .playback
         case "lyrics": .lyrics
@@ -33,6 +34,7 @@ struct SettingsScreen: Identifiable {
         switch route {
         case .theme: SettingsScreen(title: "Theme", content: AnyView(ThemeSettingsView()))
         case .server: SettingsScreen(title: "Server", content: AnyView(ServerSettingsView()))
+        case .mixes: SettingsScreen(title: "Mixes", content: AnyView(MixesSettingsView()))
         case .sound: SettingsScreen(title: "Sound", content: AnyView(SoundSettingsView()))
         case .playback: SettingsScreen(title: "Playback", content: AnyView(PlaybackSettingsView()))
         case .lyrics: SettingsScreen(title: "Lyrics", content: AnyView(LyricsSettingsView()))
@@ -181,6 +183,7 @@ struct SettingsRootView: View {
     let scope: Namespace.ID
     @Environment(\.settingsNav) private var nav
     @EnvironmentObject var locator: ServerLocator
+    @EnvironmentObject var connection: ServerConnection
     @AppStorage(PlayerSettings.subsOnKey) private var subsOn = true
     @AppStorage(PlayerSettings.subLangKey) private var subLang = ""
     @AppStorage(PlayerSettings.seekBackKey) private var seekBack = 10
@@ -196,6 +199,9 @@ struct SettingsRootView: View {
                 .prefersDefaultFocus(true, in: scope)
             row(.server, "Server", "server.rack",
                 locator.localMode ? "No server" : (locator.isManual ? Config.remoteAddress : "Automatic"))
+            if !locator.localMode, let mixes = connection.state?.mixes {
+                row(.mixes, "Mixes", "shuffle", mixes.compactMap(\.name).joined(separator: ", "))
+            }
             row(.sound, "Sound", "speaker.wave.2", soundSummary)
             row(.playback, "Playback", "play.circle", "\(seekBack) s / \(seekForward) s")
             row(.lyrics, "Lyrics", "captions.bubble", lyricsSummary)
@@ -277,7 +283,7 @@ struct AboutSettingsView: View {
             Section("Siri Remote in the player") {
                 info("▼  ▲", "Next / previous")
                 info("◀  ▶", "Jump back / forward (Settings → Playback)")
-                info("Click", "♥ love, volume, shuffle, repeat, lyrics language, sound, video version")
+                info("Click", "close menu, ♥ love, volume, shuffle, lyrics language, audio output, sound, video version")
                 info("Hold", "Lyrics on / off")
                 info("⏯", "Pause / resume, also in the menus")
             }
@@ -288,6 +294,19 @@ struct AboutSettingsView: View {
                 info("Lyrics style, sound on / off", "A playing video restarts at the same position")
                 info("Sound", "Equalizer, Boost and Loudness changes apply at once")
                 info("Leaving the app", "Music videos pause; music keeps playing if set")
+            }
+            Section("Help") {
+                ForEach(HelpText.appleTV) { topic in help(topic) }
+            }
+        }
+    }
+
+    /// A help topic: title, then its text below (long text, so not the two-column row of `info`).
+    private func help(_ topic: HelpText.Topic) -> some View {
+        Button {} label: {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(topic.title).font(.system(size: 26, weight: .semibold))
+                Text(topic.text).font(.system(size: 22)).foregroundStyle(.secondary)
             }
         }
     }

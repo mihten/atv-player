@@ -25,10 +25,29 @@ final class ServerLocator: ObservableObject {
     /// Offline (iPhone downloads): localMode too, items from the downloads instead of on-device files.
     @Published private(set) var offlineMode = LocalSettings.mode == .offline
     @Published private(set) var libraryMode = LocalSettings.mode
+    /// The network the device is on right now ("Wi-Fi", "Mobile data", "Ethernet", "No network"), for Settings → "Connected through".
+    @Published private(set) var network = "Network"
     private var browser: NWBrowser?
     private var fallbackTask: Task<Void, Never>?
+    private let pathMonitor = NWPathMonitor()
 
     init() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let name: String
+            if path.status != .satisfied {
+                name = "No network"
+            } else if path.usesInterfaceType(.wifi) {
+                name = "Wi-Fi"
+            } else if path.usesInterfaceType(.cellular) {
+                name = "Mobile data"
+            } else if path.usesInterfaceType(.wiredEthernet) {
+                name = "Ethernet"
+            } else {
+                name = "Network"
+            }
+            Task { @MainActor in self?.network = name }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "atv.path"))
         if LocalSettings.mode != .server {
             useLocal(offline: LocalSettings.mode == .offline)
             return
@@ -145,11 +164,21 @@ final class ServerLocator: ObservableObject {
 
     var isManual: Bool { Self.manualURL != nil }
 
+    /// What Settings → "Connected through" shows: the network the device is on and the address really in use, e.g.
+    /// "Mobile data · https://music.example.org (internet address)" or "Wi-Fi · http://10.0.0.5:8080".
+    var connectionSummary: String {
+        if offlineMode { return "Not used (offline)" }
+        if localMode { return "Not used (no server)" }
+        guard url != nil else { return "\(network) · looking for the server" }
+        return "\(network) · \(Config.remoteAddress)\(isRemote ? " (internet address)" : "")"
+    }
+
     static var manualAddress: String { UserDefaults.standard.string(forKey: manualKey) ?? "" }
 
     static var manualURL: URL? { normalize(manualAddress) }
 
-    /// "10.0.0.5", "host:8080" or a full URL → http://host:port (port 8080 if none).
+    /// "10.0.0.5", "host:8080" or a full URL → the URL as typed: no scheme = http, and port 8080 when none is given for http;
+    /// an https address keeps the https port (443) unless one is typed.
     static func normalize(_ raw: String) -> URL? {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
@@ -157,7 +186,7 @@ final class ServerLocator: ObservableObject {
         guard var components = URLComponents(string: text), let host = components.host, !host.isEmpty else {
             return nil
         }
-        if components.port == nil { components.port = 8080 }
+        if components.port == nil && components.scheme?.lowercased() != "https" { components.port = 8080 }
         components.path = ""
         components.query = nil
         return components.url

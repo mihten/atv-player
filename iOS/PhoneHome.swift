@@ -17,6 +17,7 @@ struct PhoneHome: View {
     @State private var autoCovers: [String: [MediaItem]] = [:]
     @State private var libraryVersion = LocalLibrary.shared.version
     @State private var taps = 0
+    @State private var showMixes = false
 
     var body: some View {
         ScrollView {
@@ -46,6 +47,7 @@ struct PhoneHome: View {
         .phoneThemed()
         .foregroundStyle(theme.ink)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
+        .sheet(isPresented: $showMixes) { PhoneMixesSheet { showMixes = false } }
         .task { await loadVideos() }
         .task(id: connection.playlistsVersion) { await loadPlaylists() }
         .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
@@ -82,7 +84,7 @@ struct PhoneHome: View {
             .transition(.blurFade(CGSize(width: 24, height: 0), blur: 10))
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    EqualizerBars(animating: engine.isPlaying && motion, color: accent, width: 3, height: 13, spacing: 2)
+                    EqualizerBars(animating: engine.isPlaying, color: accent, width: 3, height: 13, spacing: 2)
                     Text(engine.isPlaying ? "NOW PLAYING" : "PAUSED")
                         .font(theme.eyebrow(11)).tracking(2)
                         .foregroundStyle(accent)
@@ -124,17 +126,28 @@ struct PhoneHome: View {
 
     // MARK: - Shuffle tiles
 
+    /// Two small tiles (Mix 1 / Mix 2: the folders and playlists set in Settings → Mixes) above the big one that shuffles
+    /// all music videos. Mixes live on the server: without it (no-server mode) only the big tile is there.
     private var shuffleTiles: some View {
         VStack(spacing: 12) {
-            PhoneTile(title: "Shuffle everything", subtitle: "Songs and music videos", symbol: "shuffle",
-                      variant: 0, height: 92) { shuffle("all") }
-            HStack(spacing: 12) {
-                PhoneTile(title: "Music", subtitle: "Shuffle songs", symbol: "music.note", variant: 1, height: 84) {
-                    shuffle("music")
+            if !locator.localMode, let mixes = connection.state?.mixes, mixes.count >= 2 {
+                HStack(spacing: 12) {
+                    ForEach(0..<2, id: \.self) { index in
+                        let mix = mixes[index]
+                        PhoneTile(title: mix.name ?? "Mix \(index + 1)", subtitle: mix.detail, symbol: "shuffle",
+                                  variant: index + 1, height: 84) {
+                            if mix.isEmpty {
+                                showMixes = true  // nothing in it yet: set it up
+                            } else {
+                                taps += 1
+                                connection.startMix(index + 1)
+                            }
+                        }
+                    }
                 }
-                PhoneTile(title: "Videos", subtitle: "Shuffle music videos", symbol: "film", variant: 2, height: 84) {
-                    shuffle("videos")
-                }
+            }
+            PhoneTile(title: "Shuffle music videos", subtitle: "All music videos", symbol: "film", variant: 0, height: 92) {
+                shuffle("videos")
             }
         }
     }
@@ -346,7 +359,7 @@ private struct BrowseRow: View {
     }
 }
 
-/// Coloured action tile (shuffle everything / music / videos).
+/// Coloured action tile (Mix 1 / Mix 2 / Shuffle music videos).
 struct PhoneTile: View {
     let title: String
     let subtitle: String

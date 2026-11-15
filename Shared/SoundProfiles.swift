@@ -114,7 +114,7 @@ enum SoundProfiles {
     /// Profile for the output in use now; nil = keep the current one (iPhone: a route without outputs, mid-switch).
     static func currentTarget() -> Target? {
         #if os(tvOS)
-        return AtvAudio.selected ? Target(key: sinkKey, name: "atv-audio") : Target(key: defaultKey, name: defaultName)
+        return AtvAudio.selected ? Target(key: sinkKey, name: "ATV-Server") : Target(key: defaultKey, name: defaultName)
         #else
         return target(for: AVAudioSession.sharedInstance().currentRoute.outputs.map { ($0.portType, $0.uid, $0.portName) })
         #endif

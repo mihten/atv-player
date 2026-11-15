@@ -5,6 +5,7 @@ import MobileVLCKit
 /// app (PlayerSettings / SoundSettings), stored on the phone.
 struct PhoneSettingsView: View {
     @EnvironmentObject var locator: ServerLocator
+    @EnvironmentObject var connection: ServerConnection
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
@@ -19,6 +20,9 @@ struct PhoneSettingsView: View {
             Section {
                 row("Theme", "paintpalette", (AppTheme(rawValue: themeRaw) ?? .aurora).name) { PhoneThemeSettingsView() }
                 row("Server", "server.rack", serverSummary) { PhoneServerSettingsView() }
+                if !locator.localMode, let mixes = connection.state?.mixes {
+                    row("Mixes", "shuffle", mixes.compactMap(\.name).joined(separator: ", ")) { PhoneMixesView().withMiniPlayer() }
+                }
                 row("Downloads", "arrow.down.circle", downloadsSummary) { PhoneDownloadsSettingsView() }
                 row("Sound", "speaker.wave.2", soundSummary) { PhoneSoundSettingsView() }
                 row("Playback", "play.circle", keepMusic ? "Background on" : "Background off") { PhonePlaybackSettingsView() }
@@ -95,7 +99,9 @@ struct PhoneThemeSettingsView: View {
                     .padding(.horizontal, 2)
                 }
                 .sensoryFeedback(.selection, trigger: themeRaw)
-                Toggle("Moving background and spinning record", isOn: $motion)
+                // Aurora moves its background, Vinyl spins the record: nothing to switch on the other looks
+                Toggle("Theme effects", isOn: $motion)
+                    .disabled(!(AppTheme(rawValue: themeRaw) ?? .aurora).hasEffects)
             }
             .themedRow()
         }
@@ -141,15 +147,6 @@ struct PhoneServerSettingsView: View {
         Binding(get: { locator.libraryMode }, set: { locator.setLibraryMode($0) })
     }
 
-    private var libraryFooter: String {
-        switch locator.libraryMode {
-        case .server: return "Songs, videos, queues and playlists come from the ATV Player server."
-        case .local:
-            return "Plays files from this iPhone and an SMB share. No playlists, lyrics search, loudness levelling or web remote."
-        case .offline: return "Plays only what you downloaded. Switch back to Media server when you are home."
-        }
-    }
-
     private var smbChanged: Bool {
         smbAddress.trimmingCharacters(in: .whitespacesAndNewlines) != LocalSettings.smbAddress
             || smbUser.trimmingCharacters(in: .whitespaces) != LocalSettings.smbUser
@@ -188,8 +185,6 @@ struct PhoneServerSettingsView: View {
                     Text("No server").tag(LibraryMode.local)
                     Text("Offline (downloads)").tag(LibraryMode.offline)
                 }
-            } footer: {
-                Text(libraryFooter)
             }
             .themedRow()
 
@@ -258,8 +253,6 @@ struct PhoneServerSettingsView: View {
             }
         } header: {
             Text("SMB share")
-        } footer: {
-            Text("A shared folder on a NAS or computer, e.g. nas/music. Leave the user name empty for guest access.")
         }
         .themedRow()
 
@@ -276,10 +269,12 @@ struct PhoneServerSettingsView: View {
             Text(localLibrary.status)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            // what the scan found, this iPhone and the SMB share apart, songs and videos apart
+            ForEach(localLibrary.sourceCounts, id: \.self) { line in
+                Text(line).font(.footnote).foregroundStyle(.secondary)
+            }
         } header: {
             Text("Library")
-        } footer: {
-            Text("Files app › On My iPhone › ATV Player: copy songs and videos there, then tap Scan again. They show under Folders › On this iPhone.")
         }
         .themedRow()
     }
@@ -334,7 +329,7 @@ struct PhoneServerSettingsView: View {
             if !remoteTest.isEmpty {
                 Text(remoteTest).font(.footnote).foregroundStyle(.secondary)
             }
-            LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
+            LabeledContent("Connected through", value: locator.connectionSummary)
         } header: {
             Text("Away from home")
         }
@@ -355,8 +350,6 @@ struct PhoneSoundSettingsView: View {
         Form {
             Section {
                 LabeledContent("Sound profile", value: profileName)
-            } footer: {
-                Text("Equalizer, Boost and Loudness below belong to the output playing now. Every Bluetooth device and CarPlay keep their own (CarPlay wins over the car's Bluetooth); the speaker, wired headphones and AirPlay share the iPhone profile. A new device starts with the iPhone settings.")
             }
             .themedRow()
             Section {
@@ -393,7 +386,7 @@ struct PhoneSoundSettingsView: View {
                 } header: {
                     Text("Other saved profiles")
                 } footer: {
-                    Text("Swipe to delete: that output starts again from the iPhone settings.")
+                    Text("Swipe to delete")
                 }
                 .themedRow()
             }
@@ -622,7 +615,7 @@ struct PhoneAboutView: View {
                     LabeledContent("Address", value: Config.remoteAddress)
                     LabeledContent("Status", value: connection.connected
                                    ? "Connected" + (connection.state?.version.map { " · server \($0)" } ?? "") : locator.status)
-                    LabeledContent("Connected through", value: locator.isRemote ? "Internet" : "Home network")
+                    LabeledContent("Connected through", value: locator.connectionSummary)
                     LabeledContent("Web remote", value: Config.remoteAddress)
                 }
                 .themedRow()
@@ -636,10 +629,17 @@ struct PhoneAboutView: View {
                 } else {
                     Text("Loudness: the server measures each file once; new files play unchanged until then.")
                 }
-                Text("Away from home, Audio only plays music videos as sound and uses far less data.")
-                Text("Fast seek jumps to the nearest keyframe, so a jump can land a few seconds off.")
             }
             .font(.footnote)
+            .themedRow()
+            Section("Help") {
+                ForEach(HelpText.iPhone) { topic in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(topic.title).font(.subheadline.weight(.semibold))
+                        Text(topic.text).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
             .themedRow()
         }
         .phoneThemed()

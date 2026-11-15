@@ -35,8 +35,8 @@ final class QuickPanelTests: XCTestCase {
     private func report(_ step: String) {
         let line = "\(step): app \(app.state == .runningForeground ? "foreground" : "NOT foreground (\(app.state.rawValue))"), "
             + "focus '\(focused)', equalizer '\(value("equalizer"))', loudness '\(value("loudness"))', "
-            + "boost '\(value("boost"))', fast seek '\(value("fastSeek"))', "
-            + "version '\(value("version"))', prefer videos '\(value("preferVideos"))', love '\(value("love"))'"
+            + "boost '\(value("boost"))', audio output '\(value("audioOutput"))', "
+            + "version '\(value("version"))', love '\(value("love"))'"
         print("UITEST: \(line)")
         if let dir = ProcessInfo.processInfo.environment["UI_SHOTS"] {
             let name = step.replacingOccurrences(of: " ", with: "-").filter { $0.isLetter || $0.isNumber || $0 == "-" }
@@ -48,9 +48,10 @@ final class QuickPanelTests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: "quickPanel.\(id).list").firstMatch
     }
 
-    /// One launch: click centre in the player; the panel opens on Love (Volume first only with atv-audio, not in the demo). Row kinds (task 18): toggles (Love, Shuffle,
-    /// Loudness, Fast seek, Prefer videos: a click flips, a second restores), ◀▶ values (Repeat, Lyrics / subtitles:
-    /// stop at the ends, a click does nothing), level bars (Boost ◀▶ 1 dB), inline lists (Equalizer: click opens a list
+    /// One launch: click centre in the player; the panel opens on Love (Volume first only with ATV-Server, not in the demo;
+    /// Close menu is the row above). Row kinds (task 18): toggles (Love, Shuffle, Loudness: a click flips, a second
+    /// restores), ◀▶ values (Lyrics / subtitles: stop at the ends, a click does nothing), Audio output (a click flips
+    /// Apple TV / ATV-Server: not clicked here, it would change the sound), level bars (Boost ◀▶ 1 dB), inline lists (Equalizer: click opens a list
     /// under the row on the current value, Back closes only the list, ▼ + click picks the next preset; Version "—" for
     /// a song without a video: not openable). No Volume row with the Apple TV's own sound (the demo default). Every row
     /// is on screen; Back closes the panel and the app stays open.
@@ -64,14 +65,17 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertTrue(row("loudness").exists, "the panel should have a Loudness row")
         XCTAssertTrue(row("boost").exists, "the panel should have a Boost row")
         XCTAssertFalse(row("limiter").exists, "the Limiter row is gone (the limiter is always on)")
-        XCTAssertTrue(row("fastSeek").exists, "the panel should have a Fast seek row")
+        XCTAssertTrue(row("closeMenu").exists, "the panel should have a Close menu row")
+        XCTAssertTrue(row("audioOutput").exists, "the panel should have an Audio output row")
+        XCTAssertFalse(row("fastSeek").exists, "Fast seek is not in the quick menu (Settings → Playback)")
+        XCTAssertFalse(row("preferVideos").exists, "Prefer videos is not in the quick menu (Settings → Playback)")
+        XCTAssertFalse(row("repeatMode").exists, "no Repeat row: the server always repeats all")
         XCTAssertFalse(row("volume").exists, "no Volume row while the Apple TV plays its own sound")
         report("q1 panel open")
         XCTAssertTrue(focused.contains("Love"), "the panel should open on Love, has '\(focused)'")
 
         let screen = app.windows.firstMatch.frame
-        let order = ["love", "shuffle", "repeatMode", "subtitles", "equalizer", "loudness", "boost", "fastSeek",
-                     "preferVideos", "version"]
+        let order = ["closeMenu", "love", "shuffle", "subtitles", "audioOutput", "equalizer", "loudness", "boost", "version"]
         var lastY = -CGFloat.infinity
         for id in order {
             let frame = row(id).frame
@@ -91,25 +95,6 @@ final class QuickPanelTests: XCTestCase {
         press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Shuffle"), "▼ from Love should reach Shuffle, has '\(focused)'")
 
-        // Repeat: ◀▶ value, stops at the ends, a click does nothing
-        press(.down, wait: 1)
-        XCTAssertTrue(focused.contains("Repeat"), "▼ should reach Repeat, has '\(focused)'")
-        let repeats = ["All", "One", "Off"]
-        let repeatStart = value("repeatMode")
-        press(.select, wait: 2)
-        XCTAssertEqual(value("repeatMode"), repeatStart, "a click on Repeat should do nothing")
-        for _ in 0..<3 { press(.left, wait: 2) }
-        report("q3 repeat at the left end")
-        XCTAssertEqual(value("repeatMode"), "All", "◀ should stop at All")
-        press(.right, wait: 2)
-        XCTAssertEqual(value("repeatMode"), "One", "▶ from All should give One")
-        for _ in 0..<3 { press(.right, wait: 2) }
-        XCTAssertEqual(value("repeatMode"), "Off", "▶ should stop at Off")
-        if let at = repeats.firstIndex(of: repeatStart) {
-            for _ in 0..<(repeats.count - 1 - at) { press(.left, wait: 2) }
-            XCTAssertEqual(value("repeatMode"), repeatStart, "◀ should come back to '\(repeatStart)'")
-        }
-
         // Lyrics / subtitles: ◀▶ value, stops at the ends
         press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Lyrics"), "▼ should reach Lyrics / subtitles, has '\(focused)'")
@@ -121,6 +106,10 @@ final class QuickPanelTests: XCTestCase {
             for _ in 0..<at { press(.right, wait: 1) }
             XCTAssertEqual(value("subtitles"), subStart, "▶ should come back to '\(subStart)'")
         }
+
+        // Audio output sits between the lyrics row and Equalizer (only looked at: a click would change the sound output)
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Audio output"), "▼ should reach Audio output, has '\(focused)'")
 
         // Equalizer: inline list
         press(.down, wait: 1)
@@ -169,24 +158,6 @@ final class QuickPanelTests: XCTestCase {
             XCTAssertEqual(value("boost"), "+1 dB", "▶ from 0 dB should give +1 dB")
             press(.left, wait: 2)
         }
-
-        press(.down, wait: 1)
-        XCTAssertTrue(focused.contains("Fast seek"), "▼ should reach Fast seek, has '\(focused)'")
-        let fastStart = value("fastSeek")
-        press(.select, wait: 1)
-        report("q7 fast seek clicked")
-        XCTAssertEqual(value("fastSeek"), fastStart == "On" ? "Off" : "On", "a click should toggle '\(fastStart)'")
-        press(.select, wait: 1)
-        XCTAssertEqual(value("fastSeek"), fastStart, "a second click should restore '\(fastStart)'")
-
-        press(.down, wait: 1)
-        XCTAssertTrue(focused.contains("Prefer videos"), "▼ should reach Prefer videos, has '\(focused)'")
-        let preferStart = value("preferVideos")
-        press(.select, wait: 2)  // the queue owner answers with a new state
-        report("q8 prefer videos clicked")
-        XCTAssertEqual(value("preferVideos"), preferStart == "On" ? "Off" : "On", "a click should toggle '\(preferStart)'")
-        press(.select, wait: 2)
-        XCTAssertEqual(value("preferVideos"), preferStart, "a second click should restore '\(preferStart)'")
 
         press(.down, wait: 1)
         XCTAssertTrue(focused.contains("Version"), "▼ should reach Version (last row), has '\(focused)'")

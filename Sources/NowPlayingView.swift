@@ -249,18 +249,18 @@ struct InfoBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let item = engine.current {
-                HStack(alignment: .firstTextBaseline, spacing: 18) {
-                    Text(item.title)
-                        .font(.title2)
-                        .bold()
-                        .lineLimit(1)
-                    CodecBadges(item: item, theme: theme)
-                }
+                Text(item.title)
+                    .font(.title2)
+                    .bold()
+                    .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
                         .font(.headline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                if !item.facts.isEmpty {
+                    BadgeChips(item: item, theme: theme)  // on a line of their own: the title gets the whole width
                 }
             }
             ProgressRow(clock: engine.clock, upNext: connection.state?.upcoming?.first?.title)

@@ -15,6 +15,7 @@ struct HomeView: View {
     @State private var covers: [Int: [MediaItem]] = [:]  // playlist id → first items, for the mosaic
     @State private var autoLists: [AutoList] = []
     @State private var autoItems: [String: [MediaItem]] = [:]  // auto-playlist key → its items (mosaic, video count)
+    @State private var showMixSettings = false  // a tile with nothing in it opens Settings → Mixes
 
     private let width: CGFloat = 1760  // 1920 minus the side margins
 
@@ -37,6 +38,7 @@ struct HomeView: View {
         .foregroundStyle(theme.ink)
         .themedScreen(intensity: 0.9)
         .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(isPresented: $showMixSettings) { SettingsView(start: .mixes) }
         // No-server mode: reload after a rescan, and when the mode changes
         .onReceive(LocalLibrary.shared.$version) { libraryVersion = $0 }
         .task(id: "\(locator.localMode)|\(libraryVersion)") { await loadVideos() }
@@ -90,7 +92,7 @@ struct HomeView: View {
             }
             .buttonStyle(TileButtonStyle(corner: theme.corner + 6, lift: 1.025))
         } else {
-            Button { shuffle("all") } label: {
+            Button { shuffle("videos") } label: {  // nothing playing: one click shuffles all music videos (no "everything")
                 HStack(spacing: 40) {
                     Image(systemName: "shuffle")
                         .font(.system(size: 90, weight: .semibold))
@@ -118,15 +120,24 @@ struct HomeView: View {
         .focusSection()
     }
 
+    /// Two small tiles (Mix 1 / Mix 2: the folders and playlists set in Settings → Mixes) in front of the big one that
+    /// shuffles all music videos. The mixes live on the server: without it (no-server mode) only the big tile is there.
     private var playTiles: some View {
-        let w = (width - 80) / 3
+        let mixes = locator.localMode ? [] : (connection.state?.mixes ?? [])
+        let small = (width - 80) / 4
+        let big = mixes.count >= 2 ? (width - 80) / 2 : width
         return HStack(spacing: 40) {
-            ActionTile(title: "Shuffle everything", subtitle: "Songs and music videos", symbol: "shuffle",
-                       variant: 0, size: CGSize(width: w, height: 200)) { shuffle("all") }
-            ActionTile(title: "Shuffle music", subtitle: "Songs only", symbol: "music.note",
-                       variant: 1, size: CGSize(width: w, height: 200)) { shuffle("music") }
-            ActionTile(title: "Shuffle music videos", subtitle: "Videos only", symbol: "film",
-                       variant: 2, size: CGSize(width: w, height: 200)) { shuffle("videos") }
+            if mixes.count >= 2 {
+                ForEach(0..<2, id: \.self) { index in
+                    let mix = mixes[index]
+                    ActionTile(title: mix.name ?? "Mix \(index + 1)", subtitle: mix.detail, symbol: "shuffle",
+                               variant: index + 1, size: CGSize(width: small, height: 200)) {
+                        if mix.isEmpty { showMixSettings = true } else { connection.startMix(index + 1) }
+                    }
+                }
+            }
+            ActionTile(title: "Shuffle music videos", subtitle: "All music videos", symbol: "film",
+                       variant: 0, size: CGSize(width: big, height: 200)) { shuffle("videos") }
         }
     }
 
@@ -279,7 +290,7 @@ private struct IdleHeroText: View {
         let empty = locator.localMode && library.items.isEmpty
         VStack(alignment: .leading, spacing: 12) {
             Text(empty ? "No files yet" : "Nothing playing yet").font(theme.display(54))
-            Text(empty ? LocalLibraryHint.text(library) : "Select to shuffle everything")
+            Text(empty ? LocalLibraryHint.text(library) : "Select to shuffle music videos")
                 .font(theme.font(28)).opacity(0.7).lineLimit(2)
         }
     }
@@ -300,7 +311,7 @@ struct HeroCard: View {
             art
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 14) {
-                    EqualizerBars(animating: engine.isPlaying && motion, color: accent, width: 5, height: 24)
+                    EqualizerBars(animating: engine.isPlaying, color: accent, width: 5, height: 24)
                     Text(engine.isPlaying ? "NOW PLAYING" : "PAUSED")
                         .font(theme.eyebrow(22))
                         .tracking(theme == .vinyl ? 1 : 4)

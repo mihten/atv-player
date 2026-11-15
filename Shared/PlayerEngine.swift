@@ -1320,21 +1320,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             }
             return .success
         }
-        center.changeRepeatModeCommand.isEnabled = true
-        center.changeRepeatModeCommand.addTarget { [weak self] event in
-            guard let event = event as? MPChangeRepeatModeCommandEvent else { return .commandFailed }
-            let mode: String
-            switch event.repeatType {
-            case .one: mode = "one"
-            case .all: mode = "all"
-            default: mode = "off"
-            }
-            MainActor.assumeIsolated {
-                self?.log("remote: system repeat \(mode)")
-                self?.connection?.command("repeat", ["mode": mode])
-            }
-            return .success
-        }
+        center.changeRepeatModeCommand.isEnabled = false  // always repeat all: no repeat control on the lock screen / CarPlay
         center.likeCommand.localizedTitle = "Love"
         center.likeCommand.localizedShortTitle = "Love"
         center.likeCommand.isEnabled = true
@@ -1355,7 +1341,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     #if os(iOS)
-    /// Shuffle / Repeat / Love on the system Now Playing follow the queue state and the current item's heart, whoever
+    /// Shuffle / Love on the system Now Playing follow the queue state and the current item's heart, whoever
     /// changed them (in-app buttons, web remote, the system controls). Called on every state and item change.
     func syncSystemControls() {
         let center = MPRemoteCommandCenter.shared()
@@ -1364,14 +1350,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         if center.changeShuffleModeCommand.currentShuffleType != shuffle {
             center.changeShuffleModeCommand.currentShuffleType = shuffle
         }
-        let repeatType: MPRepeatType
-        switch state?.repeatMode {
-        case "one": repeatType = .one
-        case "all": repeatType = .all
-        default: repeatType = .off
-        }
-        if center.changeRepeatModeCommand.currentRepeatType != repeatType {
-            center.changeRepeatModeCommand.currentRepeatType = repeatType
+        if center.changeRepeatModeCommand.currentRepeatType != .all {
+            center.changeRepeatModeCommand.currentRepeatType = .all
         }
         let loved = current?.loved == true
         if center.likeCommand.isActive != loved { center.likeCommand.isActive = loved }
@@ -1701,10 +1681,10 @@ extension PlayerEngine {
 
     /// What is missing, for the notice and the log.
     private var sinkTargetText: String {
-        if !serverLinkUp { return "atv-audio: no connection to the server" }
-        guard let sink = connection?.state?.sink, sink.isConnected else { return "atv-audio is not connected" }
-        guard let output = sink.output else { return "atv-audio: no output found" }
-        return "atv-audio: \(AtvAudio.outputName(output)) not connected"
+        if !serverLinkUp { return "ATV-Server: no connection to the server" }
+        guard let sink = connection?.state?.sink, sink.isConnected else { return "ATV-Server is not connected" }
+        guard let output = sink.output else { return "ATV-Server: no output found" }
+        return "ATV-Server: \(AtvAudio.outputName(output)) not connected"
     }
 
     /// The atv-audio target is missing while playback is wanted: pause (the sink pauses with the TV) and a notice that
@@ -1835,7 +1815,7 @@ extension PlayerEngine {
         // missing right now while playing: the change notice is the one for it; paused: the first Play shows the loss
         sinkLossArmed = playing ? sinkTargetUsable : true
         guard playing else { return }
-        showNotice("Sound output changed to \(sinkChosen ? "atv-audio" : "Apple TV") — playback paused")
+        showNotice("Sound output changed to \(sinkChosen ? "ATV-Server" : "Apple TV") — playback paused")
         log("atv-audio: sound output changed -> paused (notice)")
     }
 

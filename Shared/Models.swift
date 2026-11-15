@@ -15,8 +15,13 @@ enum Config {
     /// Away from home with "audio only": music videos are streamed as audio and shown like songs.
     static var streamAudioOnly: Bool { isRemote && RemoteSettings.audioOnly }
 
+    /// The server address as it is really used: the scheme that was typed or found, and the port only when it is not
+    /// the scheme's default (https://music.example.org, http://10.0.0.5:8080).
     static var remoteAddress: String {
-        "http://\(serverURL.host ?? ""):\(serverURL.port ?? 80)"
+        let host = serverURL.host ?? ""
+        let scheme = serverURL.scheme ?? "http"
+        guard let port = serverURL.port else { return "\(scheme)://\(host)" }
+        return "\(scheme)://\(host):\(port)"
     }
 
     /// Which queue on the server this app plays: the Apple TV and the iPhone each have their own.
@@ -58,6 +63,10 @@ struct MediaItem: Codable, Identifiable, Hashable {
     /// ("sdr" / "pq" / "hlg" / "dv"; server only, nil = unknown).
     var fps: Double? = nil
     var dyn: String? = nil
+    /// The facts every player shows, made by the server (0.30.0+, badges.py): `badges` the whole list, `abadges` the
+    /// audio part only (a music video streamed as audio away from home). nil from older servers and in no-server mode.
+    var badges: [String]? = nil
+    var abadges: [String]? = nil
     /// Song <-> music video links (server 0.16.3+ / no-server VersionLinks): number of music videos of a song (lists),
     /// and every member of the item's group, songs first (the item being played; nil = no other version).
     var videos: Int? = nil
@@ -99,23 +108,12 @@ struct MediaItem: Codable, Identifiable, Hashable {
 }
 
 extension MediaItem {
-    /// Short codec badges for the player, e.g. ["AV1", "OPUS"]; a song shows its codec once.
-    var codecBadges: [String] {
-        if kind == "video" {
-            let video = isVideo ? codec.flatMap(CodecName.label) : nil  // audio-only stream: no video codec
-            return [video, acodec.flatMap(CodecName.label), isVideo ? hdrBadge : nil].compactMap { $0 }
-        }
-        return [(acodec ?? codec).flatMap(CodecName.label)].compactMap { $0 }
-    }
-
-    /// HDR format of a video file (played as SDR by VLC 3); nil for SDR or unknown.
-    var hdrBadge: String? {
-        switch dyn ?? "" {
-        case "pq": return "HDR10"
-        case "hlg": return "HLG"
-        case "dv": return "DV"
-        default: return nil
-        }
+    /// The server's badges for the player ("HEVC", "4K", "FLAC 24/96" ...), exactly as sent. A music video streamed as
+    /// audio only shows the audio part. Empty without the server (no-server / Offline mode) and from older servers.
+    var shownBadges: [String] {
+        if Config.localMode { return [] }
+        let list = kind == "video" && Config.streamAudioOnly ? abadges : badges
+        return list ?? []
     }
 }
 
@@ -153,33 +151,6 @@ struct MediaVersion: Codable, Hashable, Identifiable {
     var isVideo: Bool { kind == "video" }
 }
 
-/// ffmpeg codec names (and the scanner's file-extension fallbacks for songs) -> short display labels.
-enum CodecName {
-    static func label(_ name: String) -> String? {
-        let n = name.trimmingCharacters(in: .whitespaces).lowercased()
-        if n.isEmpty { return nil }
-        if n.hasPrefix("pcm_") || ["wav", "aiff", "aif"].contains(n) { return "PCM" }
-        if n.hasPrefix("mp4a") { return "AAC" }  // MP4 audio as mutagen reports it ("mp4a.40.2")
-        switch n {
-        case "av1": return "AV1"
-        case "vp9": return "VP9"
-        case "vp8": return "VP8"
-        case "h264", "avc1": return "H.264"
-        case "hevc", "h265": return "HEVC"
-        case "opus": return "OPUS"
-        case "flac": return "FLAC"
-        case "aac": return "AAC"
-        case "mp3": return "MP3"
-        case "vorbis": return "VORBIS"
-        case "alac": return "ALAC"
-        case "ac3": return "AC3"
-        case "eac3": return "E-AC3"
-        case "wavpack", "wv": return "WAVPACK"
-        default: return n.uppercased()
-        }
-    }
-}
-
 struct SubtitleTrack: Codable, Hashable {
     let ord: Int
     let lang: String
@@ -202,8 +173,28 @@ struct SessionState: Codable {
     let version: String?
     /// "Prefer videos" for this queue (server 0.16.3+; nil = older server).
     var preferVideos: Bool? = nil
+    /// The two Home shuffle tiles (server 0.30.0+; nil = older server or no-server mode: no tiles).
+    var mixes: [MixSummary]? = nil
     /// The atv-audio sink of the Apple TV's session (nil for the iPhone's, older servers and no-server mode).
     var sink: SinkState? = nil
+}
+
+/// One Home shuffle tile: its name and what it holds. All optional: a decode failure would drop the whole state message.
+struct MixSummary: Codable, Equatable, Hashable {
+    var name: String? = nil
+    var folders: Int? = nil
+    var playlists: Int? = nil
+
+    /// Nothing added yet: the tile opens its settings instead of playing.
+    var isEmpty: Bool { (folders ?? 0) + (playlists ?? 0) == 0 }
+
+    /// "Not set", "2 folders", "1 folder · 3 playlists".
+    var detail: String {
+        var parts: [String] = []
+        if let folders, folders > 0 { parts.append("\(folders) folder\(folders == 1 ? "" : "s")") }
+        if let playlists, playlists > 0 { parts.append("\(playlists) playlist\(playlists == 1 ? "" : "s")") }
+        return parts.isEmpty ? "Not set" : parts.joined(separator: " · ")
+    }
 }
 
 /// state.sink: the optional atv-audio program that plays the TV's sound. All optional: a decode failure would drop

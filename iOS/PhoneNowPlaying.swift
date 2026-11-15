@@ -269,21 +269,23 @@ struct PhoneNowPlayingView: View {
     private func classicBody(_ transport: Transport) -> some View {
         GeometryReader { geo in
             VStack(spacing: 22) {
-                Spacer(minLength: 0)
                 if let item = transport.item {
                     if lyricsMode {
                         LyricsPanel(item: item, store: LyricsStore.shared).layoutPriority(1)
                     } else if item.isVideo {
                         videoSurface
+                        Spacer(minLength: 0)  // the picture stays up, everything below sits at the bottom
                     } else {
                         // smaller on short screens (iPhone SE / mini), so the Next line still fits
                         Artwork(item: item, size: min(300, geo.size.height * 0.4))
+                        Spacer(minLength: 0)
                     }
                     VStack(spacing: 6) {
                         Text(item.title).font(.title3.bold()).multilineTextAlignment(.center).lineLimit(2)
                         if !item.subtitle.isEmpty {
                             Text(item.subtitle).foregroundStyle(.secondary).lineLimit(1)
                         }
+                        BadgeRow(item: item, theme: theme, size: 11, alignment: .center)
                     }
                     scrubber(transport)
                     classicControls(transport)
@@ -298,23 +300,26 @@ struct PhoneNowPlayingView: View {
                                       systemImage: item.loved == true ? "heart.fill" : "heart")
                                     .foregroundStyle(item.loved == true ? Color.accentColor : .secondary)
                             }
-                            if item.hasVersions {
-                                VersionsMenu(connection: connection, engine: engine, item: item) {
-                                    Label(item.versionLabel ?? "Versions", systemImage: "rectangle.stack")
-                                        .foregroundStyle(.secondary)
-                                }
+                            // always there, grayed out while the item has only one version
+                            VersionsMenu(connection: connection, engine: engine, item: item) {
+                                Label(item.versionLabel ?? "Versions", systemImage: "rectangle.stack")
+                                    .foregroundStyle(.secondary)
                             }
+                            .disabled(!item.hasVersions)
+                            .opacity(item.hasVersions ? 1 : 0.35)
                         }
                         .font(.footnote)
                         NextLine(next: connection.state?.upcoming?.first, accent: .accentColor, font: .footnote,
                                  centered: true)
                     }
                 } else {
+                    Spacer(minLength: 0)
                     Text("Nothing playing").foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
             }
             .padding(.horizontal, 24)
+            .padding(.vertical, 12)
             .frame(width: geo.size.width, height: geo.size.height)
         }
     }
@@ -374,7 +379,6 @@ struct PhoneNowPlayingView: View {
 
     private func classicControls(_ transport: Transport) -> some View {
         let state = connection.state
-        let repeatMode = state?.repeatMode ?? "all"
         return HStack {
             Button { connection.command("shuffle") } label: {
                 Image(systemName: "shuffle").foregroundStyle(state?.shuffle == true ? Color.accentColor : .secondary)
@@ -389,10 +393,7 @@ struct PhoneNowPlayingView: View {
             Spacer()
             Button { transport.next() } label: { Image(systemName: "forward.end.fill").font(.title) }
             Spacer()
-            Button { connection.command("repeat") } label: {
-                Image(systemName: repeatMode == "one" ? "repeat.1" : "repeat")
-                    .foregroundStyle(repeatMode == "off" ? .secondary : Color.accentColor)
-            }
+            Color.clear.frame(width: 24, height: 1)  // balances the shuffle button on the left
         }
         .buttonStyle(.plain)
         .font(.title3)
@@ -406,17 +407,22 @@ struct PhoneNowPlayingView: View {
             // Short screens (iPhone SE / mini) give the artwork less, so the Next line and the controls still fit.
             let side = min(geo.size.width - 52, geo.size.height * (geo.size.height < 700 ? 0.36 : 0.42), 360)
             VStack(spacing: 0) {
-                Spacer(minLength: 6)
                 if let item = transport.item {
+                    // The video or the cover stays at the top; all the free space is the gap under it, so the title,
+                    // the progress bar, the controls and the Next line sit at the bottom (songs and videos alike).
                     if lyricsMode {
                         LyricsPanel(item: item, store: LyricsStore.shared).layoutPriority(1)
+                            .padding(.top, 6)
                         Spacer(minLength: 12)
                     } else {
                         hero(item, side: side)
                             .frame(height: item.isVideo ? nil : side)
+                            .padding(.top, 6)
                         Spacer(minLength: 18)
                     }
                     titleBlock(item, accent: accent)
+                    BadgeRow(item: item, theme: theme, size: 11)
+                        .padding(.top, 8)
                     ThemedScrubber(value: $shown, duration: max(transport.duration, 1), accent: accent,
                                    onBegin: beginScrub, onEnd: { endScrub(transport, to: $0) })
                         .padding(.top, 14)
@@ -429,11 +435,13 @@ struct PhoneNowPlayingView: View {
                     NextLine(next: connection.state?.upcoming?.first, accent: accent, font: theme.font(13))
                         .padding(.top, 6)
                 } else {
+                    Spacer(minLength: 0)
                     Text("Nothing playing").foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 10)
             }
             .padding(.horizontal, 26)
+            .padding(.bottom, 10)
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .foregroundStyle(theme.ink)
@@ -559,10 +567,10 @@ struct PhoneNowPlayingView: View {
         .padding(.horizontal, 6)
     }
 
-    /// Shuffle, lyrics, ♥, versions (only for items with versions) and repeat, evenly spread over the width.
+    /// Shuffle, lyrics, ♥ and versions, evenly spread over the width. Versions is always there, grayed out while the
+    /// item has only one version.
     private func secondaryRow(accent: Color) -> some View {
         let state = connection.state
-        let repeatMode = state?.repeatMode ?? "all"
         return HStack(spacing: 0) {
             Button { connection.command("shuffle") } label: {
                 Image(systemName: "shuffle")
@@ -589,20 +597,16 @@ struct PhoneNowPlayingView: View {
                 }
                 .accessibilityLabel(loved ? "Unlove" : "Love")
             }
-            if let item = engine.current, item.hasVersions {
+            if let item = engine.current {
                 Spacer(minLength: 0)
                 VersionsMenu(connection: connection, engine: engine, item: item) {
                     Image(systemName: "rectangle.stack")
                         .foregroundStyle(item.isVideo ? accent : theme.ink.opacity(0.45))
                         .frame(width: 40, height: 36)
                 }
+                .disabled(!item.hasVersions)
+                .opacity(item.hasVersions ? 1 : 0.35)
                 .accessibilityLabel("Versions")
-            }
-            Spacer(minLength: 0)
-            Button { connection.command("repeat") } label: {
-                Image(systemName: repeatMode == "one" ? "repeat.1" : "repeat")
-                    .foregroundStyle(repeatMode == "off" ? theme.ink.opacity(0.45) : accent)
-                    .frame(width: 40, height: 36)
             }
         }
         .font(.system(size: 17, weight: .semibold))
