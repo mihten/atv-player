@@ -41,6 +41,8 @@ struct QueueView: View {
     @EnvironmentObject var connection: ServerConnection
     @ObservedObject private var titles = QueueTitles.shared
     @FocusState private var focused: Int?
+    /// The playing entry got the focus once (later track changes must not move the focus while browsing).
+    @State private var didFocus = false
     /// Set by the quick menu: called after a jump (closes the full-screen queue over the player).
     var onJump: (() -> Void)? = nil
 
@@ -73,6 +75,8 @@ struct QueueView: View {
             .denseList()
             .accessibilityIdentifier("queue.list")
             .onAppear { focusCurrent(proxy) }
+            // the state may arrive after the screen (fresh start): focus the playing entry as soon as it is known
+            .onChange(of: queue.isEmpty) { focusCurrent(proxy) }
         }
         .withNowPlaying(shown: onJump == nil)  // over the player: no sidebar (the player is right behind)
         .themedScreen()
@@ -101,9 +105,17 @@ struct QueueView: View {
     /// exist until scrolled to), then focus it; again after 0.35 s whatever tvOS picked meanwhile (as ChoiceList).
     private func focusCurrent(_ proxy: ScrollViewProxy) {
         let target = current
-        guard queue.indices.contains(target) else { return }
+        guard !didFocus, queue.indices.contains(target) else { return }
+        didFocus = true
         DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            proxy.scrollTo(target, anchor: .center)
+            focused = target
+        }
+        // a pushed screen can get tvOS's own first-row focus after that (push animation): once more, only if the focus
+        // is still on nothing or on the first row
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            guard focused == nil || (focused == 0 && target != 0) else { return }
             proxy.scrollTo(target, anchor: .center)
             focused = target
         }
