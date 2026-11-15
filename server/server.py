@@ -36,6 +36,7 @@ import box_sound
 import loudness
 import lyrics
 import scanner
+import badges
 import settings as settings_mod
 import shares as shares_mod
 
@@ -61,7 +62,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.29.0"
+VERSION = "0.30.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -113,7 +114,8 @@ def summary(it, keys=SUMMARY_KEYS):
     d["art"] = bool(it.get("has_art"))
     d["videos"] = (video_count(it["id"]) or None) if it["kind"] == "audio" else None  # linked music videos
     d["loved"] = is_loved(it["id"])
-    d["audio_copy"] = it["id"] in AUDIO_COPIES  # web remote badge: the sink's main-track copy exists
+    d["audio_copy"] = it["id"] in AUDIO_COPIES  # the sink's main-track copy exists (no badge any more)
+    d["badges"], d["abadges"] = badges.item_badges(it)  # the facts every player shows (badges.py)
     return d
 
 
@@ -235,9 +237,11 @@ def preferred_video(item_id):
     return next((i for i in videos if VERSION_CLASS[i] == own), videos[0] if videos else None)
 
 
-def collection(name, root=None, folder=None, recursive=True, playlist=None):
+def collection(name, root=None, folder=None, recursive=True, playlist=None, mix=None):
     if name in AUTO_NAMES:  # auto-playlists from the play history and the hearts
         return auto_items(name)
+    if name == "mix":  # Home: the folders and playlists of Mix 1 / Mix 2, each file once
+        return mix_items(mix)
     if name == "playlist":  # playlist order; hidden duplicates stay playable, vanished files are skipped
         pl = PLAYLISTS.get(playlist) if playlist is not None else None
         return [LIB[i] for i in pl["items"] if i in LIB] if pl else []
@@ -264,7 +268,7 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None):
 # The TV session keeps the original state.json; other kinds use state-<kind>.json. A web remote controls
 # one session at a time: ?session=<kind> on /ws or a {"type": "select", "session": <kind>} message.
 
-STATE_VERSION = 2  # 2 = repeat "all" is the default (older state files are migrated once)
+STATE_VERSION = 3  # 3 = repeat is always "all" (stored "off" / "one" are dropped on load)
 KINDS = ("tv", "phone", "box", "mtv")
 # "box": the atv-audio program plays this queue by itself (player role kind=box), the web remote is its only UI.
 # "mtv": a video player on its own screen output (mtv/ in the repo); its own queue, controlled from its on-screen UI
@@ -284,8 +288,7 @@ class Session:
         self.original: list[int] = []
         self.index = -1
         self.shuffle = False
-        # off | all | one. Default "all": playlists, folders and collections play endlessly
-        # (user feedback, 2026-10-19); the 🔁 buttons still cycle all → one → off.
+        # Always "all": every queue plays endlessly (user rule, 2026-11-14: no Repeat setting any more).
         self.repeat = "all"
         self.playing = False
         self.want_play = False
@@ -303,6 +306,7 @@ class Session:
         # switch_version, which the flag never changes back; dropped: video -> songs left out for it ("no doubles"),
         # put back when the flag goes off.
         self.prefer_videos = False
+        self.prefer_reset = False  # a stored "prefer videos" was switched off at load (Web Player): see on_startup
         self.swapped: dict[int, int] = {}
         self.pinned: list[int] = []
         self.dropped: dict[int, list[int]] = {}
@@ -343,7 +347,7 @@ class Session:
         return {
             "session": self.kind, "session_name": KIND_NAMES[self.kind], "sessions": sessions_summary(),
             "queue": self.queue, "index": self.index, "shuffle": self.shuffle, "repeat_mode": self.repeat,
-            "prefer_videos": self.prefer_videos,
+            "prefer_videos": self.prefer_videos, "mixes": mixes_summary(),
             "playing": self.playing, "position": self.position, "position_at": self.position_at,
             "server_time": time.time(), "duration": self.duration,
             "current": full(cur) if cur else None, "upcoming": upcoming,
@@ -371,9 +375,10 @@ class Session:
         for k in SAVED_KEYS:  # unknown keys (e.g. "output" from server 0.9.0) are ignored
             if k in data:
                 setattr(self, k, data[k])
-        if version < 2:  # saved before endless playback became the default: switch it on once
-            self.repeat = "all"
-        self.prefer_videos = bool(self.prefer_videos)
+        self.repeat = "all"  # states saved with "off" / "one" (before 0.30.0) play endlessly too
+        was = bool(self.prefer_videos)
+        self.prefer_videos = was and self.kind != "box"  # the Web Player cannot show videos
+        self.prefer_reset = was and not self.prefer_videos  # on_startup puts the songs back
         self.swapped = {int(k): int(v) for k, v in (self.swapped or {}).items()}  # JSON keys are strings
         self.pinned = [int(i) for i in self.pinned or []]
         self.dropped = {int(k): [int(i) for i in v] for k, v in (self.dropped or {}).items()}
@@ -779,6 +784,119 @@ async def playlists_changed(pl_id=None):
     msg = {"type": "playlists", "id": pl_id}
     for ws in list(PLAYERS) + list(SINKS.values()) + list(REMOTES):
         await send(ws, msg)
+
+
+# ---------------------------------------------------------------- mixes (Home: the two small shuffle tiles)
+# Two named sets of folders and / or playlists, stored in DATA/mixes.json and shared by every app and the web remote:
+# a tile plays all their files once each, shuffled (collection "mix"). The state carries a short summary (name, how many
+# folders / playlists) so the tiles follow an edit at once; the full list comes from GET /api/mixes.
+
+MIXES_FILE = DATA / "mixes.json"
+MIX_COUNT = 2
+MIX_MAX_SOURCES = 40
+MIX_NAME_MAX = 40
+MIXES: list[dict] = []  # [{"name": "Mix 1", "sources": [{"type": "folder", "root", "folder", "recursive"} | {"type": "playlist", "id"}]}]
+
+
+def default_mixes():
+    return [{"name": f"Mix {n}", "sources": []} for n in range(1, MIX_COUNT + 1)]
+
+
+def clean_mix_name(value, fallback):
+    return " ".join(str(value or "").split())[:MIX_NAME_MAX] or fallback
+
+
+def clean_mix_source(src):
+    """A stored / posted source in its canonical form, or None when it is not one."""
+    if not isinstance(src, dict):
+        return None
+    if src.get("type") == "playlist":
+        try:
+            return {"type": "playlist", "id": int(src.get("id"))}
+        except (TypeError, ValueError):
+            return None
+    if src.get("type") == "folder" and isinstance(src.get("root"), str) and src["root"]:
+        return {"type": "folder", "root": src["root"], "folder": str(src.get("folder") or "").strip("/"),
+                "recursive": src.get("recursive", True) is not False}
+    return None
+
+
+def clean_mix_sources(value):
+    out = []
+    for src in value if isinstance(value, list) else []:
+        c = clean_mix_source(src)
+        if c is not None and c not in out:
+            out.append(c)
+    return out[:MIX_MAX_SOURCES]
+
+
+def load_mixes():
+    MIXES[:] = default_mixes()
+    try:
+        data = json.loads(MIXES_FILE.read_text())
+    except (OSError, ValueError):
+        return
+    for n, mix in enumerate(data.get("mixes", [])[:MIX_COUNT]):
+        if isinstance(mix, dict):
+            MIXES[n] = {"name": clean_mix_name(mix.get("name"), f"Mix {n + 1}"),
+                        "sources": clean_mix_sources(mix.get("sources"))}
+
+
+def save_mixes():
+    tmp = MIXES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"mixes": MIXES}, indent=1))
+    tmp.replace(MIXES_FILE)
+
+
+def mix_items(n):
+    """The files of mix n (1-based): every source in order, each file once. A vanished playlist or folder adds nothing."""
+    if n is None or not 1 <= n <= len(MIXES):
+        return []
+    seen, out = set(), []
+    for src in MIXES[n - 1]["sources"]:
+        if src["type"] == "playlist":
+            items = collection("playlist", playlist=src["id"])
+        else:
+            items = collection("folder", src["root"], src["folder"], src.get("recursive", True))
+        for it in items:
+            if it["id"] not in seen:
+                seen.add(it["id"])
+                out.append(it)
+    return out
+
+
+def mixes_summary():
+    """In every state message: enough for the Home tiles."""
+    return [{"name": m["name"], "folders": sum(1 for x in m["sources"] if x["type"] == "folder"),
+             "playlists": sum(1 for x in m["sources"] if x["type"] == "playlist")} for m in MIXES]
+
+
+def mix_source_detail(src):
+    if src["type"] == "playlist":
+        pl = PLAYLISTS.get(src["id"])
+        n = len(collection("playlist", playlist=src["id"])) if pl else 0
+        return {**src, "name": pl["name"] if pl else "(deleted playlist)", "count": n, "missing": pl is None}
+    items = collection("folder", src["root"], src["folder"], src.get("recursive", True))
+    leaf = src["folder"].rsplit("/", 1)[-1] if src["folder"] else ROOT_NAMES.get(src["root"], src["root"])
+    return {**src, "name": leaf, "root_name": ROOT_NAMES.get(src["root"], src["root"]), "count": len(items),
+            "missing": not items}
+
+
+def mixes_detail():
+    return [{"number": n, "name": m["name"], "sources": [mix_source_detail(x) for x in m["sources"]],
+             "count": len(mix_items(n))} for n, m in enumerate(MIXES, start=1)]
+
+
+def mixes_drop_playlist(pl_id):
+    """A deleted playlist leaves every mix."""
+    changed = False
+    for m in MIXES:
+        keep = [x for x in m["sources"] if not (x["type"] == "playlist" and x["id"] == pl_id)]
+        if len(keep) != len(m["sources"]):
+            m["sources"], changed = keep, True
+    if changed:
+        save_mixes()
+    return changed
 
 
 async def loved_changed():
@@ -2022,20 +2140,14 @@ async def set_queue(s, ids, start_index=None, shuffle=False):
 async def advance(s, user):
     if not s.queue:
         return
-    if s.repeat == "one" and not user:
-        pass
-    elif s.index + 1 < len(s.queue):
+    if s.index + 1 < len(s.queue):
         s.index += 1
-    elif s.repeat == "all":
+    else:  # always repeat all: a new lap
         if s.shuffle:  # new lap: the items just heard go to the back, not straight to the front again
             s.queue = smart_shuffle(s.queue)
         s.index = 0
         if s.prefer_videos or s.swapped:
             apply_prefer(s, whole=True)
-    else:
-        s.index = len(s.queue) - 1
-        await stop_playback(s)
-        return
     await start_current(s)
 
 
@@ -2096,8 +2208,14 @@ async def handle_cmd(s, msg):
                 playlist = int(msg.get("playlist"))
             except (TypeError, ValueError):
                 return
+        mix = None
+        if name == "mix":
+            try:
+                mix = int(msg.get("mix"))
+            except (TypeError, ValueError):
+                return
         items = collection(name, msg.get("root"), msg.get("folder"),
-                           msg.get("recursive", True) is not False, playlist)
+                           msg.get("recursive", True) is not False, playlist, mix)
         ids = [it["id"] for it in items]
         if msg.get("start_index") is not None:  # playlists may hold the same song twice
             start = int(msg["start_index"])
@@ -2106,7 +2224,8 @@ async def handle_cmd(s, msg):
                 start = sum(1 for i in stored[:start] if i in LIB)
         else:
             start = ids.index(msg["start_id"]) if msg.get("start_id") in ids else None
-        log.info("[%s] play %s%s: %d items, shuffle %s", s.kind, name, f" {playlist}" if playlist is not None else "",
+        log.info("[%s] play %s%s: %d items, shuffle %s", s.kind, name,
+                 f" {playlist}" if playlist is not None else f" {mix}" if mix is not None else "",
                  len(ids), bool(msg.get("shuffle")))
         await set_queue(s, ids, start, bool(msg.get("shuffle")))
         if ids:
@@ -2194,14 +2313,9 @@ async def handle_cmd(s, msg):
         s.save()
         await broadcast_state(s)
     elif cmd == "repeat":
-        mode = msg.get("mode")
-        if mode not in ("off", "all", "one"):
-            mode = {"off": "all", "all": "one", "one": "off"}[s.repeat]
-        s.repeat = mode
-        s.save()
-        await broadcast_state(s)
+        pass  # always repeat all (0.30.0); apps older than that still send it
     elif cmd == "prefer_videos":
-        on = bool(msg.get("on", not s.prefer_videos))
+        on = bool(msg.get("on", not s.prefer_videos)) and s.kind != "box"  # the Web Player cannot show videos
         if on != s.prefer_videos:
             s.prefer_videos = on
             apply_prefer(s)
@@ -2660,10 +2774,44 @@ async def api_playlist_add(request):
     return web.json_response({"added": len(ids), "playlist": playlist_summary(pl)})
 
 
+async def api_mixes(_request):
+    return web.json_response({"mixes": mixes_detail()})
+
+
+async def api_mix_update(request):
+    """PUT /api/mixes/<1|2> {"name"?, "sources"?}: the whole source list is replaced. Unknown playlists / roots are refused."""
+    n = int(request.match_info["n"])
+    if not 1 <= n <= len(MIXES):
+        raise web.HTTPNotFound(text="no such mix")
+    body = await _json_body(request)
+    mix = MIXES[n - 1]
+    if "name" in body:
+        mix["name"] = clean_mix_name(body["name"], f"Mix {n}")
+    if "sources" in body:
+        raw = body["sources"]
+        if not isinstance(raw, list) or any(clean_mix_source(x) is None for x in raw):
+            raise web.HTTPBadRequest(text="sources: a list of folders (root, folder) and playlists (id)")
+        sources = clean_mix_sources(raw)  # each once, at most MIX_MAX_SOURCES
+        for src in sources:
+            if src["type"] == "playlist" and src["id"] not in PLAYLISTS:
+                raise web.HTTPBadRequest(text=f"playlist {src['id']} does not exist")
+            if src["type"] == "folder" and src["root"] not in ROOT_NAMES:
+                raise web.HTTPBadRequest(text=f"unknown root {src['root']!r}")
+        mix["sources"] = sources
+    save_mixes()
+    log.info("mix %d saved: %r, %d sources", n, mix["name"], len(mix["sources"]))
+    await broadcast_all()
+    for ws in list(PLAYERS) + list(SINKS.values()) + list(REMOTES):
+        await send(ws, {"type": "mixes"})
+    return web.json_response({"mixes": mixes_detail()})
+
+
 async def api_playlist_delete(request):
     pl = _playlist_or_404(request)
     del PLAYLISTS[pl["id"]]
     log.info("playlist %s deleted: %r", pl["id"], pl["name"])
+    if mixes_drop_playlist(pl["id"]):
+        await broadcast_all()
     await playlists_changed(pl["id"])
     return web.json_response({"deleted": pl["id"]})
 
@@ -3812,9 +3960,44 @@ async def api_cache_clear(request):
     return web.json_response({"ok": True, "removed": removed, "freed": freed})
 
 
-# Backup: playlists, hearts and the play history in one JSON file. Every id is stored with its file (root + path), so
+# Backup: playlists, mixes, hearts and the play history in one JSON file. Every id is stored with its file (root + path), so
 # a restore onto a rebuilt library (new ids) finds the same files again; entries whose file is gone are left out.
 BACKUP_FORMAT = "atv-media-backup"
+
+
+def backup_mixes():
+    """Mixes with each playlist source as its position in the exported playlist list (a restore renumbers playlists)."""
+    order = {pl["id"]: n for n, pl in enumerate(sorted(PLAYLISTS.values(), key=lambda p: p["id"]))}
+    out = []
+    for m in MIXES:
+        sources = [({"type": "playlist", "at": order[x["id"]]} if x["type"] == "playlist" else dict(x))
+                   for x in m["sources"] if x["type"] == "folder" or x["id"] in order]
+        out.append({"name": m["name"], "sources": sources})
+    return out
+
+
+def restore_mixes(rows, n_playlists):
+    """Backup's mixes (or none: folders stay, playlist sources go) onto the freshly numbered playlists (1..n)."""
+    if not isinstance(rows, list):
+        for m in MIXES:
+            m["sources"] = [x for x in m["sources"] if x["type"] == "folder"]
+        return
+    MIXES[:] = default_mixes()
+    for n, row in enumerate(rows[:MIX_COUNT]):
+        if not isinstance(row, dict):
+            continue
+        sources = []
+        for x in row.get("sources") if isinstance(row.get("sources"), list) else []:
+            if isinstance(x, dict) and x.get("type") == "playlist":
+                try:
+                    at = int(x.get("at"))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= at < n_playlists:
+                    sources.append({"type": "playlist", "id": at + 1})
+            else:
+                sources.append(x)
+        MIXES[n] = {"name": clean_mix_name(row.get("name"), f"Mix {n + 1}"), "sources": clean_mix_sources(sources)}
 
 
 def backup_data():
@@ -3828,6 +4011,7 @@ def backup_data():
             "playlists": [{"name": pl["name"], "items": pl["items"], "created": pl["created"]}
                           for pl in sorted(PLAYLISTS.values(), key=lambda p: p["id"])],
             "loved": [[i, at] for i, at in loved], "plays": [[i, at] for i, at in plays],
+            "mixes": backup_mixes(),
             "box_sound": SESSIONS["box"].sound, "mtv_sound": SESSIONS["mtv"].sound}
 
 
@@ -3910,6 +4094,8 @@ async def api_backup_restore(request):
         PLAYLISTS[n] = {"id": n, "name": name, "items": items, "created": created or now, "updated": now}
     NEXT_PLAYLIST_ID = len(lists) + 1
     save_playlists()
+    restore_mixes(data.get("mixes"), len(lists))
+    save_mixes()
     for kind in SERVER_SOUND:  # older backups have no "mtv_sound": that session keeps its settings
         if isinstance(data.get(f"{kind}_sound"), dict):
             SESSIONS[kind].sound = box_sound.clean(data[f"{kind}_sound"])
@@ -4091,6 +4277,12 @@ async def on_startup(app):
     for s in SESSIONS.values():
         s.load()
     load_playlists()
+    load_mixes()
+    box = SESSIONS["box"]  # the Web Player cannot show videos: songs a stored "prefer videos" swapped go back
+    if box.prefer_reset:
+        box.prefer_reset = False
+        apply_prefer(box)
+        box.save()
     load_history()
     load_listening()
     APP_REF["app"] = app
@@ -4122,6 +4314,8 @@ def make_app():
     app.router.add_put("/api/playlists/{id:\\d+}", api_playlist_update)
     app.router.add_post("/api/playlists/{id:\\d+}/items", api_playlist_add)
     app.router.add_delete("/api/playlists/{id:\\d+}", api_playlist_delete)
+    app.router.add_get("/api/mixes", api_mixes)
+    app.router.add_put("/api/mixes/{n:\\d+}", api_mix_update)
     app.router.add_post("/api/rescan", api_rescan)
     app.router.add_get("/api/settings", api_settings)
     app.router.add_post("/api/settings/unlock", api_settings_unlock)

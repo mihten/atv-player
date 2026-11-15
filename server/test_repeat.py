@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Endless playback (repeat "all" default + one-time migration), against a THROWAWAY server instance
+"""Endless playback (repeat is always "all"; a stored off/one and the repeat command are ignored), against a THROWAWAY server instance
 (own temp library, data dir and port; never the real one).   python3 test_repeat.py   (run on the media server host)
 """
 import asyncio
@@ -116,24 +116,32 @@ async def main(tmp):
             m = await next_msg(player, {"load", "control"})
             check(m["type"] == "load" and {first, second} == {a, b}, "shuffled folder wraps around too")
 
-            # The web remote toggle still works and survives a restart.
-            await player.send_json({"type": "cmd", "cmd": "repeat", "mode": "off"})
-            await asyncio.sleep(0.3)
-            cur = (await state(http))["current"]["id"]
-            other = b if cur == a else a
+            # Repeat is not a setting any more (0.30.0): "off" / "one" from an old app change nothing.
+            for mode in ("off", "one", None):
+                await player.send_json({"type": "cmd", "cmd": "repeat", **({"mode": mode} if mode else {})})
+                await asyncio.sleep(0.3)
+                check((await state(http))["repeat_mode"] == "all", f"repeat command {mode!r} is ignored: still all")
             st = await state(http)
-            if st["index"] == 0:
+            cur = st["current"]["id"]
+            if st["index"] == 0:  # make the current item the last one of the 2-item queue
                 await player.send_json({"type": "ended", "item": cur})
-                await next_msg(player, {"load"})
-                cur = other
+                cur = (await next_msg(player, {"load"}))["item"]["id"]
             await player.send_json({"type": "ended", "item": cur})
             m = await next_msg(player, {"load", "control"})
-            check(m["type"] == "control" and m["action"] == "stop", "repeat off (toggle): stops at the end")
+            check(m["type"] == "load" and m["autoplay"], "after an ignored 'repeat off' the last item still wraps around")
             await player.close()
             stop(proc)
+
+            # A state file saved with "off" or "one" by an older server (state_version 3 or not) plays endlessly too.
+            for stored in ("off", "one"):
+                (data / "state.json").write_text(json.dumps({"queue": [a, b], "original": [a, b], "index": 0,
+                                                             "shuffle": False, "repeat": stored, "position": 0,
+                                                             "state_version": 3}))
+                proc = start(tmp, env)
+                await wait_up(http)
+                check((await state(http))["repeat_mode"] == "all", f"stored repeat {stored!r} is loaded as all")
+                stop(proc)
             proc = start(tmp, env)
-            await wait_up(http)
-            check((await state(http))["repeat_mode"] == "off", "a deliberate 'off' is kept after a restart")
     finally:
         stop(proc)
 

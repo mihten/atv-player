@@ -53,7 +53,7 @@ first page), Blue / Red close. A held key counts as one press (arrows repeat whi
 Lyrics screen, Subtitles ›, Audio output (HDMI / Headphones: the same switch as the web remote; Headphones that are not
 ready are asked for during one minute, then never again by themselves), Volume, Boost, Loudness (the server's sound
 settings of this session), Equalizer (a short preset picker: Off, Momentum 4, Bass boost, Vocal, Bright, V-shape, Custom),
-Shuffle, Repeat, then a divider and the lists: Queue, Playlists, For you (its last row: Music videos). No Play / Pause
+Shuffle, then a divider and the lists: Queue, Playlists, For you (its last row: Music videos). No Play / Pause
 or Stop row (the remote has those buttons). While the screensaver is on, any key only closes it.
 
 Lyrics: the video's own lyrics (subtitle) track in the chosen language is shown on the picture (Auto = the file's default
@@ -92,7 +92,7 @@ import saver as saver_mod  # noqa: E402
 import sinklink  # noqa: E402
 import subs as subs_mod  # noqa: E402
 
-VERSION = "0.17.1"
+VERSION = "0.18.0"
 STATUS_EVERY = 1.0       # s between status messages while something is loaded
 VOLUME_STEP = 5          # % per press of a volume key / Left / Right on the menu's Volume row
 HP_HOLD = 2.0            # s the headphones' volume just sent is shown as it is (the sink's report comes a moment later)
@@ -777,7 +777,7 @@ class Player:
         st = self.state or {}
         up = st.get("upcoming") or []
         return {"item": it, "pos": self.pos, "dur": dur, "playing": self.want_play, "next": up[0] if up else None,
-                "shuffle": bool(st.get("shuffle")), "repeat": st.get("repeat_mode") or "all",
+                "shuffle": bool(st.get("shuffle")),
                 "accent": self.accent(), "base": self.backdrop_base(), "thumb": False}
 
     async def info_thumb_for(self, iid):

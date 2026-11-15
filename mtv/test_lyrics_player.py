@@ -217,8 +217,8 @@ async def main():
                                  ["p:11", "Pop"], ["custom", "Custom"]]}
     await p.menu.show()
     labels = [r.label for r in p.menu.page.rows]
-    check(labels[:9] == ["Lyrics screen", "Subtitles", "Audio output", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle", "Repeat"]
-          and labels[9:] == ["Queue", "Playlists", "For you"],
+    check(labels[:8] == ["Lyrics screen", "Subtitles", "Audio output", "Volume", "Boost", "Loudness", "Equalizer", "Shuffle"]
+          and labels[8:] == ["Queue", "Playlists", "For you"],
           f"menu: Lyrics screen first, settings (Audio output after Subtitles), then Queue / Playlists / For you ({labels})")
     check(len(labels) <= M.menu_mod.ROWS, f"the first page fits on the screen ({len(labels)} rows)")
     p.menu.page.sel = 2

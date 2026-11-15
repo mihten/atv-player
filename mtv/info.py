@@ -1,6 +1,6 @@
 """The info popup of mtv-player: the Apple TV app's info bar (ThemedInfoBar) for the TV. A rounded card at the bottom of
 the screen with the cover thumbnail, title + artist, codec chips, a glow progress bar with the elapsed / remaining time,
-"Next: ..." and the play state / shuffle / repeat marks.
+"Next: ..." and the play state / shuffle marks.
 
 It shows for SHOW_S seconds when a different video starts and when the Back button is pressed with no menu open; Back
 while it is up hides it at once. It is not drawn over the lyrics screen (that screen has its own title and progress, as
@@ -93,12 +93,12 @@ class Info:
         it = data.get("item") or {}
         nx = data.get("next") or {}
         return (it.get("id"), it.get("title"), it.get("artist"), int(data.get("pos") or 0), int(data.get("dur") or 0),
-                bool(data.get("playing")), nx.get("title"), bool(data.get("shuffle")), data.get("repeat"),
+                bool(data.get("playing")), nx.get("title"), bool(data.get("shuffle")),
                 data.get("accent"), data.get("base"), bool(data.get("thumb")))
 
     def render(self, data):
         """ASS events of the card. data: item (summary), pos, dur (s), playing, next (summary or None), shuffle (bool),
-        repeat ("all" | "one" | "off"), accent / base (rgb 0..1 or None), thumb (the bitmap is drawn: bool)."""
+        accent / base (rgb 0..1 or None), thumb (the bitmap is drawn: bool)."""
         it = data.get("item") or {}
         accent = data.get("accent") or (0.45, 0.68, 1.0)
         base = data.get("base")
@@ -143,13 +143,11 @@ class Info:
             ev.append(d.rrect(TX, by, fx, by + 10, 5, accent))
         ev.append(d.text(TX, Y0 + 140, clock(pos), 24, INK, 0.65, 500, an=4))
         ev.append(d.text(TR, Y0 + 140, "-" + clock(max(0, dur - pos)), 24, INK, 0.65, 500, an=6))
-        # row 3: Next: ... at the left, play state / shuffle / repeat at the right
+        # row 3: Next: ... at the left, play state / shuffle at the right
         marks = []
         playing = bool(data.get("playing"))
         marks.append(("PLAYING" if playing else "PAUSED", accent if playing else INK, 1.0 if playing else 0.75))
         marks.append(("SHUFFLE", accent if data.get("shuffle") else INK, 1.0 if data.get("shuffle") else 0.3))
-        rep = data.get("repeat") or "all"
-        marks.append(("REPEAT ONE" if rep == "one" else "REPEAT", accent if rep != "off" else INK, 1.0 if rep != "off" else 0.3))
         x = TR
         for label, color, op in reversed(marks):
             ev.append(d.text(x, Y0 + 178, label, 19, color, op, 700, an=6, spacing=3))

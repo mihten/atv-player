@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS items (
   lossless INTEGER NOT NULL DEFAULT 0,
   channels INTEGER,
   bitrate INTEGER,
+  srate INTEGER,
+  bdepth INTEGER,
   width INTEGER,
   height INTEGER,
   size INTEGER NOT NULL,
@@ -79,7 +81,7 @@ CREATE TABLE IF NOT EXISTS audio_probe (item_id INTEGER PRIMARY KEY, mtime REAL 
 
 COLUMNS = (
     "root", "relpath", "folder", "kind", "title", "artist", "album", "albumartist", "track", "disc",
-    "year", "duration", "codec", "acodec", "fps", "dyn", "lossless", "channels", "bitrate", "width", "height", "size",
+    "year", "duration", "codec", "acodec", "fps", "dyn", "lossless", "channels", "bitrate", "srate", "bdepth", "width", "height", "size",
     "mtime", "has_art", "audio_track", "audio_ord", "sub_track", "sub_ord", "subs", "added",
 )
 
@@ -108,6 +110,10 @@ def connect(db_path):
         con.execute("ALTER TABLE items ADD COLUMN fps REAL")
         con.execute("ALTER TABLE items ADD COLUMN dyn TEXT")
         con.execute("UPDATE items SET fps = 0, dyn = '' WHERE kind = 'audio'")
+        con.commit()
+    if "srate" not in cols:  # added 2026-11-14 (badges: sample rate + bit depth). NULL = re-read once; 0 = unknown
+        con.execute("ALTER TABLE items ADD COLUMN srate INTEGER")
+        con.execute("ALTER TABLE items ADD COLUMN bdepth INTEGER")
         con.commit()
     return con
 
@@ -139,6 +145,13 @@ def _first(tags, *keys):
     return None
 
 
+def _int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _num(value):
     if not value:
         return None
@@ -166,6 +179,9 @@ def read_audio(path):
         "duration": getattr(info, "length", None),
         "channels": getattr(info, "channels", None),
         "bitrate": getattr(info, "bitrate", None) or None,
+        # 0 = the format has none (MP3, Opus): stored so the file is not re-read for it
+        "srate": int(getattr(info, "sample_rate", 0) or 0),
+        "bdepth": int(getattr(info, "bits_per_sample", 0) or 0),
         "codec": str(codec),
         "acodec": str(codec),
         "lossless": 1 if ext in LOSSLESS_EXT or str(codec).lower() == "alac" else 0,
@@ -353,6 +369,8 @@ def probe_video(path):
         "width": (video or {}).get("width"),
         "height": (video or {}).get("height"),
         "channels": (audio_def or {}).get("channels"),
+        "srate": _int((audio_def or {}).get("sample_rate")),
+        "bdepth": _int((audio_def or {}).get("bits_per_raw_sample")) or _int((audio_def or {}).get("bits_per_sample")),
         "lossless": 1 if audio_def and audio_def.get("codec_name") in LOSSLESS_CODECS else 0,
         "audio_track": title_of(audio_def) if audio_def else None,
         "audio_ord": audios.index(audio_def) if audio_def and len(audios) > 1 else None,
@@ -480,7 +498,7 @@ def scan(db_path, roots, force=False, skip=None):
     started = time.time()
     con = connect(db_path)
     existing = {(r["root"], r["relpath"]): r for r in con.execute(
-        "SELECT id, root, relpath, folder, kind, size, mtime, duration, subs, acodec, fps, dyn FROM items")}
+        "SELECT id, root, relpath, folder, kind, size, mtime, duration, subs, acodec, fps, dyn, srate FROM items")}
     seen, added, updated, failed = set(), 0, 0, 0
     new_keys = []
     found = {root: 0 for root in roots}
@@ -524,9 +542,9 @@ def scan(db_path, roots, force=False, skip=None):
                     continue
                 old = existing.get(key)
                 unchanged = old is not None and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1
-                # one-time re-probe of unchanged videos scanned before "subs" / "acodec" / "fps" existed
-                backfill = unchanged and kind == "video" and (
-                    old["subs"] is None or old["acodec"] is None or old["fps"] is None or old["dyn"] is None)
+                # one-time re-probe of unchanged files scanned before "subs" / "acodec" / "fps" (videos) / "srate" (all) existed
+                backfill = unchanged and (old["srate"] is None or kind == "video" and (
+                    old["subs"] is None or old["acodec"] is None or old["fps"] is None or old["dyn"] is None))
                 if not force and unchanged and not backfill:
                     continue
                 try:

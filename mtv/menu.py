@@ -6,7 +6,7 @@ WebSocket, the server owns the queue). Keys: Up / Down move (CH+ / CH- page), OK
 Back go back one page (Back closes on the first page), Blue (Menu) and Red close.
 
 First page (owner, 2026-11-10 / -12): the settings first (Lyrics screen, Subtitles ›, Audio output, Volume, Boost, Loudness,
-Equalizer, Shuffle, Repeat), then a subtle divider and the lists (Queue, Playlists, For you; Music videos sits at the end
+Equalizer, Shuffle), then a subtle divider and the lists (Queue, Playlists, For you; Music videos sits at the end
 of For you). Audio output = HDMI / Headphones (the player's sinklink; connecting is tried for a minute). The Subtitles page holds
 Language (bottom line), Second language (top line), Font, Size, Box, Bold (subs.py). Setting rows work on any page that
 has a builder (Page.build); there Left changes a choice / level row, so Back (or Left on another row) goes up. No Play / Pause or Stop row (the
@@ -170,7 +170,6 @@ class Menu:
                                 vmax=len(opts) - 1, key="eq", options=opts))
         rows.append(Row("Shuffle", "on" if st.get("shuffle") else "off", act={"cmd": "shuffle"}, kind="toggle",
                         value=bool(st.get("shuffle")), key="shuffle"))
-        rows.append(Row("Repeat", st.get("repeat_mode") or "all", act={"cmd": "repeat"}))
         n = len(st.get("queue") or [])
         rows += [
             Row("Queue", f"{n} item{'s' if n != 1 else ''}" if n else "empty", act=self.queue_page, opens=True, sep=True),
@@ -276,7 +275,7 @@ class Menu:
         self._scroll(page)
 
     def refresh_root(self):
-        """Server state or a setting changed (shuffle, repeat, sound, lyrics, subtitles): the page on top follows it
+        """Server state or a setting changed (shuffle, sound, lyrics, subtitles): the page on top follows it
         when it is a settings page (the first page, Subtitles); list pages keep their rows."""
         page = self.page
         if page is None or page.build is None:

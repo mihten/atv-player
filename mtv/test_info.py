@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """info.py (the TV Player's info popup) without mpv: the 5 s timer (show / hide / toggle), what makes it redraw, the drawing
-(title + artist, codec chips, progress geometry, times, Next, play / shuffle / repeat marks, the empty-cover tile), that
+(title + artist, codec chips, progress geometry, times, Next, play / shuffle marks, the empty-cover tile), that
 everything stays inside the card and long text is cut, ASS escaping, and the cover bitmap (premultiplied BGRA, rounded
 corners, cropped to fill, a bad picture -> None).
     python3 test_info.py   (Pillow for the bitmap checks)
@@ -38,7 +38,7 @@ ITEM = {"id": 7, "kind": "video", "title": "Million Reasons", "artist": "Arhanna
 
 def data(**kw):
     return dict({"item": ITEM, "pos": 95.0, "dur": 118.0, "playing": True, "next": {"id": 8, "title": "Jar Of Hearts"},
-                 "shuffle": True, "repeat": "all", "accent": ACCENT, "base": BASE, "thumb": True}, **kw)
+                 "shuffle": True, "accent": ACCENT, "base": BASE, "thumb": True}, **kw)
 
 
 def events(ass):
@@ -100,7 +100,7 @@ def main():
     sig = f.signature(data())
     check(f.signature(data(pos=95.6)) == sig, "the same whole second: no redraw")
     for label, kw in (("a second later", {"pos": 96.0}), ("paused", {"playing": False}), ("another next", {"next": {"id": 9, "title": "X"}}),
-                      ("shuffle off", {"shuffle": False}), ("repeat one", {"repeat": "one"}), ("cover arrived", {"thumb": False}),
+                      ("shuffle off", {"shuffle": False}), ("cover arrived", {"thumb": False}),
                       ("another item", {"item": dict(ITEM, id=8)}), ("another colour", {"accent": (0.2, 0.9, 0.3)}),
                       ("longer file", {"dur": 200.0})):
         check(f.signature(data(**kw)) != sig, f"redraw when: {label}")
@@ -108,7 +108,7 @@ def main():
     # ---- the drawing
     ass = f.render(data())
     t = {w: find(ass, w) for w in ("Million Reasons", "Arhanna", "HEVC", "OPUS", "2025", "1:35", "-0:23", "Next: ", "Jar Of Hearts",
-                                   "PLAYING", "SHUFFLE", "REPEAT")}
+                                   "PLAYING", "SHUFFLE")}
     check(all(len(v) == 1 for v in t.values()), f"every text drawn once ({ {k: len(v) for k, v in t.items()} })")
     check(t["Million Reasons"][0][0] == I.TX and t["Arhanna"][0][0] > I.TX + d.width("Million Reasons", 44, 800), "artist right of the title")
     check(t["1:35"][0][0] == I.TX and t["-0:23"][0][0] == I.TR, "times: elapsed left, remaining right")
@@ -127,13 +127,11 @@ def main():
     check("-0:00" in unknown and "Million Reasons" in unknown, "unknown duration: no crash, 0:00")
     # marks
     check(alpha_of(t["PLAYING"][0][2]) == d.alpha(1.0) and f"\\1c{accent}" in t["PLAYING"][0][2], "PLAYING in the accent colour")
-    paused = I.Info().render(data(playing=False, shuffle=False, repeat="off"))
+    paused = I.Info().render(data(playing=False, shuffle=False))
     check(find(paused, "PAUSED") and not find(paused, "PLAYING"), "paused -> PAUSED")
     check(alpha_of(find(paused, "SHUFFLE")[0][2]) == d.alpha(0.3) and alpha_of(find(ass, "SHUFFLE")[0][2]) == d.alpha(1.0),
           "SHUFFLE: dim when off, accent when on")
-    check(alpha_of(find(paused, "REPEAT")[0][2]) == d.alpha(0.3) and alpha_of(find(ass, "REPEAT")[0][2]) == d.alpha(1.0),
-          "REPEAT: dim when off, accent when on")
-    check(find(I.Info().render(data(repeat="one")), "REPEAT ONE"), "repeat one is named")
+    check(not find(ass, "REPEAT") and not find(paused, "REPEAT"), "no REPEAT mark: the server always repeats all")
     # chips and Next
     check(t["HEVC"][0][0] < t["OPUS"][0][0] < t["2025"][0][0] <= I.TR, "codec chips in order at the right edge")
     nonext = I.Info().render(data(next=None))

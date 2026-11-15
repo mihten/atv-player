@@ -53,35 +53,34 @@ async def main():
     check(not m.open and m.render() == "", "closed: nothing drawn")
     await m.show()
     labels = [r.label for r in m.page.rows]
-    check(labels == ["Shuffle", "Repeat", "Queue", "Playlists", "For you"],
-          f"root rows: settings first, the three lists last (Music videos is in For you), no Play / Pause or Stop ({labels})")
-    check(m.page.rows[2].sub == "3 items" and [r.sep for r in m.page.rows] == [False, False, True, False, False],
+    check(labels == ["Shuffle", "Queue", "Playlists", "For you"],
+          f"root rows: settings first, the three lists last (Music videos is in For you), no Play / Pause, Stop or Repeat ({labels})")
+    check(m.page.rows[1].sub == "3 items" and [r.sep for r in m.page.rows] == [False, True, False, False],
           "root subs: queue size; the divider is above Queue only")
     drawn = m.render()
     check("}Song 1" in drawn and "}Artist 1" in drawn and "NOW PLAYING" in drawn, "header: now playing, title, artist")
 
-    # ---- wrap, shuffle / repeat stay open, root follows state
+    # ---- wrap, shuffle stays open, root follows state (no Repeat row: the server always repeats all)
     await m.key("up")
-    check(m.page.sel == 4, "Up on the first row wraps to the last")
+    check(m.page.sel == 3, "Up on the first row wraps to the last")
     await m.key("down")
-    m.page.sel = 1
-    await m.key("ok")
-    check(sent[-1] == {"cmd": "repeat", "type": "cmd"} and m.open, "Repeat row: command, menu stays open")
-    state["repeat_mode"] = "one"
+    state["shuffle"] = True
     m.refresh_root()
-    check(m.page.rows[1].sub == "one" and m.page.sel == 1, "state change refreshes the root, selection kept")
+    check(m.page.rows[0].sub == "on" and m.page.sel == 0, "state change refreshes the root, selection kept")
+    state["shuffle"] = False
+    m.refresh_root()
     m.page.sel = 0
     await m.key("ok")
     check(sent[-1] == {"cmd": "shuffle", "type": "cmd"} and m.open, "Shuffle row: command, menu stays open")
     await m.key("up")
-    check(m.page.sel == 4, "Up on the first row wraps to the last (again)")
+    check(m.page.sel == 3, "Up on the first row wraps to the last (again)")
     await m.key("down")
     check(m.page.sel == 0, "Down on the last row wraps to the first")
     check(await m.key("right") is False and m.open, "Right on a toggle row does nothing")
     check(await m.key("left") is False and m.open, "Left on the root does nothing")
 
     # ---- queue: titles from the library, current marked and selected, jump closes
-    m.page.sel = 2
+    m.page.sel = 1
     await m.key("right")
     check(m.page.title == "Queue" and calls[-1] == "/api/library", "Right opens Queue (library fetched)")
     check([r.label for r in m.page.rows] == ["Artist 0 – Song 0", "▶ Artist 1 – Song 1", "Artist 2 – Song 2"]
@@ -92,7 +91,7 @@ async def main():
 
     # ---- playlists -> items: play all, shuffle, by index (a playlist may list an item twice)
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 2
     await m.key("ok")
     check(m.page.title == "Playlists" and [r.label for r in m.page.rows] == ["Fav {Spotovi}", "Talent"], "playlists")
     await m.key("ok")
@@ -104,7 +103,7 @@ async def main():
     check(sent[-1] == {"cmd": "play_collection", "collection": "playlist", "playlist": 5, "shuffle": True, "type": "cmd"},
           "Shuffle all -> play_collection shuffle")
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 2
     await m.key("ok")
     await m.key("down")
     await m.key("ok")  # Talent: 30 items
@@ -115,7 +114,7 @@ async def main():
 
     # ---- paging + scroll window on a long list
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 2
     await m.key("ok")
     await m.key("down")
     await m.key("ok")
@@ -142,12 +141,12 @@ async def main():
     await m.key("red")
     check(not m.open, "Red closes from any depth")
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 2
     await m.key("ok")
     await m.key("blue")
     check(not m.open, "Blue closes from any depth")
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 2
     await m.key("ok")
     await m.key("ok")
     check(len(m.pages) == 3 and m.page.title == "Fav {Spotovi}", "two pages deep")
@@ -159,7 +158,7 @@ async def main():
     await m.key("back")
     check(not m.open, "Back on the first page closes the menu")
     await m.show()
-    m.page.sel = 3
+    m.page.sel = 2
     await m.key("ok")
     check(m.page.title == "Playlists" and m.page.loading is False, "(setup) a list is open")
     m.pages[-1].loading = True
@@ -170,7 +169,7 @@ async def main():
 
     # ---- For you: start_id; empty list; music videos
     await m.show()
-    m.page.sel = 4
+    m.page.sel = 3
     await m.key("ok")
     check([r.label for r in m.page.rows] == ["Loved", "Recently added", "Music videos"], "For you lists, Music videos last")
     await m.key("ok")
@@ -179,13 +178,13 @@ async def main():
     check(sent[-1] == {"cmd": "play_collection", "collection": "loved", "start_id": 301, "type": "cmd"},
           "auto list item -> start_id")
     await m.show()
-    m.page.sel = 4
+    m.page.sel = 3
     await m.key("ok")
     await m.key("down")
     await m.key("ok")
     check([r.label for r in m.page.rows] == ["Empty"] and await m.key("ok") is False, "empty list: one inert row")
     await m.show()
-    m.page.sel = 4
+    m.page.sel = 3
     await m.key("ok")
     m.page.sel = 2
     await m.key("ok")
@@ -203,8 +202,8 @@ async def main():
     # ---- nothing playing: the same rows, the queue says empty
     state.update(current=None, queue=[])
     await m.show()
-    check([r.label for r in m.page.rows][:2] == ["Shuffle", "Repeat"] and m.page.rows[2].label == "Queue"
-          and m.page.rows[2].sub == "empty", "nothing loaded: same rows, Queue is empty")
+    check([r.label for r in m.page.rows][:1] == ["Shuffle"] and m.page.rows[1].label == "Queue"
+          and m.page.rows[1].sub == "empty", "nothing loaded: same rows, Queue is empty")
 
     # ---- Equalizer: a short picker (Off, Momentum 4, four tone presets, Custom); the VLC presets stay in the web remote
     presets = [["off", "Off"], ["a:momentum4", "Momentum 4"], ["a:amplify", "Amplify"], ["t:bass", "Bass boost"],
@@ -214,7 +213,7 @@ async def main():
     eqm = Mn.Menu(fetch, sent.append, lambda: eq_state)
     await eqm.show()
     labels = [r.label for r in eqm.page.rows]
-    check(labels == ["Boost", "Loudness", "Equalizer", "Shuffle", "Repeat", "Queue", "Playlists", "For you"],
+    check(labels == ["Boost", "Loudness", "Equalizer", "Shuffle", "Queue", "Playlists", "For you"],
           f"Equalizer sits after Loudness, before Shuffle ({labels})")
     eq = eqm.page.rows[2]
     check(eq.kind == "choice" and [o[1] for o in eq.options] == ["Off", "Momentum 4", "Bass boost", "Vocal", "Bright", "V-shape", "Custom"]
@@ -280,11 +279,11 @@ async def main():
     # ---- the divider between settings and lists: one extra shape, the lists move down by SEP_GAP
     await m.show()
     with_sep = m.render()
-    m.page.rows[2].sep = False
+    m.page.rows[1].sep = False
     without = m.render()
     check(with_sep.count("\\p1") == without.count("\\p1") + 1, "divider: exactly one more shape than without it")
     ys = lambda ass, word: [float(x) for x in re.findall(r"\\pos\([\d.]+,([\d.]+)\)[^}]*\}" + word, ass)]
-    check(ys(with_sep, "Queue")[0] - ys(without, "Queue")[0] == Mn.SEP_GAP and ys(with_sep, "Repeat") == ys(without, "Repeat"),
+    check(ys(with_sep, "Queue")[0] - ys(without, "Queue")[0] == Mn.SEP_GAP and ys(with_sep, "Shuffle") == ys(without, "Shuffle"),
           f"divider: Queue and the rows below move down {Mn.SEP_GAP} px, the settings stay")
     check(ys(with_sep, "For you")[0] + 24 < 1024 - 50, "divider: the last row still ends above the key hints")
 
