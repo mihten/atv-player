@@ -199,7 +199,8 @@ private struct MiniProgress: View {
     }
 }
 
-/// Full player (sheet): video or artwork, title, scrubber, transport, shuffle/repeat.
+/// Full player (sheet): video or artwork at the top; title, badges, scrubber, transport and the switch row (shuffle, lyrics,
+/// love, versions) at the bottom.
 struct PhoneNowPlayingView: View {
     @EnvironmentObject var connection: ServerConnection
     @EnvironmentObject var engine: PlayerEngine
