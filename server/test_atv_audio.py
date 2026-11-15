@@ -176,8 +176,8 @@ async def main(tmp):
             tv_state, ph_state = await state(http, "tv"), await state(http, "phone")
             check(tv_state["sink"] == {"connected": False, "name": None, "output": None, "route": False, "audio": None,
                                        "sinks": []}
-                  and ph_state["sink"] is None,
-                  "state.sink: not connected on tv, null on phone")
+                  and ph_state["sink"] == tv_state["sink"],
+                  "state.sink: not connected on tv, the same on the phone (0.30.1: the iPhone can use it too)")
 
             # ---- the TV's config/clock messages before any sink: remembered for the replay
             await tv.send_json({"type": "cmd", "cmd": "play_ids", "ids": [song]})
@@ -205,14 +205,16 @@ async def main(tmp):
             check(not of(first[6:], "clock") and (await state(http, "tv"))["players"] == 1,
                   "phone's clock not relayed; the sink does not count as a player")
 
-            # ---- sink status -> TV state (players + web remote), not the phone's
+            # ---- sink status -> TV state (players + web remote); the phone's shows it with its own route (false)
             out = {"kind": "bluetooth", "name": "MOMENTUM 4", "codec": "aptx_hd", "ready": True}
             await sink.send_json({"type": "sink", "name": "atv-audio", "output": out})
             tv_msgs, ph_msgs, rm_msgs = await drain(tv), await drain(phone), await drain(remote)
             want = {"connected": True, "name": "atv-audio", "output": out, "route": True, "audio": None}
             check(nosinks((last_state(tv_msgs) or {}).get("sink")) == want, "sink status reaches the TV player's state")
             check(nosinks((last_state(rm_msgs) or {}).get("sink")) == want, "... and the TV web remote's state")
-            check(last_state(ph_msgs) is None or last_state(ph_msgs)["sink"] is None, "... not the phone's")
+            ph_sink = (last_state(ph_msgs) or {}).get("sink")
+            check(nosinks(ph_sink) == dict(want, route=False),
+                  f"... and the phone's: the same sink, route false (the phone did not choose it) ({ph_sink})")
             await sink.send_json({"type": "sink", "name": "atv-audio", "output": dict(out, ready=False)})
             check((last_state(await drain(tv)) or {}).get("sink", {}).get("output", {}).get("ready") is False,
                   "output change (ready false) is broadcast")
@@ -329,7 +331,7 @@ async def main(tmp):
             check(st["sink"]["name"] != "old-sink" and not of(await drain(tv), "sink_ready"),
                   "... the replaced sink's late status / ready are ignored")
             ph = await state(http, "phone")
-            check(ph["sink"] is None, "session=phone sink went to the tv session")
+            check(ph["sink"] == dict(st["sink"], route=False), "session=phone sink went to the tv session (the phone only mirrors it)")
             await tv.send_json({"type": "status", "item": ids["S2"], "playing": True, "position": 1.0, "duration": 9})
             await asyncio.sleep(0.2)
             await sink2.close()

@@ -62,7 +62,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.30.0"
+VERSION = "0.30.1"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -354,7 +354,7 @@ class Session:
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
             "server_name": server_name(), "disk": DISK,
             "sink": (sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box"
-                     else mtv_sink_state() if self.kind == "mtv" else None),
+                     else mtv_sink_state() if self.kind == "mtv" else phone_sink_state()),
             **(box_extra(self) if self.kind in SERVER_SOUND else {}),
             **({"output": mtv_output(self)} if self.kind == "mtv" else {}),
         }
@@ -1012,35 +1012,49 @@ def clean_audio_info(data):
 
 IN_USE_NOTICE = "atv-audio is in use by the Apple TV: paused"
 IN_USE_NOTICE_MTV = "atv-audio is in use by the TV Player: paused"
+IN_USE_NOTICE_PHONE = "atv-audio is in use by the iPhone: paused"
 BOX_CURVES = {v: box_sound.curve(v) for v, _ in box_sound.choices() if v not in ("off", "custom")}  # editor: start from
 
 
-# The Apple TV and the TV Player can both have their sound output set to the headphones (owner, 2026-11-13: the TV
-# Player is an alternative to the Apple TV, not its replacement). One output, one source: the last one to press Play
-# takes the headphones, the other one is paused with a notice (sink_claim).
-SINK_CLAIM = {"kind": None}  # "tv" / "mtv": holds the headphones (chose them while the other did not, or pressed Play last)
+# The Apple TV, the TV Player and the iPhone (0.30.1) can each have their sound output set to the headphones (owner,
+# 2026-11-13: the TV Player is an alternative to the Apple TV, not its replacement; 2026-11-14: the iPhone may use them
+# too). One output, one source: the last one to press Play takes the headphones, the one that had them is paused with a
+# notice (sink_claim).
+ROUTERS = ("tv", "mtv", "phone")  # sessions whose sound can go to the headphones; also the order when nobody claimed
+SINK_CLAIM = {"kind": None}  # one of ROUTERS: holds the headphones (chose them while nobody else did, or pressed Play last)
 CLAIM_GUARD = 2.0  # s after giving the headphones away in which a session's Play does not take them back
 
 
-def route_on(kind):
-    """Session `kind` (tv / mtv) has its sound output set to the headphones (its last route message) and a player."""
-    return bool((SINK_RELAY.get(kind, {}).get("route") or {}).get("sink")) and bool(SESSIONS[kind].players)
+def route_on(kind, assume=None):
+    """Session `kind` (tv / mtv / phone) has its sound output set to the headphones (its last route message) and a
+    player. `assume`: count that session as connected (its player just left; who held the headphones before?)."""
+    return (bool((SINK_RELAY.get(kind, {}).get("route") or {}).get("sink"))
+            and (bool(SESSIONS[kind].players) or kind == assume))
+
+
+def owner_kind(assume=None):
+    """The session that holds the headphones: the claimant while its output is the headphones, else the first of
+    ROUTERS whose output is; nobody: the Apple TV (the sink follows its session with route off)."""
+    c = SINK_CLAIM["kind"]
+    if c in ROUTERS and route_on(c, assume):
+        return c
+    return next((k for k in ROUTERS if route_on(k, assume)), "tv")
 
 
 def mtv_routed():
-    """The TV Player feeds the headphones: its sound output is the headphones and, when the Apple TV's is too, it holds
-    them (choosing the headphones alone never takes them from the other one; only a Play does)."""
-    return route_on("mtv") and (not route_on("tv") or SINK_CLAIM["kind"] == "mtv")
+    """The TV Player feeds the headphones (its sound output is the headphones and it holds them)."""
+    return owner_kind() == "mtv"
 
 
 def route_claim(kind, on):
-    """Session `kind`'s sound output changed to / away from the headphones. On: it holds them when the other one does
-    not use them. Off: the other one holds them if its output is the headphones."""
-    other = "tv" if kind == "mtv" else "mtv"
-    if on and not route_on(other):
+    """Session `kind`'s sound output changed to / away from the headphones. On: it holds them when nobody else uses
+    them (choosing the headphones never takes them from another one; only a Play does). Off: the next one whose output
+    is the headphones holds them."""
+    others = [k for k in ROUTERS if k != kind]
+    if on and not any(route_on(k) for k in others):
         SINK_CLAIM["kind"] = kind
     elif not on and SINK_CLAIM["kind"] == kind:
-        SINK_CLAIM["kind"] = other if route_on(other) else None
+        SINK_CLAIM["kind"] = next((k for k in others if route_on(k)), None)
 
 
 def drop_claim(kind):
@@ -1048,9 +1062,8 @@ def drop_claim(kind):
 
 
 def sink_owner():
-    """The session that feeds the sink's TV input. The TV Player while it holds the headphones (mtv_routed), else the
-    Apple TV's session: one output, one source."""
-    return SESSIONS["mtv"] if mtv_routed() else SESSIONS["tv"]
+    """The session that feeds the sink's TV input: the one holding the headphones, else the Apple TV's session."""
+    return SESSIONS[owner_kind()]
 
 
 async def sink_follow_owner(before):
@@ -1063,10 +1076,10 @@ async def sink_follow_owner(before):
 
 
 async def sink_claim(s):
-    """Last Play takes the headphones: the Apple TV or the TV Player starts playing (rising edge of want_play / playing)
-    with its sound output on the headphones while the other one holds them -> it takes them, the other one is paused
-    and shows a notice (its own notice on the TV, and the web remote's)."""
-    if s.kind not in ("tv", "mtv"):
+    """Last Play takes the headphones: the Apple TV, the TV Player or the iPhone starts playing (rising edge of
+    want_play / playing) with its sound output on the headphones while another one holds them -> it takes them, the
+    other one is paused and shows a notice (its own notice, and the web remote's)."""
+    if s.kind not in ROUTERS:
         return
     wants = bool(s.want_play or s.playing)
     edge, s.claim_was = wants and not s.claim_was, wants
@@ -1092,10 +1105,8 @@ async def sink_claim(s):
 
 def sink_ws(kind):
     """The sink that follows session `kind` (None: it does not follow that session now)."""
-    if kind == "mtv":
-        return SINKS.get("tv") if mtv_routed() else None
-    if kind == "tv" and mtv_routed():
-        return None
+    if kind in ROUTERS:
+        return SINKS.get("tv") if owner_kind() == kind else None
     return SINKS.get(kind)
 
 
@@ -1112,13 +1123,18 @@ def tv_owns_output():
 
 
 def in_use_notice():
-    return IN_USE_NOTICE if sink_owner().kind == "tv" else IN_USE_NOTICE_MTV
+    return {"tv": IN_USE_NOTICE, "mtv": IN_USE_NOTICE_MTV, "phone": IN_USE_NOTICE_PHONE}[sink_owner().kind]
 
 
 def box_sink_state():
     """The box always plays through the sink: its status in the box state (route = it is the box's output)."""
     st = sink_state("tv")
     return dict(st, route=st["connected"], in_use_by_tv=tv_owns_output(), in_use_by=KIND_NAMES[sink_owner().kind])
+
+
+def phone_sink_state():
+    """The iPhone's view of the sink: like the Apple TV's (connected, output, audio), route = its own last choice."""
+    return dict(sink_state("tv"), route=bool((SINK_RELAY.get("phone", {}).get("route") or {}).get("sink")))
 
 
 def mtv_sink_state():
@@ -1357,6 +1373,7 @@ async def mtv_to_sink(s, data):
             await send(sink, msg)
     if msg["type"] == "route":
         await broadcast_state(SESSIONS["tv"])
+        await broadcast_state(SESSIONS["phone"])
         await broadcast_state(s)  # the web remote's volume slider follows the route
         await broadcast_state(SESSIONS["box"])
 
@@ -1436,9 +1453,11 @@ async def sink_bind(owner):
 
 
 async def mtv_follow_sink():
-    """The sink changed (connected, gone, its output ready / lost): the TV Player's state carries it to the player."""
-    if SESSIONS["mtv"].players:
-        await broadcast_state(SESSIONS["mtv"])
+    """The sink changed (connected, gone, its output ready / lost): the TV Player's and the iPhone's states carry it to
+    their players (the iPhone's Settings show it; 0.30.1)."""
+    for kind in ("mtv", "phone"):
+        if SESSIONS[kind].players:
+            await broadcast_state(SESSIONS[kind])
 
 
 async def sink_activate(s, sid):
@@ -1516,10 +1535,11 @@ async def sink_message(s, ws, data):
 
 
 async def relay_to_sink(s, data):
-    """TV player -> sink: remembered for the next sink connect, forwarded unchanged."""
+    """Apple TV / iPhone player -> sink: remembered for the next sink connect, forwarded unchanged while that session
+    holds the headphones (the one sink is registered as session "tv")."""
     SINK_RELAY.setdefault(s.kind, {})[data["type"]] = data
-    sink = SINKS.get(s.kind)
-    if sink is not None and s is sink_owner():  # while the TV Player owns the sink the Apple TV's messages only wait
+    sink = SINKS.get("tv")
+    if sink is not None and s is sink_owner():  # while another session owns the sink these messages only wait
         await send(sink, data)
 
 
@@ -2399,22 +2419,22 @@ async def on_message(s, data, role, ws=None):
     elif role == "player" and kind == "output" and s.kind == "mtv":  # screen, sound device, volume as it is now
         MTV_OUT[ws] = clean_mtv_output(data)
         await broadcast_state(s)
-    elif kind == "volume" and role in ("player", "remote") and s.kind in ("tv", "box"):  # TV quick panel, web remote
+    elif (kind == "volume" and role in ("player", "remote")  # TV quick panel, web remote; the iPhone only while its
+          and (s.kind in ("tv", "box") or (s.kind == "phone" and route_on("phone")))):  # sound goes to the headphones
         vol = clean_volume(data)
         if vol is not None:
             await sink_volume(vol)  # one output: the sink of both
     elif role == "player" and kind == "notice" and s.kind in SERVER_SOUND:  # e.g. the headphones went away: paused
         s.want_play = False
         await box_notice(s, str(data.get("text") or "")[:200])
-    elif role == "player" and kind in RELAY_TYPES and s.kind == "tv":
+    elif role == "player" and kind in RELAY_TYPES and s.kind in ("tv", "phone"):  # the Apple TV, the iPhone (0.30.1)
         before = sink_owner()
         await relay_to_sink(s, data)
         if kind == "route":
-            route_claim("tv", bool(data.get("sink")))
-        if kind == "route":
-            await sink_follow_owner(before)  # both on the headphones: the Apple TV's route can move the sink
-            await broadcast_state(s)  # web remote: the volume slider follows the TV's sound output
-            await broadcast_state(SESSIONS["mtv"])
+            route_claim(s.kind, bool(data.get("sink")))
+            await sink_follow_owner(before)  # several on the headphones: a route can move the sink
+            for k in ("tv", "phone", "mtv", "box"):  # web remote: the volume slider follows the sound output
+                await broadcast_state(SESSIONS[k])
     elif role == "player" and kind == "sink_codec" and s.kind == "tv":  # Apple TV Settings: aptX HD / aptX Adaptive
         await tv_sink_codec(s, data.get("codec"))
     elif role == "player" and kind == "status":
@@ -2548,24 +2568,20 @@ async def ws_handler(request):
                 s.playing = False
                 s.want_play = False
                 s.save()
-                if s.kind == "tv":  # the TV plays its own sound again: silence the sink now, and on its next connect
-                    # (its player is gone already, so route_on("tv") is False: whether it HELD the headphones comes from
-                    # its last route and the claim)
-                    held = (bool((SINK_RELAY.get("tv", {}).get("route") or {}).get("sink"))
-                            and (not route_on("mtv") or SINK_CLAIM["kind"] != "mtv"))
-                    drop_claim("tv")
-                    if held and route_on("mtv"):  # the TV Player waited for them: it gets them now
-                        SINK_RELAY.setdefault("tv", {})["route"] = {"type": "route", "sink": False}
-                        await sink_bind(SESSIONS["mtv"])
-                    else:
-                        await relay_to_sink(s, {"type": "route", "sink": False})
-                if s.kind == "mtv":  # the TV Player is gone: its headphones route with it, the sink follows the TV again
-                    was = (SINK_RELAY.get("mtv", {}).get("route") or {}).get("sink")
-                    held = bool(was) and (not route_on("tv") or SINK_CLAIM["kind"] == "mtv")
-                    drop_claim("mtv")
-                    SINK_RELAY.pop("mtv", None)
-                    if held:
+                if s.kind in ROUTERS:  # its headphones route goes with it (its player is gone already, so
+                    # route_on(kind) is False: whether it HELD the headphones = the owner as if it were still there)
+                    held = route_on(s.kind, assume=s.kind) and owner_kind(assume=s.kind) == s.kind
+                    drop_claim(s.kind)
+                    if s.kind == "mtv":  # the server makes the TV Player's sound: nothing of it is kept
+                        SINK_RELAY.pop("mtv", None)
+                    else:  # the Apple TV / iPhone plays its own sound again on its next connect
+                        SINK_RELAY.setdefault(s.kind, {})["route"] = {"type": "route", "sink": False}
+                    if held and sink_owner() is not s:  # another one waited for them (or the Apple TV's session)
                         await sink_bind(sink_owner())
+                    elif held:  # the Apple TV left and nobody else wants them: silence the sink now
+                        sink = SINKS.get("tv")
+                        if sink is not None:
+                            await send(sink, {"type": "route", "sink": False})
             await broadcast_all()
         else:
             REMOTES.pop(ws, None)

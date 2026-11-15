@@ -7,6 +7,7 @@ struct PhoneSettingsView: View {
     @EnvironmentObject var locator: ServerLocator
     @EnvironmentObject var connection: ServerConnection
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.aurora.rawValue
+    @AppStorage(AtvAudio.outputKey) private var soundOutput = AtvAudio.tvOutput
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(SoundSettings.boostKey) private var boost = 0
@@ -66,8 +67,8 @@ struct PhoneSettingsView: View {
     }
 
     private var soundSummary: String {
-        _ = eqPreset; _ = loudness; _ = boost  // refresh when any changes
-        return SoundSettings.summary
+        _ = eqPreset; _ = loudness; _ = boost; _ = soundOutput  // refresh when any changes
+        return (AtvAudio.selected && !locator.localMode ? "ATV-Server · " : "") + SoundSettings.summary
     }
 
     private var lyricsSummary: String {
@@ -340,6 +341,12 @@ struct PhoneServerSettingsView: View {
 /// Settings → Sound.
 struct PhoneSoundSettingsView: View {
     @EnvironmentObject var engine: PlayerEngine
+    @EnvironmentObject var connection: ServerConnection
+    @EnvironmentObject var locator: ServerLocator
+    @AppStorage(AtvAudio.outputKey) private var soundOutput = AtvAudio.tvOutput
+    @AppStorage(AtvAudio.lipSyncKey) private var lipSync = AtvAudio.defaultLipSync
+    @State private var volume: Double = 0
+    @State private var volumeDragging = false
     @AppStorage(SoundSettings.presetKey) private var eqPreset = "off"
     @AppStorage(SoundSettings.loudnessKey) private var loudness = SoundSettings.Loudness.raise.rawValue
     @AppStorage(SoundSettings.boostKey) private var boost = 0
@@ -348,6 +355,7 @@ struct PhoneSoundSettingsView: View {
 
     var body: some View {
         Form {
+            if !locator.localMode { outputSection }
             Section {
                 LabeledContent("Sound profile", value: profileName)
             }
@@ -399,6 +407,50 @@ struct PhoneSoundSettingsView: View {
         .onChange(of: "\(eqPreset)|\(loudness)|\(boost)") {
             engine.applySettings()
         }
+        .onChange(of: soundOutput) { engine.soundOutputChanged() }
+        .onChange(of: lipSync) { engine.lipSyncChanged() }
+        .onAppear { volume = Double(connection.state?.sink?.output?.volume ?? 0) }
+        .onChange(of: connection.state?.sink?.output?.volume) { _, new in
+            if !volumeDragging, let new { volume = Double(new) }  // the headphones' own buttons, the web page
+        }
+    }
+
+    private var sink: SinkState? { connection.state?.sink }
+
+    /// iPhone or ATV-Server (0.19.1): the server's atv-audio program plays the sound on its headphones, the iPhone shows
+    /// the video muted and stays in sync. The headphones go to whoever pressed Play last (Apple TV, iPhone, TV Player).
+    /// ATV-Server can be chosen while it is connected; a stored choice stays (and is shown) without it.
+    @ViewBuilder private var outputSection: some View {
+        let chosen = soundOutput == AtvAudio.sinkOutput
+        Section {
+            Picker("Sound output", selection: $soundOutput) {
+                Text("iPhone").tag(AtvAudio.tvOutput)
+                if sink?.isConnected == true || chosen {
+                    Text(sink?.isConnected == true ? "ATV-Server" : "ATV-Server (not connected)").tag(AtvAudio.sinkOutput)
+                }
+            }
+            .disabled(locator.isRemote)
+            Text(locator.isRemote ? "Away from home the iPhone plays the sound" : AtvAudio.statusText(sink))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if chosen, !locator.isRemote {
+                Picker("Lip sync", selection: Binding(get: { AtvAudio.clampLipSync(lipSync) }, set: { lipSync = $0 })) {
+                    ForEach(AtvAudio.lipSyncValues, id: \.self) { Text(AtvAudio.lipSyncLabel($0)).tag($0) }
+                }
+                if sink?.isUsable == true, sink?.output?.volume != nil {
+                    HStack(spacing: 12) {
+                        Image(systemName: "headphones")
+                        Slider(value: $volume, in: 0...100, step: 1, onEditingChanged: { editing in
+                            volumeDragging = editing
+                            if !editing { engine.setSinkVolume(Int(volume), muted: false) }
+                        })
+                        Text("\(Int(volume)) %").monospacedDigit().frame(width: 52, alignment: .trailing)
+                    }
+                    .accessibilityLabel("Headphones volume")
+                }
+            }
+        }
+        .themedRow()
     }
 }
 

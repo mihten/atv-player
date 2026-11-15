@@ -50,6 +50,7 @@ struct PhoneRootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(3)
         }
+        .overlay(alignment: .top) { PhoneNoticeBanner() }  // ATV-Server notices (the player sheet shows its own)
         .environment(\.showPlayer, { showPlayer = true })
         .environment(\.playerNamespace, playerNS)
         .onAppear {
@@ -58,6 +59,7 @@ struct PhoneRootView: View {
         }
         .sheet(isPresented: $showPlayer) {
             PhoneNowPlayingView(fullScreen: $fullScreen, leaveFullScreen: leaveFullScreen)
+                .overlay(alignment: .top) { PhoneNoticeBanner().padding(.top, 14) }  // below the drag indicator
                 .environmentObject(artwork)
                 .environment(\.appTheme, theme)
                 .environment(\.playerNamespace, playerNS)

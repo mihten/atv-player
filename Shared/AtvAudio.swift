@@ -1,8 +1,9 @@
 import Foundation
 
-/// Optional "atv-audio": a separate program (server/sink) plays the Apple TV's sound, the TV shows the video with VLC
-/// muted. Settings → Sound → Sound output is the only switch: while it is atv-audio VLC stays muted, also when the sink
-/// or its output is missing (PlayerEngine pauses with a notice then).
+/// Optional "atv-audio" (shown as ATV-Server): a separate program (server/sink) plays the sound of the Apple TV or the
+/// iPhone (0.19.1), the device shows the video with VLC muted. Settings → Sound → Sound output is the only switch: while
+/// it is ATV-Server VLC stays muted, also when the sink or its output is missing (PlayerEngine pauses with a notice then).
+/// The server gives the headphones to whichever device pressed Play last (Apple TV, iPhone, TV Player).
 enum AtvAudio {
     static let outputKey = "soundOutput"   // "tv" | "atv-audio"
     static let lipSyncKey = "lipSyncMs"    // Int ms, how much earlier the sink plays
@@ -11,12 +12,21 @@ enum AtvAudio {
 
     static let lipSyncRange = -200...400
     static let lipSyncStep = 20
+    /// The TV's picture comes late (its processing), the iPhone's screen does not.
+    #if os(tvOS)
     static let defaultLipSync = -100
+    #else
+    static let defaultLipSync = 0
+    #endif
 
     private static var defaults: UserDefaults { .standard }
 
     /// Settings → Sound output is atv-audio (stored even while no sink is connected).
     static var selected: Bool { defaults.string(forKey: outputKey) == sinkOutput }
+
+    /// The sink really plays this device's sound: chosen, with the media server (no sink without it) and on the home
+    /// network (away from home the iPhone plays its own sound: the headphones are at home).
+    static var inUse: Bool { selected && !Config.localMode && !Config.isRemote }
 
     static var lipSyncMs: Int {
         guard defaults.object(forKey: lipSyncKey) != nil else { return defaultLipSync }

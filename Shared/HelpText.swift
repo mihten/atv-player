@@ -21,7 +21,9 @@ enum HelpText {
 
     static let secondLanguage = Topic(title: "Second language", text: "A second line at the top of a music video that has lyrics in that language (timed lyrics only). The main language stays at the bottom.")
 
-    static let atvServer = Topic(title: "ATV-Server sound output", text: "ATV-Server plays the sound, the Apple TV shows the picture and stays silent (also while ATV-Server is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early. Codec: the switch pauses playback for a few seconds. The TV Player can use the same headphones: the last one to press Play gets them. Equalizer, Boost and Loudness are kept separately for Apple TV and ATV-Server; choosing Apple TV turns the Equalizer and Boost off, choosing ATV-Server turns the Equalizer on.")
+    static let atvServer = Topic(title: "ATV-Server sound output", text: "ATV-Server plays the sound, the Apple TV shows the picture and stays silent (also while ATV-Server is missing: playback pauses with a notice). Lip sync: how much earlier the headphones play (Bluetooth adds a delay): raise it if the sound comes late, lower it if it comes early. Codec: the switch pauses playback for a few seconds. The TV Player and the iPhone can use the same headphones: the last one to press Play gets them. Equalizer, Boost and Loudness are kept separately for Apple TV and ATV-Server; choosing Apple TV turns the Equalizer and Boost off, choosing ATV-Server turns the Equalizer on.")
+
+    static let atvServerPhone = Topic(title: "ATV-Server sound output", text: "Settings › Sound › Sound output: ATV-Server plays the sound on the server's headphones, the iPhone shows the video without sound and stays in sync. The headphones go to whoever pressed Play last: the Apple TV, the TV Player or this iPhone; the one that had them pauses with a notice. Only on the home network: away from home the iPhone plays the sound itself. Lip sync: raise it if the sound comes late, lower it if it comes early. The volume slider is the headphones' own volume. The iPhone keeps a separate Equalizer, Boost and Loudness for ATV-Server.")
 
     static let library = Topic(title: "Library", text: "Media server: songs, videos, queues and playlists come from the ATV Player server. No server: plays files from this iPhone and an SMB share, without playlists, lyrics search, loudness levelling or the web remote. Offline: plays only what you downloaded; switch back to Media server when you are home.")
 
@@ -35,7 +37,7 @@ enum HelpText {
 
     /// iPhone: Settings → About → Help.
     static var iPhone: [Topic] {
-        [library, smb, mixes, badges, themeEffects, soundProfiles, connection, awayFromHome, fastSeek, preferVideos]
+        [library, smb, mixes, badges, themeEffects, soundProfiles, atvServerPhone, connection, awayFromHome, fastSeek, preferVideos]
     }
 
     /// Apple TV: Settings → About → Help.

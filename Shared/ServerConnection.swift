@@ -43,9 +43,7 @@ final class ServerConnection: ObservableObject {
         task = nil
         openedSocket = nil
         pingTask?.cancel()
-        #if os(tvOS)
         engine?.serverConnectionLost()  // the old socket's failure is ignored now (task !== socket)
-        #endif
         connected = false
         retryDelay = 1
         connect()
@@ -150,9 +148,7 @@ final class ServerConnection: ObservableObject {
                     self.task = nil
                     self.openedSocket = nil
                     self.pingTask?.cancel()
-                    #if os(tvOS)
                     self.engine?.serverConnectionLost()
-                    #endif
                     socket.cancel()
                     self.failures += 1
                     if self.failures == 3 { self.onUnreachable?() }
@@ -170,7 +166,6 @@ final class ServerConnection: ObservableObject {
     /// First message on a new socket: Apple TV pings for the server clock (2 s for the first 8, then every 15 s) and
     /// sends its atv-audio config (route, sound, lip sync) for the sink.
     private func socketOpened(_ socket: URLSessionWebSocketTask) {
-        #if os(tvOS)
         pingTask?.cancel()
         serverClock.reset()
         sinkSynced = false
@@ -184,7 +179,6 @@ final class ServerConnection: ObservableObject {
             }
         }
         engine?.sendSinkConfig()
-        #endif
     }
 
     private func handle(_ data: Data) {
@@ -201,13 +195,11 @@ final class ServerConnection: ObservableObject {
                 #if os(iOS)
                 engine?.syncSystemControls()
                 #endif
-                #if os(tvOS)
                 // Also the first state on a new socket (the old one may be stale): the engine re-checks atv-audio.
                 if oldSink != newState.sink || !sinkSynced {
                     sinkSynced = true
                     engine?.sinkChanged(from: oldSink, to: newState.sink)
                 }
-                #endif
             }
         case "load":
             if let item = message.item {
@@ -223,14 +215,10 @@ final class ServerConnection: ObservableObject {
         case "pong":
             if let n = message.n, let t = message.t { serverClock.pong(n: n, t: t) }
         case "sink_ready":
-            #if os(tvOS)
             if let id = message.id { engine?.sinkReady(id) }
-            #endif
             break
         case "notice":
-            #if os(tvOS)
             if let text = message.text { engine?.serverNotice(text) }
-            #endif
             break
         default:
             break

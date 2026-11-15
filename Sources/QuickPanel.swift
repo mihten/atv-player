@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Quick menu over the player: Close menu, Volume (ATV-Server only), ♥ Love, shuffle, the lyrics / subtitle track,
 /// audio output (Apple TV / ATV-Server), equalizer, loudness, boost and the version of the song. Opens on a click of
-/// the centre button with Volume focused (Love without ATV-Server; row clicks are ignored for a moment so that click
-/// never mutes or hearts); ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
+/// the centre button with Close menu focused (owner, 0.19.1; row clicks are ignored for a moment so the opening click
+/// never closes it again); ▲▼ moves between rows, Back closes it, ⏯ keeps pausing / resuming.
 /// Row kinds: toggle (click flips), ◀▶ value (◀ previous / ▶ next, stop at the ends), ◀▶ level bar (Volume, Boost),
 /// inline list (click opens a short list under the row; ▲▼ picks, click confirms, Back closes only the list).
 /// The rows are full-width buttons in one column, so ◀▶ never has a focusable neighbour and reaches onMoveCommand.
@@ -91,7 +91,7 @@ struct QuickPanel: View {
         .focusSection()
         .onAppear {
             openedAt = Date()
-            focus = volumeShown ? .volume : .love  // Volume with ATV-Server, else Love (Close menu sits above them)
+            focus = .closeMenu  // the first row (a click right after opening is ignored, see `guarded`)
         }
         .onExitCommand {
             if openList != nil { closeList() } else { close() }  // Back closes only an open list
@@ -231,7 +231,7 @@ struct QuickPanel: View {
     }
 
     /// Runs a row's action, except within 0.5 s of opening: tvOS may deliver the select of the click that opened the
-    /// panel to the newly focused first row (Volume or Love).
+    /// panel to the newly focused first row (Close menu: it would close at once).
     private func guarded(_ id: Row, _ action: () -> Void) {
         let age = Date().timeIntervalSince(openedAt)
         guard age >= 0.5 else {

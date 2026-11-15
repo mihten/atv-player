@@ -48,8 +48,8 @@ final class QuickPanelTests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: "quickPanel.\(id).list").firstMatch
     }
 
-    /// One launch: click centre in the player; the panel opens on Love (Volume first only with ATV-Server, not in the demo;
-    /// Close menu is the row above). Row kinds (task 18): toggles (Love, Shuffle, Loudness: a click flips, a second
+    /// One launch: click centre in the player; the panel opens on Close menu (the first row; Volume follows only with
+    /// ATV-Server, not in the demo, then Love). Row kinds (task 18): toggles (Love, Shuffle, Loudness: a click flips, a second
     /// restores), ◀▶ values (Lyrics / subtitles: stop at the ends, a click does nothing), Audio output (a click flips
     /// Apple TV / ATV-Server: not clicked here, it would change the sound), level bars (Boost ◀▶ 1 dB), inline lists (Equalizer: click opens a list
     /// under the row on the current value, Back closes only the list, ▼ + click picks the next preset; Version "—" for
@@ -72,7 +72,9 @@ final class QuickPanelTests: XCTestCase {
         XCTAssertFalse(row("repeatMode").exists, "no Repeat row: the server always repeats all")
         XCTAssertFalse(row("volume").exists, "no Volume row while the Apple TV plays its own sound")
         report("q1 panel open")
-        XCTAssertTrue(focused.contains("Love"), "the panel should open on Love, has '\(focused)'")
+        XCTAssertTrue(focused.contains("Close menu"), "the panel should open on Close menu, has '\(focused)'")
+        press(.down, wait: 1)
+        XCTAssertTrue(focused.contains("Love"), "▼ from Close menu should reach Love (no Volume row in the demo), has '\(focused)'")
 
         let screen = app.windows.firstMatch.frame
         let order = ["closeMenu", "love", "shuffle", "subtitles", "audioOutput", "equalizer", "loudness", "boost", "version"]

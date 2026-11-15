@@ -137,7 +137,8 @@ async def main(tmp):
             check(m["gain"] == -1.0 + 2 + 6.0 and m["bands"][:3] == [5.0, 5.0, 4.0] and m["processed"],
                   f"tone preset message: makeup + boost + loudness lift ({m['gain']})")
             check(st["sink"]["connected"] is False and st["sink"]["route"] is False, "box sink: not connected")
-            check((await H.state(http, "phone"))["sink"] is None and "sound" not in await H.state(http, "tv"),
+            ph = await H.state(http, "phone")
+            check("in_use_by" not in (ph["sink"] or {}) and "sound" not in ph and "sound" not in await H.state(http, "tv"),
                   "tv / phone states have no box fields")
 
             box = await H.connect(http, "role=player&kind=box")

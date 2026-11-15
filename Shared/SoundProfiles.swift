@@ -116,6 +116,7 @@ enum SoundProfiles {
         #if os(tvOS)
         return AtvAudio.selected ? Target(key: sinkKey, name: "ATV-Server") : Target(key: defaultKey, name: defaultName)
         #else
+        if AtvAudio.inUse { return Target(key: sinkKey, name: "ATV-Server") }  // the headphones on the server (0.19.1)
         return target(for: AVAudioSession.sharedInstance().currentRoute.outputs.map { ($0.portType, $0.uid, $0.portName) })
         #endif
     }
