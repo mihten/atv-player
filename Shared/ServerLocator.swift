@@ -154,26 +154,14 @@ final class ServerLocator: ObservableObject {
 
     /// Settings → Test connection: the home server first, then the internet address; uses the first that answers.
     func testConnection() async -> String {
-        guard !localMode else { return "Not used: the library is not on the media server." }
-        let homeLine: String
-        if let home = homeURL {
-            if await Self.answers(home, timeout: 3) {
-                if url != home || isRemote { useHome(home) }
-                return "Home server answered (\(Self.display(home))). Using it."
-            }
-            homeLine = "Home server did not answer (\(Self.display(home)))."
-        } else {
-            homeLine = "No home server address known yet."
+        guard !localMode else { return "" }
+        if let home = homeURL, await Self.answers(home, timeout: 3) {
+            if url != home || isRemote { useHome(home) }
+            return RemoteSettings.connectedText
         }
-        guard RemoteSettings.configuredURL != nil else { return homeLine + " No internet address set." }
-        let remoteLine = await RemoteSettings.test()
-        if RemoteSettings.isConfigured, remoteLine == RemoteSettings.connectedText, !isRemote { useRemote() }
-        return homeLine + " Internet address: " + remoteLine
-            + (isRemote && remoteLine == RemoteSettings.connectedText ? " Using it." : "")
-    }
-
-    private static func display(_ url: URL) -> String {
-        url.absoluteString.replacingOccurrences(of: "http://", with: "")
+        let result = await RemoteSettings.test()
+        if result == RemoteSettings.connectedText, RemoteSettings.isConfigured, !isRemote { useRemote() }
+        return result
     }
 
     /// The network changed (Wi-Fi, mobile data, a VPN up or down): ask the home server again once it settled.
