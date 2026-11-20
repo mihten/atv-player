@@ -6,9 +6,10 @@ import Network
 /// 2. else the last address found, while Bonjour checks again in the background,
 /// 3. else Bonjour: the server advertises `_atvmedia._tcp` with its URL in the TXT record.
 /// A server that stops answering (new address) triggers a new Bonjour search.
-/// Away from home (iPhone, when an internet address + login are set in Settings): if the home server does not
-/// answer, the internet address is used; Bonjour keeps looking and the app goes back to the home server as
-/// soon as it is found again. A typed address in Settings always wins and disables this.
+/// Away from home (iPhone, when an internet address + login are set in Settings): if the home server (typed or
+/// last found) does not answer, the internet address is used. The home server is asked again when the app comes
+/// to the front and when the network changes (Wi-Fi, mobile data, a VPN going up or down); as soon as it answers
+/// the app goes back to it. A typed address is the home server; it no longer disables the internet fallback.
 @MainActor
 final class ServerLocator: ObservableObject {
     static let manualKey = "serverAddress"   // typed in Settings; empty = automatic
@@ -29,6 +30,9 @@ final class ServerLocator: ObservableObject {
     @Published private(set) var network = "Network"
     private var browser: NWBrowser?
     private var fallbackTask: Task<Void, Never>?
+    private var pathCheckTask: Task<Void, Never>?
+    /// A home-server check is running (one at a time).
+    private var checking = false
     private let pathMonitor = NWPathMonitor()
 
     init() {
@@ -45,7 +49,10 @@ final class ServerLocator: ObservableObject {
             } else {
                 name = "Network"
             }
-            Task { @MainActor in self?.network = name }
+            Task { @MainActor in
+                self?.network = name
+                self?.networkChanged()  // e.g. a VPN up or down: ask the home server again
+            }
         }
         pathMonitor.start(queue: DispatchQueue(label: "atv.path"))
         if LocalSettings.mode != .server {
@@ -102,6 +109,7 @@ final class ServerLocator: ObservableObject {
     private func startSearching() {
         if let manual = Self.manualURL {
             use(manual, "Address from Settings")
+            checkReachable()
         } else if let found = UserDefaults.standard.string(forKey: Self.foundKey).flatMap(URL.init(string:)) {
             use(found, "Found automatically")
             browse()
@@ -112,17 +120,74 @@ final class ServerLocator: ObservableObject {
         }
     }
 
-    var remoteAvailable: Bool { !isManual && RemoteSettings.isConfigured }
+    var remoteAvailable: Bool { RemoteSettings.isConfigured }
 
-    /// The home server we use does not answer within 2.5 s (phone on mobile data): use the internet address.
+    /// The home server: the typed address, else the last one Bonjour found.
+    var homeURL: URL? {
+        Self.manualURL ?? UserDefaults.standard.string(forKey: Self.foundKey).flatMap(URL.init(string:))
+    }
+
+    /// Asks the home server (2.5 s). It answers: use it (back from the internet address, e.g. a VPN came up).
+    /// It does not: use the internet address (phone on mobile data without a VPN). Only with an internet address set.
     func checkReachable() {
-        guard !localMode, !isRemote, remoteAvailable, let current = url else { return }
+        guard !localMode, remoteAvailable, !checking, let home = homeURL else { return }
+        checking = true
         Task {
-            var request = URLRequest(url: current.appendingPathComponent("api/state"))
-            request.timeoutInterval = 2.5
-            let ok = ((try? await URLSession.shared.data(for: request))?.1 as? HTTPURLResponse)?.statusCode == 200
-            if !ok, !isRemote, remoteAvailable { useRemote() }
+            let ok = await Self.answers(home, timeout: 2.5)
+            checking = false
+            guard !localMode, remoteAvailable else { return }
+            if ok {
+                if isRemote || url != home { useHome(home) }
+            } else if !isRemote {
+                useRemote()
+            }
         }
+    }
+
+    /// GET /api/state answered with 200 within `timeout` seconds (no login: the home server needs none).
+    static func answers(_ base: URL, timeout: TimeInterval) async -> Bool {
+        var request = URLRequest(url: base.appendingPathComponent("api/state"))
+        request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        return ((try? await URLSession.shared.data(for: request))?.1 as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// Settings → Test connection: the home server first, then the internet address; uses the first that answers.
+    func testConnection() async -> String {
+        guard !localMode else { return "Not used: the library is not on the media server." }
+        let homeLine: String
+        if let home = homeURL {
+            if await Self.answers(home, timeout: 3) {
+                if url != home || isRemote { useHome(home) }
+                return "Home server answered (\(Self.display(home))). Using it."
+            }
+            homeLine = "Home server did not answer (\(Self.display(home)))."
+        } else {
+            homeLine = "No home server address known yet."
+        }
+        guard RemoteSettings.configuredURL != nil else { return homeLine + " No internet address set." }
+        let remoteLine = await RemoteSettings.test()
+        if RemoteSettings.isConfigured, remoteLine == RemoteSettings.connectedText, !isRemote { useRemote() }
+        return homeLine + " Internet address: " + remoteLine
+            + (isRemote && remoteLine == RemoteSettings.connectedText ? " Using it." : "")
+    }
+
+    private static func display(_ url: URL) -> String {
+        url.absoluteString.replacingOccurrences(of: "http://", with: "")
+    }
+
+    /// The network changed (Wi-Fi, mobile data, a VPN up or down): ask the home server again once it settled.
+    private func networkChanged() {
+        pathCheckTask?.cancel()
+        pathCheckTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.checkReachable()
+        }
+    }
+
+    private func useHome(_ home: URL) {
+        use(home, isManual ? "Address from Settings" : "Found automatically")
     }
 
     /// Nothing found at all (never been home with this app, or a fresh install away from home).
@@ -149,17 +214,15 @@ final class ServerLocator: ObservableObject {
         isRemote = false
         Config.isRemote = false
         Config.credentials = nil
-        if let found = UserDefaults.standard.string(forKey: Self.foundKey).flatMap(URL.init(string:)) {
-            use(found, "Found automatically")
-        }
-        browse()
+        if let home = homeURL { useHome(home) }
+        if !isManual { browse() }
     }
 
     private func useRemote() {
         guard !localMode, let remote = RemoteSettings.configuredURL else { return }
         fallbackTask?.cancel()
         use(remote, "Away from home (internet address)", remote: true)
-        browse()  // keep looking for the home server
+        if !isManual { browse() }  // keep looking for the home server (a typed address is asked by checkReachable)
     }
 
     var isManual: Bool { Self.manualURL != nil }
@@ -199,7 +262,10 @@ final class ServerLocator: ObservableObject {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
             UserDefaults.standard.removeObject(forKey: Self.manualKey)
+            guard !localMode else { return true }
+            if !isRemote, let found = homeURL { use(found, "Found automatically") }
             browse()
+            checkReachable()
             return true
         }
         guard let manual = Self.normalize(text) else { return false }
@@ -207,14 +273,24 @@ final class ServerLocator: ObservableObject {
         guard !localMode else { return true }
         stopBrowsing()
         use(manual, "Address from Settings")
+        checkReachable()
         return true
     }
 
     /// The connection failed several times in a row.
     func serverUnreachable() {
-        guard !localMode, !isManual else { return }
-        if !isRemote && remoteAvailable {
+        guard !localMode else { return }
+        if isRemote {
+            checkReachable()  // the internet address fails: maybe the home server answers (VPN up, back home)
+            if !isManual { browse() }
+            return
+        }
+        if remoteAvailable {
             useRemote()
+            return
+        }
+        guard !isManual else {
+            status = "Server not answering"
             return
         }
         status = "Server not answering, searching again…"

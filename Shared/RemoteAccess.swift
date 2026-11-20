@@ -45,6 +45,8 @@ enum RemoteSettings {
         return components.url
     }
 
+    static let connectedText = "Connected. The server answered."
+
     /// Asks the server (through the proxy) with the typed login. For the Settings "Test" button.
     static func test() async -> String {
         guard let url = configuredURL else { return "Enter the address first." }
@@ -55,7 +57,7 @@ enum RemoteSettings {
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
-            case 200: return "Connected. The server answered."
+            case 200: return connectedText
             case 401: return "The server says the user name or password is wrong."
             case 404, 502, 503: return "The address works, but the server behind it did not answer."
             case let code: return "Unexpected answer (HTTP \(code))."

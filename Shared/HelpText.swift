@@ -31,9 +31,9 @@ enum HelpText {
 
     static let soundProfiles = Topic(title: "Sound profiles", text: "Equalizer, Boost and Loudness belong to the output playing now. Every Bluetooth device and CarPlay keep their own (CarPlay wins over the car's Bluetooth); the speaker, wired headphones and AirPlay share the iPhone profile. A new device starts with the iPhone settings.")
 
-    static let connection = Topic(title: "Connected through", text: "Shows the network the device is on and the address in use. A typed home address is always used, also on mobile data; leave it empty to find the server automatically and to use the internet address when away.")
+    static let connection = Topic(title: "Connected through", text: "Shows the network the device is on and the address in use. The home server (typed or found automatically) is used whenever it answers, also through a VPN; when it does not, the internet address is used. The app asks the home server again when it comes to the front and when the network changes.")
 
-    static let awayFromHome = Topic(title: "Away from home", text: "Audio only plays music videos as sound away from home and uses far less data.")
+    static let awayFromHome = Topic(title: "Away from home", text: "Audio only plays music videos as sound away from home and uses far less data. Test connection asks the home server first, then the internet address, and uses the first that answers.")
 
     /// iPhone: Settings → About → Help.
     static var iPhone: [Topic] {

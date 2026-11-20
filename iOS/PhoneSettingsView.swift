@@ -318,7 +318,7 @@ struct PhoneServerSettingsView: View {
                 applyRemote()
                 testing = true
                 Task {
-                    remoteTest = await RemoteSettings.test()
+                    remoteTest = await locator.testConnection()  // home server first, then the internet address
                     testing = false
                 }
             } label: {
