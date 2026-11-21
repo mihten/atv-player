@@ -209,6 +209,11 @@ final class PlayerEngine: NSObject, ObservableObject {
         #endif
     }
 
+    /// Lines from the stream relay (StreamRelay) into the server log.
+    func relayLog(_ message: String) {
+        log(message)
+    }
+
     /// UI diagnostics into the server log (e.g. full-screen events), with the app state.
     func diag(_ message: String) {
         log("\(message); \(envNote)")
@@ -297,7 +302,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// never moved on). The ticker watches VLC's time while the user wants playback:
     /// - stuck within 3 s of the end for 4 s = the item is over -> report "ended" (the server plays the next one);
     /// - stuck elsewhere for 8 s = a stall -> reopen the item at the same spot once, a second stall -> report an error
-    ///   (the server skips).
+    ///   (the server skips). On the internet address: 20 s, and it keeps reopening instead of skipping.
     /// Every 10 s while playing the app also sends its position, so the server and the web remote stay true.
     private var lastVLCTime: Double = -1
     private var lastProgressAt = Date()
@@ -324,9 +329,9 @@ final class PlayerEngine: NSObject, ObservableObject {
         if nearEnd && stuck >= 4 {
             log("end not signalled by VLC: '\(item.title)' stuck at \(String(format: "%.1f", vlcTime)) of \(Int(duration)) s for \(Int(stuck)) s, state \(state) -> next; \(envNote)")
             finish()
-        } else if !nearEnd && stuck >= 8 {
+        } else if !nearEnd && stuck >= (Config.isRemote ? 20 : 8) {
             lastProgressAt = now
-            if stallRetriedItem != item.id {
+            if stallRetriedItem != item.id || Config.isRemote {  // internet address: keep trying, never skip
                 stallRetriedItem = item.id
                 log("stall: '\(item.title)' stuck at \(String(format: "%.1f", vlcTime)) s for \(Int(stuck)) s, state \(state), video hidden \(videoHidden) -> reopening at that spot; \(mediaNote)")
                 load(item, position: max(0, vlcTime - 1), autoplay: true, present: false, force: true)
@@ -420,8 +425,17 @@ final class PlayerEngine: NSObject, ObservableObject {
         startTimeout?.cancel()
         duration = item.duration ?? 0
         position = startAt
-        let media = VLCMedia(url: item.mediaURL)
-        media.addOption(":network-caching=1500")
+        var streamURL = item.mediaURL
+        #if os(iOS)
+        if Config.isRemote, item.localPath == nil, let login = Config.credentials,
+           let relayed = StreamRelay.shared.url(for: streamURL, itemID: item.id, login: login) {
+            streamURL = relayed
+        } else {
+            StreamRelay.shared.release()
+        }
+        #endif
+        let media = VLCMedia(url: streamURL)
+        media.addOption(Config.isRemote ? ":network-caching=3000" : ":network-caching=1500")
         if item.localPath != nil, item.mediaURL.scheme == "smb" {
             for option in LocalSettings.smbOptions { media.addOption(option) }  // login for the share (never logged)
         }
@@ -518,14 +532,15 @@ final class PlayerEngine: NSObject, ObservableObject {
         updateNowPlaying()
     }
 
-    /// 15 s without a single time event while the user wants playback = the start failed.
+    /// 15 s (internet address: 30 s) without a single time event while the user wants playback = the start failed.
     private func armStartTimeout(for item: MediaItem) {
         let generation = loadGeneration
+        let seconds: UInt64 = Config.isRemote ? 30 : 15
         startTimeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             guard let self, !Task.isCancelled, generation == self.loadGeneration,
                   self.wantPlaying, !self.startedPlaying else { return }
-            self.startFailed(item, "no playback after 15 s, state \(VLCMediaPlayerStateToString(self.vlc.state))")
+            self.startFailed(item, "no playback after \(seconds) s, state \(VLCMediaPlayerStateToString(self.vlc.state))")
         }
     }
 
@@ -546,14 +561,15 @@ final class PlayerEngine: NSObject, ObservableObject {
         }
     }
 
-    /// First failure: new VLC instance and one retry. Second: report it, the server skips to the next item.
+    /// First failure: new VLC instance and one retry. Second: report it, the server skips to the next item
+    /// (internet address: retry again, never skip).
     private func startFailed(_ item: MediaItem, _ reason: String) {
         guard current?.id == item.id else { return }
         startCheck?.cancel()
         startTimeout?.cancel()
-        if !retriedStart {
+        if !retriedStart || Config.isRemote {  // internet address: keep trying, never skip
             retriedStart = true
-            log("start failed '\(item.title)': \(reason); player \(playerTag) -> rebuilding VLC and retrying once")
+            log("start failed '\(item.title)': \(reason); player \(playerTag) -> rebuilding VLC and retrying")
             rebuildPlayer("start failed")
             load(item, position: position, autoplay: true, present: false, retry: true)
         } else {

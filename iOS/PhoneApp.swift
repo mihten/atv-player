@@ -33,6 +33,9 @@ struct PhoneApp: App {
                 engine.connection = connection
                 connection.engine = engine
                 OrientationLock.shared.log = { [weak engine] in engine?.diag($0) }
+                StreamRelay.shared.start { [weak engine] message in
+                    Task { @MainActor in engine?.relayLog(message) }
+                }
                 connection.onUnreachable = { [weak locator] in locator?.serverUnreachable() }
                 OfflineStore.shared.attach(connection)
                 if locator.url != nil { connection.start() }
