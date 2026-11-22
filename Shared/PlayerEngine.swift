@@ -128,13 +128,20 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var sinkSeekPending = false
     private var sentClockState = ""
     private var sentSound = ""
-    /// iPhone, Sound output ATV-Server (0.19.5): the server's own player plays this queue; the app only shows it and sends
-    /// commands, VLC stays stopped (no sound of the iPhone's own: a muted VLC still opened a Bluetooth stream to the same
+    /// iPhone, Sound output ATV-Server (0.19.5): the server's own player plays this queue; the app shows it and sends
+    /// commands; VLC plays only a music video's picture (no sound of the iPhone's own: a muted VLC still opened a Bluetooth stream to the same
     /// headphones, which then paused one of the two; and without any sound iOS suspends the app when locked).
     private(set) var remoteActive = false
     /// Last server state's position / play state and when it arrived (the position runs on from there while playing).
     private var remoteBase: (position: Double, at: Date, playing: Bool) = (0, Date(), false)
     private var sentServerSound = ""
+    /// The picture of a music video in that mode: VLC plays the video track only (`:no-audio`, no sound = no Bluetooth
+    /// stream), kept on the server player's position (remoteVideoSync). nil = nothing loaded.
+    private var remoteVideoID: Int?
+    private var remoteVideoStarted = false
+    private var remoteVideoLoadedAt = Date.distantPast
+    private var remoteLastSeek = Date.distantPast
+    private var remoteLastSyncLog = Date.distantPast
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -525,6 +532,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         #endif
         setSinkActive(false, log: sinkActive ? "atv-audio: off (unload)" : nil)
         remoteActive = false
+        remoteVideoID = nil
         pictureSettling = false
         sinkWaitTask?.cancel()
         sinkWaiting = false
@@ -737,6 +745,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             log("seek to \(Int(target)) s -> the server's player")
             connection?.command("seek", ["position": target])
             remoteBase = (target, Date(), remoteBase.playing)
+            remoteLastSeek = .distantPast  // the picture follows at once
             remoteTick()
             return
         }
@@ -902,6 +911,10 @@ final class PlayerEngine: NSObject, ObservableObject {
         #endif
         inBackground = true
         UserDefaults.standard.set("background", forKey: Self.lastStateKey)
+        if remoteActive {  // nobody sees the picture: stop it (the sound plays on the server)
+            stopRemoteVideo("background")
+            return
+        }
         #if os(iOS)
         if lyricsKeptOn {  // lyrics view + app left: nobody will see the picture soon, stop decoding it
             lyricsKeptOn = false
@@ -1004,7 +1017,11 @@ final class PlayerEngine: NSObject, ObservableObject {
     func setLyricsCover(_ on: Bool) {
         guard on != lyricsCover else { return }
         lyricsCover = on
-        guard current?.isVideo == true, !remoteActive else { return }
+        if remoteActive {
+            if on { stopRemoteVideo("lyrics view") } else { remoteVideoSync() }
+            return
+        }
+        guard current?.isVideo == true else { return }
         if Self.pictureStaysOnUnderLyrics {
             if on {
                 log("lyrics view: picture track stays on under the lyrics (Apple TV), switching back is instant; \(envNote)")
@@ -1100,7 +1117,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     private func hideVideo() {
-        guard !videoHidden else { return }
+        guard !videoHidden, !remoteActive else { return }  // remote: the picture-only player is stopped instead
         videoHidden = true
         endPictureCover(reason: "picture track off")
         vlc.currentVideoTrackIndex = -1
@@ -1111,7 +1128,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     private func showVideo() {
-        guard videoHidden else { return }
+        guard videoHidden, !remoteActive else { return }
         videoHidden = false
         if let track = trackIDs(vlc.videoTrackIndexes).first {
             vlc.currentVideoTrackIndex = track
@@ -1965,12 +1982,14 @@ extension PlayerEngine {
             wantPlaying = false
             pendingToggle = nil
             vlc.stop()
+            remoteVideoID = nil
             remoteActive = true
             isPlaying = false
             remoteBase = (position, Date(), false)
             log("ATV-Server: the server's player plays this queue, the iPhone shows it (\(why)); VLC stopped")
             if let state = connection?.state { applyRemoteState(state) }
         } else {
+            stopRemoteVideo(nil)
             remoteActive = false
             pictureSettling = false
             isPlaying = false
@@ -2006,8 +2025,7 @@ extension PlayerEngine {
         remoteBase = (at, Date(), playing)
         duration = state.duration ?? current?.duration ?? 0
         if isPlaying != playing { isPlaying = playing }
-        let cover = current?.isVideo == true  // no picture here: the artwork in the video's place
-        if pictureSettling != cover { pictureSettling = cover }
+        if current?.isVideo != true, pictureSettling { pictureSettling = false }
         remoteTick()
     }
 
@@ -2023,6 +2041,87 @@ extension PlayerEngine {
         position = remotePosition
         if abs(clock.position - position) >= 0.25 { clock.position = position }
         if abs(clock.duration - duration) >= 0.5 { clock.duration = duration }
+        remoteVideoSync()
+    }
+
+    /// Where the picture should be: the server player's position, minus Lip sync (sound that much earlier = the
+    /// picture that much later).
+    private var remoteVideoTarget: Double { max(0, remotePosition - Double(AtvAudio.lipSyncMs) / 1000) }
+
+    /// The music video's picture on the iPhone while the server plays the sound (0.19.5): a VLC with the video track
+    /// only, started at the server's position, paused / played with it, and kept on it: up to 1 s off is corrected by
+    /// running slightly faster / slower (no audio, so nothing to hear), more by a seek. Not in the background or the
+    /// lyrics view (stopped there; a picture-only VLC must never lose its video track, it would have no stream at all).
+    fileprivate func remoteVideoSync() {
+        guard remoteActive else { return }
+        guard let item = current, item.isVideo, !inBackground, !lyricsCover else {
+            stopRemoteVideo(nil)
+            if pictureSettling != (current?.isVideo == true) { pictureSettling = current?.isVideo == true }
+            return
+        }
+        if remoteVideoID != item.id || [VLCMediaPlayerState.stopped, .ended, .error].contains(vlc.state) {
+            if remoteVideoID == item.id, Date().timeIntervalSince(remoteVideoLoadedAt) < 5 { return }  // still opening
+            loadRemoteVideo(item)
+            return
+        }
+        let t = Double(vlc.time.intValue) / 1000
+        if !remoteVideoStarted {
+            guard t > 0 else { return }  // first picture not there yet
+            remoteVideoStarted = true
+            log(String(format: "ATV-Server video: picture of '%@' up after %.1f s, at %.1f s (server %.1f s)",
+                       item.title, Date().timeIntervalSince(remoteVideoLoadedAt), t, remoteVideoTarget))
+        }
+        if pictureSettling { pictureSettling = false }
+        let wantPlay = remoteBase.playing
+        if wantPlay, !vlc.isPlaying {
+            vlc.play()
+        } else if !wantPlay, vlc.isPlaying {
+            vlc.pause()
+        }
+        let target = remoteVideoTarget
+        let drift = t - target  // > 0: the picture is ahead
+        if abs(drift) > 1.0 || (!wantPlay && abs(drift) > 0.3) {
+            guard Date().timeIntervalSince(remoteLastSeek) > 2 else { return }
+            remoteLastSeek = Date()
+            vlc.rate = 1
+            vlc.time = VLCTime(int: Int32(target * 1000))
+            log(String(format: "ATV-Server video: %.1f s off the server -> seek to %.1f s", drift, target))
+            return
+        }
+        let rate: Float = abs(drift) < 0.06 || !wantPlay ? 1 : Float(1 - max(-0.1, min(0.1, drift * 0.25)))
+        if abs(vlc.rate - rate) > 0.005 { vlc.rate = rate }
+        if abs(drift) >= 0.2, Date().timeIntervalSince(remoteLastSyncLog) > 30 {
+            remoteLastSyncLog = Date()
+            log(String(format: "ATV-Server video: %.2f s off the server, rate %.2f", drift, rate))
+        }
+    }
+
+    private func loadRemoteVideo(_ item: MediaItem) {
+        let target = remoteVideoTarget
+        let media = VLCMedia(url: item.mediaURL)
+        media.addOption(":no-audio")  // no sound of the iPhone's own (it would open a Bluetooth stream to the same headphones)
+        media.addOption(":network-caching=1500")
+        if target > 1 { media.addOption(":start-time=\(Int(target))") }
+        vlc.rate = 1
+        vlc.media = media
+        vlc.play()  // played until the first picture, then it follows the server (paused or playing)
+        remoteVideoID = item.id
+        remoteVideoStarted = false
+        remoteVideoLoadedAt = Date()
+        remoteLastSeek = Date()
+        pictureSettling = true  // the artwork until the first picture
+        log(String(format: "ATV-Server video: picture of '%@' at %.1f s (no sound here)", item.title, target))
+    }
+
+    /// Stops the picture-only player (`why` logged when something was loaded).
+    fileprivate func stopRemoteVideo(_ why: String?) {
+        guard remoteVideoID != nil else { return }
+        remoteVideoID = nil
+        remoteVideoStarted = false
+        vlc.stop()
+        vlc.rate = 1
+        if current?.isVideo == true { pictureSettling = true }
+        if let why { log("ATV-Server video: stopped (\(why))") }
     }
 
     /// Play / Pause in the mode: a command for the server's player. iOS system commands (lock screen, the iPhone's own
