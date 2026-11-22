@@ -200,6 +200,7 @@ final class ServerConnection: ObservableObject {
                     sinkSynced = true
                     engine?.sinkChanged(from: oldSink, to: newState.sink)
                 }
+                engine?.remoteStateChanged(newState)  // iPhone on the server's player: item, play state, position
             }
         case "load":
             if let item = message.item {

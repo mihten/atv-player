@@ -434,10 +434,7 @@ struct PhoneSoundSettingsView: View {
             Text(away ? "Away from home the iPhone plays the sound" : AtvAudio.statusText(sink))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            if chosen, !away {
-                Picker("Lip sync", selection: Binding(get: { AtvAudio.clampLipSync(lipSync) }, set: { lipSync = $0 })) {
-                    ForEach(AtvAudio.lipSyncValues, id: \.self) { Text(AtvAudio.lipSyncLabel($0)).tag($0) }
-                }
+            if chosen, !away {  // no Lip sync here (0.19.5): the server's player plays the queue, the iPhone shows no video
                 if sink?.isUsable == true, sink?.output?.volume != nil {
                     HStack(spacing: 12) {
                         Image(systemName: "headphones")

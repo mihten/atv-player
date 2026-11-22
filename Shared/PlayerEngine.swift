@@ -128,6 +128,13 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var sinkSeekPending = false
     private var sentClockState = ""
     private var sentSound = ""
+    /// iPhone, Sound output ATV-Server (0.19.5): the server's own player plays this queue; the app only shows it and sends
+    /// commands, VLC stays stopped (no sound of the iPhone's own: a muted VLC still opened a Bluetooth stream to the same
+    /// headphones, which then paused one of the two; and without any sound iOS suspends the app when locked).
+    private(set) var remoteActive = false
+    /// Last server state's position / play state and when it arrived (the position runs on from there while playing).
+    private var remoteBase: (position: Double, at: Date, playing: Bool) = (0, Date(), false)
+    private var sentServerSound = ""
 
     /// Short id of the current VLC instance, for the logs (changes when the player is rebuilt).
     private var playerTag: String {
@@ -285,6 +292,10 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     private func tick() {
         guard current != nil else { return }
+        if remoteActive {
+            remoteTick()
+            return
+        }
         let vlcTime = Double(vlc.time.intValue) / 1000
         if vlcTime > 0 { position = vlcTime }
         if let length = vlc.media?.length, length.intValue > 0 {
@@ -394,6 +405,10 @@ final class PlayerEngine: NSObject, ObservableObject {
               retry: Bool = false, force: Bool = false, fromServer: Bool = false) {
         if !autoplay, !force, current?.id == item.id, vlc.media != nil {
             return  // resume sync after a reconnect: keep whatever is playing now
+        }
+        if remoteActive {  // the server's player plays it (a load from before server_play reached the server)
+            log("load '\(item.title)' id \(item.id) not played here: the server's player plays this queue")
+            return
         }
         current = item
         #if os(iOS)
@@ -509,6 +524,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         DisplayMatch.reset("unload") { [weak self] in self?.log($0) }
         #endif
         setSinkActive(false, log: sinkActive ? "atv-audio: off (unload)" : nil)
+        remoteActive = false
+        pictureSettling = false
         sinkWaitTask?.cancel()
         sinkWaiting = false
         sinkStartPending = false
@@ -611,6 +628,10 @@ final class PlayerEngine: NSObject, ObservableObject {
             guard Date().timeIntervalSince(lastMenuToggle) > 0.3 else { return }
             lastMenuToggle = Date()
         }
+        if remoteActive {
+            remoteCommand(isPlaying ? "pause" : "play", source: source)
+            return
+        }
         if wantPlaying {
             pause(source: source)
         } else {
@@ -619,6 +640,10 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func play(source: String) {
+        if remoteActive {
+            remoteCommand("play", source: source)
+            return
+        }
         #if os(iOS)
         updateSoundProfile("play")  // a route change while the app was suspended may not have been delivered
         #endif
@@ -645,6 +670,10 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func pause(source: String) {
+        if remoteActive {
+            remoteCommand("pause", source: source)
+            return
+        }
         logRequest("pause", source)
         wantPlaying = false
         pendingToggle = (Date(), source, false)
@@ -689,11 +718,13 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     /// Position/length straight from VLC, for the info bar's own refresh.
     var livePosition: Double {
+        if remoteActive { return remotePosition }
         let t = Double(vlc.time.intValue) / 1000
         return t > 0 ? t : position
     }
 
     var liveDuration: Double {
+        if remoteActive { return duration }
         if let length = vlc.media?.length, length.intValue > 0 {
             return Double(length.intValue) / 1000
         }
@@ -702,6 +733,13 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func seek(to seconds: Double) {
         let target = max(0, seconds)
+        if remoteActive {
+            log("seek to \(Int(target)) s -> the server's player")
+            connection?.command("seek", ["position": target])
+            remoteBase = (target, Date(), remoteBase.playing)
+            remoteTick()
+            return
+        }
         if reopenedForSeek || awaitingDisplay || sinkWaiting, !startedPlaying {
             // VLC ignores a jump before its input is open (fast-seek reopen, waiting for the TV's mode switch or the
             // atv-audio sink).
@@ -966,7 +1004,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     func setLyricsCover(_ on: Bool) {
         guard on != lyricsCover else { return }
         lyricsCover = on
-        guard current?.isVideo == true else { return }
+        guard current?.isVideo == true, !remoteActive else { return }
         if Self.pictureStaysOnUnderLyrics {
             if on {
                 log("lyrics view: picture track stays on under the lyrics (Apple TV), switching back is instant; \(envNote)")
@@ -1109,6 +1147,11 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// Re-read Settings. Subtitle style options need a new VLC instance; playback resumes at the same position.
     func applySettings() {
         SoundSettings.noteInUse()  // the preset the output rule turns back on
+        if remoteActive {  // no player here: the sound settings go to the server's player, the rest waits for the next load
+            levelGain = SoundSettings.levelGain(for: current)
+            sendServerSound()
+            return
+        }
         let options = PlayerSettings.vlcOptions() + SoundSettings.limiterOptions()
         let sound = SoundSettings.configKey
         guard options != vlcOptions || sound != appliedSound else {
@@ -1148,6 +1191,7 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     fileprivate func handleState(from source: ObjectIdentifier?) {
         guard source == nil || source == ObjectIdentifier(vlc) else { return }  // event from a replaced player
+        guard !remoteActive else { return }  // VLC was stopped for the server's player: its late events change nothing
         let state = vlc.state
         traceNote("state " + VLCMediaPlayerStateToString(state).replacingOccurrences(of: "VLCMediaPlayerState", with: ""))
         switch state {
@@ -1195,7 +1239,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     fileprivate func handleTime(from source: ObjectIdentifier?) {
-        guard source == nil || source == ObjectIdentifier(vlc) else { return }
+        guard source == nil || source == ObjectIdentifier(vlc), !remoteActive else { return }
         timeEvents += 1
         traceTimeEvents += 1
         if traceTimeEvents <= 3 { traceNote("time \(vlc.time.intValue)") }
@@ -1387,7 +1431,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     private func updateNowPlaying() {
-        guard let item = current else {
+        guard let item = current, !remoteActive else {  // the server's player: no system Now Playing on the iPhone
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
@@ -1590,8 +1634,15 @@ extension PlayerEngine {
 
 extension PlayerEngine {
     /// Settings → Sound output = ATV-Server (never in no-server mode: there is no sink there; never away from home: the
-    /// headphones are at home).
-    private var sinkChosen: Bool { AtvAudio.inUse }
+    /// headphones are at home). Apple TV only: the iPhone never plays muted for the sink any more, the server's player
+    /// plays its queue (0.19.5, remoteActive).
+    private var sinkChosen: Bool {
+        #if os(iOS)
+        return false
+        #else
+        return AtvAudio.inUse
+        #endif
+    }
 
     /// The sink can play: server connected, sink connected, its output present.
     private var sinkTargetUsable: Bool {
@@ -1804,6 +1855,13 @@ extension PlayerEngine {
     /// On connect and when the sink connects: route, sound, lip sync (and the clock while it plays).
     func sendSinkConfig() {
         serverLinkUp = !Config.localMode
+        #if os(iOS)
+        refreshRemoteMode("connected")
+        guard !Config.localMode else { return }
+        connection?.send(["type": "server_play", "on": remoteActive])
+        if remoteActive { sendServerSound(force: true) }
+        return
+        #else
         if sinkChosen != sinkActive {
             setSinkActive(sinkChosen, log: "atv-audio: \(sinkChosen ? "on" : "off") (connected), VLC \(sinkChosen ? "muted" : "sound on")")
         }
@@ -1811,11 +1869,36 @@ extension PlayerEngine {
         sinkSound(force: true)
         connection?.send(["type": "lip_sync", "ms": AtvAudio.lipSyncMs])
         sinkClock(force: true)
+        #endif
     }
 
     /// Settings → Sound output: applies at once. During playback it pauses with a notice that stays until Play
     /// (going to atv-audio mid-song: VLC muted, the sink opens the current item at the TV's position).
     func soundOutputChanged() {
+        #if os(iOS)
+        // iPhone: ATV-Server = the server's player plays the queue (0.19.5). Like every Sound output change it pauses
+        // with a notice; the queue stays where it is.
+        let changed = serverPlays != remoteActive
+        defer { updateSoundProfile("sound output", outputChanged: changed) }
+        guard changed else { return }
+        let playing = remoteActive ? isPlaying : (wantPlaying && current != nil)
+        if !remoteActive, playing { pause(source: "settings: sound output") }
+        let at = remoteActive ? remotePosition : livePosition
+        refreshRemoteMode("Sound output changed")
+        var message: [String: Any] = ["type": "server_play", "on": remoteActive]
+        if remoteActive {
+            message["position"] = at
+            remoteBase = (at, Date(), false)
+            isPlaying = false
+            remoteTick()
+        }
+        connection?.send(message)
+        if remoteActive { sendServerSound(force: true) }
+        guard playing else { return }
+        showNotice("Sound output changed to \(remoteActive ? "ATV-Server" : "iPhone") — playback paused")
+        log("Sound output changed -> paused (notice)")
+        return
+        #else
         // Apple TV and atv-audio keep their own Equalizer / Boost / Loudness; a real change also applies the output rule
         let changed = sinkChosen != sinkActive
         defer { updateSoundProfile("sound output", outputChanged: changed) }
@@ -1829,6 +1912,7 @@ extension PlayerEngine {
         guard playing else { return }
         showNotice("Sound output changed to \(sinkChosen ? "ATV-Server" : "Apple TV") — playback paused")
         log("atv-audio: sound output changed -> paused (notice)")
+        #endif
     }
 
     /// The server socket failed: the sink gets no clock (and no stream) any more. VLC stays muted.
@@ -1847,6 +1931,130 @@ extension PlayerEngine {
     /// Quick panel Volume row: the sink's output volume (the headphones' own), 0…100 %.
     func setSinkVolume(_ percent: Int, muted: Bool) {
         connection?.send(["type": "volume", "percent": min(100, max(0, percent)), "muted": muted])
+    }
+}
+
+// MARK: - iPhone on the server's player (Sound output ATV-Server, 0.19.5; server 0.31.0)
+
+extension PlayerEngine {
+    /// The server's player should play this queue: iPhone, Sound output ATV-Server, with the server, at home.
+    var serverPlays: Bool {
+        #if os(iOS)
+        return AtvAudio.inUse && !Config.localMode
+        #else
+        return false
+        #endif
+    }
+
+    /// Enter / leave the mode when the choice, the server mode or the at-home state changed. Entering stops VLC (the
+    /// queue's position is in the server's state); leaving needs nothing here (the server sends the item, paused).
+    func refreshRemoteMode(_ why: String) {
+        let want = serverPlays
+        guard want != remoteActive else { return }
+        if want {
+            if wantPlaying { pause(source: "server's player") }
+            loadGeneration += 1  // cancels the start / stall / seek watchdogs of the local item
+            startCheck?.cancel()
+            startTimeout?.cancel()
+            diagTask?.cancel()
+            seekWatch?.cancel()
+            traceTask?.cancel()
+            lyricsWatch?.cancel()
+            backgroundWatch?.cancel()
+            settleTask?.cancel()
+            wantPlaying = false
+            pendingToggle = nil
+            vlc.stop()
+            remoteActive = true
+            isPlaying = false
+            remoteBase = (position, Date(), false)
+            log("ATV-Server: the server's player plays this queue, the iPhone shows it (\(why)); VLC stopped")
+            if let state = connection?.state { applyRemoteState(state) }
+        } else {
+            remoteActive = false
+            pictureSettling = false
+            isPlaying = false
+            log("ATV-Server: off, the iPhone plays the queue itself again (\(why))")
+        }
+        updateNowPlaying()
+    }
+
+    /// Every server state (ServerConnection): in the mode, the queue's item, play state and position come from it.
+    func remoteStateChanged(_ state: SessionState) {
+        guard remoteActive else { return }
+        applyRemoteState(state)
+    }
+
+    private func applyRemoteState(_ state: SessionState) {
+        if let item = state.current {
+            if current?.id != item.id {
+                current = item
+                levelGain = SoundSettings.levelGain(for: item)
+                fetchArtwork(for: item)
+                #if os(iOS)
+                syncSystemControls()
+                #endif
+            } else {
+                refreshLinks(item)
+            }
+        } else if current != nil {
+            current = nil
+        }
+        let playing = state.playing == true
+        var at = state.position ?? 0
+        if playing, let from = state.positionAt, let now = state.serverTime { at += max(0, now - from) }
+        remoteBase = (at, Date(), playing)
+        duration = state.duration ?? current?.duration ?? 0
+        if isPlaying != playing { isPlaying = playing }
+        let cover = current?.isVideo == true  // no picture here: the artwork in the video's place
+        if pictureSettling != cover { pictureSettling = cover }
+        remoteTick()
+    }
+
+    /// The position the server's player is at now (runs on from the last state while it plays).
+    var remotePosition: Double {
+        var at = remoteBase.position + (remoteBase.playing ? Date().timeIntervalSince(remoteBase.at) : 0)
+        if duration > 0 { at = min(at, duration) }
+        return max(0, at)
+    }
+
+    /// The UI clock in the mode (the ticker calls it twice a second).
+    func remoteTick() {
+        position = remotePosition
+        if abs(clock.position - position) >= 0.25 { clock.position = position }
+        if abs(clock.duration - duration) >= 0.5 { clock.duration = duration }
+    }
+
+    /// Play / Pause in the mode: a command for the server's player. iOS system commands (lock screen, the iPhone's own
+    /// Bluetooth link to the headphones) are ignored: the headphones' buttons reach the server's player directly, and a
+    /// second toggle from the iPhone would undo theirs.
+    fileprivate func remoteCommand(_ command: String, source: String) {
+        guard source != "system" else {
+            log("\(command) via system ignored: the server's player plays this queue (its headphone buttons go there)")
+            return
+        }
+        if command == "play" { acknowledgeNotice("play") }
+        log("\(command) requested via \(source) -> the server's player")
+        connection?.command(command)
+        remoteBase = (remotePosition, Date(), command == "play")
+        isPlaying = command == "play"
+        remoteTick()
+    }
+
+    /// Equalizer / Boost / Loudness (the ATV-Server sound profile) for the server's player; it applies them per track.
+    func sendServerSound(force: Bool = false) {
+        guard remoteActive else { return }
+        let (pre, bands) = SoundSettings.customValues()
+        let preamp = Int(pre.rounded())
+        let custom = bands.map { Int($0.rounded()) }
+        let key = "\(SoundSettings.preset)|\(SoundSettings.boost)|\(SoundSettings.loudness.rawValue)|\(preamp)|\(custom)"
+        guard force || key != sentServerSound else { return }
+        sentServerSound = key
+        let curve: [String: Any] = ["preamp": preamp, "bands": custom]
+        connection?.send([
+            "type": "server_sound", "preset": SoundSettings.preset, "boost": SoundSettings.boost,
+            "loudness": SoundSettings.loudness.rawValue, "custom": curve,
+        ])
     }
 }
 

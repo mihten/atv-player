@@ -180,6 +180,10 @@ struct SessionState: Codable {
     var mixes: [MixSummary]? = nil
     /// The atv-audio sink of the Apple TV's session (nil for the iPhone's, older servers and no-server mode).
     var sink: SinkState? = nil
+    /// When `position` was measured and the server's clock when this state was sent (seconds; the iPhone on the
+    /// server's player runs its position on from them).
+    var positionAt: Double? = nil
+    var serverTime: Double? = nil
 }
 
 /// One Home shuffle tile: its name and what it holds. All optional: a decode failure would drop the whole state message.
@@ -212,6 +216,8 @@ struct SinkState: Codable, Equatable {
     var audio: SinkAudio? = nil
     /// iPhone: the server sees it outside the home network and refuses its headphones route (server 0.30.2+).
     var away: Bool? = nil
+    /// iPhone: the server's own player plays its queue (Sound output ATV-Server, server 0.31.0+).
+    var server: Bool? = nil
 
     var isConnected: Bool { connected == true }
     /// Connected and its output device present and usable.

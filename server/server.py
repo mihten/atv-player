@@ -63,7 +63,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.30.2"
+VERSION = "0.31.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -96,6 +96,13 @@ SINK_IDS: dict = {}  # sink ws -> sink id
 BOX_OF: dict = {}  # sink id -> the box player ws of that program
 BOX_SINK: dict = {}  # box player ws -> sink id
 ACTIVE_SINK: dict = {"id": None}
+# The iPhone with Sound output ATV-Server (0.31.0): the server's own player (the active program's box player) plays the
+# iPhone's queue, the iPhone only watches and sends commands (a muted iPhone player opened its own Bluetooth stream to
+# the same headphones, and without any sound iOS suspends it when locked). VIEWERS: iPhone sockets in that mode; they
+# get the phone session's state but no load / control, and their player reports are ignored.
+PHONE_SRV: dict = {"on": False}
+VIEWERS: set = set()
+VIEWER_TYPES = ("cmd", "ping", "log", "volume", "server_play", "server_sound")
 SWITCH_LOCK = asyncio.Lock()
 ART_LOCKS: dict[int, asyncio.Lock] = {}
 
@@ -324,7 +331,12 @@ class Session:
 
     @property
     def players(self):
-        return [ws for ws, kind in PLAYERS.items() if kind == self.kind]
+        return [ws for ws, kind in PLAYERS.items() if kind == self.kind and ws not in VIEWERS]
+
+    @property
+    def viewers(self):
+        """iPhone sockets that only watch this session (PHONE_SRV): the state, nothing to play."""
+        return [ws for ws in VIEWERS if PLAYERS.get(ws) == self.kind]
 
     @property
     def listeners(self):
@@ -918,7 +930,7 @@ async def send(ws, msg):
 async def broadcast_state(s):
     """State of session s to its players and to the remotes watching it."""
     msg = {"type": "state", "state": s.to_dict()}
-    for ws in s.listeners + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
+    for ws in s.listeners + s.viewers + [ws for ws, kind in list(REMOTES.items()) if kind == s.kind]:
         await send(ws, msg)
     prefetch_copies(s)
     await sink_claim(s)
@@ -1137,7 +1149,109 @@ def phone_sink_state():
     """The iPhone's view of the sink: like the Apple TV's (connected, output, audio), route = its own last choice,
     away = it connected from outside the home network (0.30.2: then the headphones are not its output)."""
     return dict(sink_state("tv"), route=bool((SINK_RELAY.get("phone", {}).get("route") or {}).get("sink")),
-                away=phone_away())
+                away=phone_away(), server=PHONE_SRV["on"])
+
+
+# ---------------------------------------------------------------- the iPhone on the server's player (0.31.0)
+def server_sound(s):
+    """Sessions whose player gets `sound` from the server: the Web Player, the TV Player, and the iPhone's queue while
+    the server's player plays it."""
+    return s.kind in SERVER_SOUND or (s.kind == "phone" and PHONE_SRV["on"])
+
+
+def server_session():
+    """The session the server's own player (box player) plays: the iPhone's queue in PHONE_SRV mode, else the Web
+    Player's."""
+    return SESSIONS["phone"] if PHONE_SRV["on"] else SESSIONS["box"]
+
+
+def box_player_ws():
+    """The active program's box player (None: no atv-audio program connected)."""
+    ws = BOX_OF.get(ACTIVE_SINK["id"]) if ACTIVE_SINK["id"] else None
+    return ws if ws is not None and ws in PLAYERS else None
+
+
+def phone_sound(data):
+    """The iPhone's Equalizer / Boost / Loudness ({preset, boost, loudness, custom}) as box_sound settings: the app's
+    tone presets are "a:<id>", the server's "t:<id>"."""
+    preset = str(data.get("preset") or "off")
+    if not box_sound.valid_preset(preset) and preset.startswith("a:") and box_sound.valid_preset("t:" + preset[2:]):
+        preset = "t:" + preset[2:]
+    return box_sound.clean({"preset": preset, "boost": data.get("boost", 0), "loudness": data.get("loudness"),
+                            "custom": data.get("custom")})
+
+
+async def phone_srv_load(ws, play=False):
+    """The server's player gets the iPhone's queue: its state, sound and the current item at the iPhone's position."""
+    phone = SESSIONS["phone"]
+    await send(ws, {"type": "state", "state": phone.to_dict()})
+    if phone.current and await ensure_current_file(phone):
+        await send(ws, box_sound.message(phone.sound, phone.current))
+        await send(ws, load_message(phone, play, phone.position))
+
+
+async def phone_take_output():
+    """The iPhone's queue (on the server's player) pressed Play while the Apple TV / TV Player plays on the headphones:
+    last Play wins, that one is paused with a notice. True when something was paused (its sound needs a moment to
+    stop before the server's player may take the output)."""
+    owner = sink_owner()
+    if owner.kind == "phone" or not tv_owns_output():
+        return False
+    owner.want_play = owner.playing = owner.claim_was = False
+    owner.yielded_at = time.time()
+    text = "The headphones went to the iPhone — playback paused"
+    log.info("sink: the iPhone (server's player) pressed Play: it takes the headphones from %s", KIND_NAMES[owner.kind])
+    await to_players(owner, {"type": "control", "action": "pause"})
+    await to_players(owner, {"type": "notice", "text": text})
+    if owner.kind in SERVER_SOUND:
+        owner.notice = {"text": text, "at": time.time()}
+    await broadcast_state(owner)
+    return True
+
+
+async def phone_srv_set(on, position=None):
+    """Sound output ATV-Server on the iPhone (`server_play` from the app, or off when an iPhone connects from outside
+    the home network). Both ways the queue stays where it is, paused (like any Sound output change). `position`: where
+    the iPhone's own player was (its last status may still be on the way)."""
+    phone, box = SESSIONS["phone"], SESSIONS["box"]
+    if on == PHONE_SRV["on"]:
+        return
+    bws = box_player_ws()
+    position = live_position(phone) if position is None else position
+    if on:
+        if box.want_play or box.playing:  # the Web Player gives its player up, paused, its queue stays
+            box.want_play = box.playing = False
+            if bws is not None:
+                await send(bws, {"type": "control", "action": "pause"})
+            await box_notice(box, IN_USE_NOTICE_PHONE)
+        PHONE_SRV["on"] = True
+        VIEWERS.update(ws for ws, kind in PLAYERS.items() if kind == "phone" and ws is not bws)
+        before = sink_owner()  # the iPhone no longer feeds the sink's TV input
+        SINK_RELAY.setdefault("phone", {})["route"] = {"type": "route", "sink": False}
+        drop_claim("phone")
+        await sink_follow_owner(before)
+        phone.position, phone.position_at = position, time.time()
+        phone.want_play = phone.playing = phone.claim_was = False
+        phone.save()
+        log.info("iPhone: Sound output ATV-Server -> the server's player plays its queue (%s, at %.0f s)%s",
+                 (phone.current or {}).get("title"), position, "" if bws else "; no atv-audio program connected")
+        if bws is not None:
+            PLAYERS[bws] = "phone"
+            await phone_srv_load(bws)
+    else:
+        PHONE_SRV["on"] = False
+        VIEWERS.clear()
+        if bws is not None and PLAYERS.get(bws) == "phone":
+            await send(bws, {"type": "control", "action": "pause"})
+            await box_player_join(bws)  # its own (paused) Web Player queue again
+        phone.position, phone.position_at = position, time.time()
+        phone.want_play = phone.playing = phone.claim_was = False
+        phone.save()
+        log.info("iPhone: Sound output back on the iPhone (at %.0f s)", position)
+        if phone.current and await ensure_current_file(phone):
+            await to_players(phone, load_message(phone, False, position))
+    await broadcast_state(phone)
+    await broadcast_state(box)
 
 
 # ---------------------------------------------------------------- the iPhone away from home (0.30.2)
@@ -1203,6 +1317,9 @@ async def phone_away_route_off(addr):
     SINK_RELAY.setdefault("phone", {})["route"] = {"type": "route", "sink": False}
     drop_claim("phone")
     await sink_follow_owner(before)
+    if PHONE_SRV["on"]:
+        log.info("iPhone: connected from outside the home network: the server's player stops playing its queue")
+        await phone_srv_set(False)
 
 
 def mtv_sink_state():
@@ -1249,7 +1366,7 @@ def box_extra(s):
 
 async def box_send_sound(s):
     """The player's `sound` (from the session's settings and the current track's loudness); sent before every load."""
-    if s.kind in SERVER_SOUND:
+    if server_sound(s):
         msg = box_sound.message(s.sound, s.current)
         for ws in s.players:
             await send(ws, msg)
@@ -1261,12 +1378,15 @@ async def box_send_sound(s):
 async def box_notice(s, text):
     s.notice = {"text": text, "at": time.time()}
     log.info("[%s] notice: %s", s.kind, text)
+    for ws in s.viewers:  # the iPhone on the server's player shows it like its own notices
+        await send(ws, {"type": "notice", "text": text})
     await broadcast_state(s)
 
 
 async def box_yield_to_tv():
-    """The TV took the output: pause the box (it does not resume by itself)."""
-    box = SESSIONS["box"]
+    """The TV took the output: pause the box, or the iPhone's queue on the server's player (it does not resume by
+    itself)."""
+    box = server_session()
     if box.want_play or box.playing:
         box.want_play = box.playing = False
         await to_players(box, {"type": "control", "action": "pause"})
@@ -1277,9 +1397,9 @@ def owner_session(asked=None):
     """Session the headphone buttons act on: the sink names the one that holds its output; checked here."""
     if asked == "tv" and tv_routed():
         return sink_owner()
-    if asked == "box" and SESSIONS["box"].players:
-        return SESSIONS["box"]
-    return sink_owner() if tv_routed() else SESSIONS["box"]
+    if asked == "box" and server_session().players:
+        return server_session()
+    return sink_owner() if tv_routed() else server_session()
 
 
 def live_position(s):
@@ -1643,6 +1763,10 @@ async def wait_sink(sid, ready, timeout):
 async def box_player_join(ws):
     """The active program's box player becomes THE box player: state, sound and the current item (resumes if the
     box was playing)."""
+    if PHONE_SRV["on"]:  # it plays the iPhone's queue (paused after a reconnect)
+        PLAYERS[ws] = "phone"
+        await phone_srv_load(ws, SESSIONS["phone"].want_play and not tv_owns_output())
+        return
     box = SESSIONS["box"]
     PLAYERS[ws] = "box"
     await send(ws, {"type": "state", "state": box.to_dict()})
@@ -2103,11 +2227,16 @@ async def start_current(s, position=0.0, autoplay=True, present=False, noted=Non
     if not await ensure_current_file(s):
         return
     if s.kind == "box" and autoplay:
-        if tv_owns_output():
+        if PHONE_SRV["on"]:
+            autoplay = False
+            s.notice = {"text": IN_USE_NOTICE_PHONE, "at": time.time()}
+        elif tv_owns_output():
             autoplay = False
             s.notice = {"text": in_use_notice(), "at": time.time()}
         else:
             s.notice = None
+    if s.kind == "phone" and PHONE_SRV["on"] and autoplay and present and await phone_take_output():
+        await asyncio.sleep(1.0)  # the Apple TV's / TV Player's paused clock reaches the sink first
     s.stopped = False
     s.position, s.position_at = position, time.time()
     s.duration = (s.current or {}).get("duration") or 0.0
@@ -2358,24 +2487,29 @@ async def handle_cmd(s, msg):
         await stop_playback(s)
     elif cmd in ("toggle", "play", "pause"):
         if cmd == "play" or (cmd == "toggle" and not s.playing):
+            if s.kind == "box" and PHONE_SRV["on"]:  # the server's player plays the iPhone's queue
+                await box_notice(s, IN_USE_NOTICE_PHONE)
+                return
             if s.kind == "box" and tv_owns_output():
                 await box_notice(s, in_use_notice())
                 return
             if s.stopped and s.current is not None:  # after a Stop the player holds nothing: load it again, from 0:00
                 await start_current(s)
                 return
-            if s.kind in SERVER_SOUND:
+            if s.kind == "phone" and PHONE_SRV["on"] and await phone_take_output():
+                await asyncio.sleep(1.0)  # the Apple TV's / TV Player's paused clock reaches the sink first
+            if server_sound(s):
                 s.notice = None
                 cmd = "play"
             s.want_play = True
         else:
             s.want_play = False
-            if s.kind in SERVER_SOUND:
+            if server_sound(s):
                 cmd = "pause"
         await to_players(s, {"type": "control", "action": cmd})
-        if s.kind in SERVER_SOUND:
+        if server_sound(s):
             await broadcast_state(s)
-    elif cmd == "sound" and s.kind in SERVER_SOUND:  # web remote: {preset, boost, loudness}
+    elif cmd == "sound" and server_sound(s):  # web remote: {preset, boost, loudness}
         new = box_sound.clean({**s.sound, **{k: msg[k] for k in ("preset", "boost", "loudness", "custom") if k in msg}})
         if new != s.sound:
             s.sound = new
@@ -2383,7 +2517,7 @@ async def handle_cmd(s, msg):
             log.info("[%s] sound: %s", s.kind, box_sound.label(s.sound, s.current))
             await box_send_sound(s)
         await broadcast_state(s)
-    elif cmd == "dismiss" and s.kind in SERVER_SOUND:
+    elif cmd == "dismiss" and server_sound(s):
         s.notice = None
         await broadcast_state(s)
     elif cmd == "seek":
@@ -2465,6 +2599,8 @@ async def handle_cmd(s, msg):
 
 async def on_message(s, data, role, ws=None):
     kind = data.get("type")
+    if ws is not None and ws in VIEWERS and kind not in VIEWER_TYPES:
+        return  # the iPhone watching its queue on the server's player: its own player reports do not count
     if kind == "cmd":
         await handle_cmd(s, data)
     elif kind == "ping" and ws is not None:
@@ -2488,11 +2624,28 @@ async def on_message(s, data, role, ws=None):
         MTV_OUT[ws] = clean_mtv_output(data)
         await broadcast_state(s)
     elif (kind == "volume" and role in ("player", "remote")  # TV quick panel, web remote; the iPhone only while its
-          and (s.kind in ("tv", "box") or (s.kind == "phone" and route_on("phone")))):  # sound goes to the headphones
+          and (s.kind in ("tv", "box") or (s.kind == "phone" and (route_on("phone") or PHONE_SRV["on"])))):  # sound goes to the headphones
         vol = clean_volume(data)
         if vol is not None:
             await sink_volume(vol)  # one output: the sink of both
-    elif role == "player" and kind == "notice" and s.kind in SERVER_SOUND:  # e.g. the headphones went away: paused
+    elif role == "player" and kind == "server_play" and s.kind == "phone":  # iPhone Sound output ATV-Server (0.31.0)
+        on = bool(data.get("on"))
+        if on and PHONE_FROM.get(ws, (None, False))[1]:
+            log.info("iPhone: server's player refused: it is away from home (%s)", PHONE_FROM[ws][0])
+            on = False
+        try:
+            at = max(0.0, float(data["position"])) if on and data.get("position") is not None else None
+        except (TypeError, ValueError):
+            at = None
+        await phone_srv_set(on, at)
+    elif role == "player" and kind == "server_sound" and s.kind == "phone":  # its Equalizer / Boost / Loudness
+        new = phone_sound(data)
+        if new != s.sound:
+            s.sound = new
+            s.save()
+            log.info("[phone] sound for the server's player: %s", box_sound.label(s.sound, s.current))
+            await box_send_sound(s)
+    elif role == "player" and kind == "notice" and server_sound(s):  # e.g. the headphones went away: paused
         s.want_play = False
         await box_notice(s, str(data.get("text") or "")[:200])
     elif role == "player" and kind in RELAY_TYPES and s.kind in ("tv", "phone"):  # the Apple TV, the iPhone (0.30.1)
@@ -2569,6 +2722,8 @@ async def ws_handler(request):
             active = ACTIVE_SINK["id"] or SETTINGS.data.get("active_sink")
             standby_box = active not in (None, sid) or ABTEST["running"]
         if not standby_box:
+            if kind == "phone" and PHONE_SRV["on"]:
+                VIEWERS.add(ws)  # the server's player plays its queue: this iPhone only watches (until server_play off)
             PLAYERS[ws] = kind
     else:
         kind = q.get("session") if q.get("session") in KINDS else "tv"
@@ -2587,14 +2742,17 @@ async def ws_handler(request):
         await sink_connected(s, ws, sid)
     else:
         await send(ws, {"type": "state", "state": s.to_dict()})
-    if role == "player" and not standby_box:
+    if role == "player" and kind == "box" and not standby_box and PHONE_SRV["on"]:
+        await box_player_join(ws)  # the server's player is busy with the iPhone's queue
+    elif role == "player" and not standby_box and ws not in VIEWERS:
         if s.current and await ensure_current_file(s):
-            if s.kind in SERVER_SOUND:
+            if server_sound(s):
                 await send(ws, box_sound.message(s.sound, s.current))
             if s.kind == "box":
                 if s.want_play and tv_owns_output():
                     s.want_play = False
             await send(ws, load_message(s, s.want_play, s.position))
+    if role == "player" and not standby_box:
         await broadcast_all()
     try:
         async for msg in ws:
@@ -2612,6 +2770,8 @@ async def ws_handler(request):
             if role == "sink":
                 await sink_message(s, ws, data)
                 continue
+            if role == "player":  # the box player plays the iPhone's queue in PHONE_SRV mode: its reports go there
+                s = SESSIONS[PLAYERS.get(ws, kind)]
             if role == "player" and s.kind == "box" and (ws not in PLAYERS or ABTEST["running"]):
                 # a standby program's box player, or any box player during a blind test (the test drives it)
                 if ABTEST["running"] and data.get("type") == "status":
@@ -2637,6 +2797,8 @@ async def ws_handler(request):
             await broadcast_state(SESSIONS["box"])
             await mtv_follow_sink()
         elif role == "player":
+            s = SESSIONS[PLAYERS.get(ws, kind)]
+            VIEWERS.discard(ws)
             bsid = BOX_SINK.pop(ws, None)
             if bsid is not None and BOX_OF.get(bsid) is ws:
                 BOX_OF.pop(bsid, None)
