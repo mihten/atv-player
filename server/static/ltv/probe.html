@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LTVPlayer probe</title>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; background: #000; color: #fff; overflow: hidden;
+    font-family: "LG Smart UI", "Roboto", sans-serif; }
+  #v { position: fixed; left: 0; top: 0; width: 1920px; height: 1080px; object-fit: contain; background: #000; }
+  #head { position: fixed; left: 60px; top: 40px; right: 760px; text-shadow: 0 2px 8px #000; }
+  #step { font-size: 64px; font-weight: 700; }
+  #sub { font-size: 30px; opacity: .85; margin-top: 10px; }
+  #hint { font-size: 26px; opacity: .8; margin-top: 18px; color: #ffd27a; }
+  #log { position: fixed; right: 40px; top: 40px; width: 680px; height: 640px; overflow: hidden; padding: 16px 20px;
+    background: rgba(0, 0, 0, .62); border-radius: 18px; font: 19px/1.35 monospace; white-space: pre-wrap; }
+  #keys { position: fixed; left: 60px; bottom: 50px; width: 900px; padding: 14px 22px; background: rgba(0, 0, 0, .62);
+    border-radius: 18px; font: 26px/1.4 monospace; white-space: pre; }
+  #glass { position: fixed; left: 0; right: 0; top: 700px; height: 120px; display: none;
+    -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px); background: rgba(255, 255, 255, .12);
+    font-size: 40px; font-weight: 700; line-height: 120px; padding-left: 60px; }
+  #fade { position: fixed; left: 0; right: 0; top: 850px; height: 120px; display: none; background: #fff; opacity: .35;
+    color: #000; font-size: 40px; font-weight: 700; line-height: 120px; padding-left: 60px; }
+  #shelf { position: fixed; left: 0; top: 380px; height: 260px; white-space: nowrap; display: none; }
+  #shelf div { display: inline-block; width: 400px; height: 225px; margin-right: 40px; border-radius: 22px;
+    background: linear-gradient(135deg, #7c3aed, #ec4899); box-shadow: 0 8px 12px rgba(0, 0, 0, .35); }
+  #shelf.move { transition: transform 1s cubic-bezier(.2, 1.3, .4, 1); }
+</style>
+<script nomodule>window.ltvNoModule = true;</script>
+<script type="module" src="probe-modern.js"></script>
+</head>
+<body>
+<video id="v" preload="auto" playsinline></video>
+<div id="glass">backdrop-filter blur over the video</div>
+<div id="fade">opacity 35 % over the video</div>
+<div id="shelf"></div>
+<div id="head"><div id="step">LTVPlayer probe</div><div id="sub">starting…</div>
+  <div id="hint">Press every key on the remote (arrows, OK, Back, Play/Pause, colour keys, numbers, CH, the wheel)
+  and move the pointer. Back three times quickly = close the app (do this last).</div></div>
+<div id="log"></div>
+<div id="keys">keys: none yet</div>
+<script src="probe.js"></script>
+</body>
+</html>

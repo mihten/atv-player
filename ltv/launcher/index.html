@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LTVPlayer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0716; color: #fff; overflow: hidden;
+    font-family: "Nunito", "LG Smart UI", "Roboto", sans-serif; }
+  #box { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); text-align: center; }
+  h1 { font-size: 72px; font-weight: 800; margin: 0 0 28px; letter-spacing: 1px; }
+  p { font-size: 30px; margin: 0; opacity: .72; }
+</style>
+<script src="config.js"></script>
+</head>
+<body>
+<div id="box"><h1>LTVPlayer</h1><p id="msg">Connecting…</p></div>
+<script>
+// Thin launcher: checks that the ATV server answers, writes one line into its journal, then opens the app the
+// server hosts (/static/ltv/). Plain ES5 on purpose: this page must run whatever the engine supports.
+(function () {
+  var server = String(window.LTV_SERVER || "").replace(/\/+$/, "");
+  var target = server + "/static/ltv/index.html?from=launcher";
+  var busy = false, retry = null;
+
+  function msg(text) { document.getElementById("msg").textContent = text; }
+
+  function info() {
+    var palm = typeof window.PalmSystem !== "undefined";
+    return "launcher " + (window.LTV_LAUNCHER || "?") + " ua=" + navigator.userAgent + " palm=" + palm +
+      " " + window.innerWidth + "x" + window.innerHeight + " dpr=" + window.devicePixelRatio +
+      " fetch=" + (typeof window.fetch === "function") + " origin=" + location.protocol;
+  }
+
+  // One log line over the server's socket (as the ltv player, closed again at once); never blocks the start.
+  function report(then) {
+    var done = false;
+    function finish() { if (!done) { done = true; then(); } }
+    try {
+      var ws = new WebSocket(server.replace(/^http/, "ws") + "/ws?role=player&kind=ltv");
+      ws.onopen = function () {
+        ws.send(JSON.stringify({ type: "log", message: info() + " -> " + target }));
+        setTimeout(function () { try { ws.close(); } catch (e) { /* gone */ } finish(); }, 300);
+      };
+      ws.onerror = finish;
+    } catch (e) { /* no socket: start anyway */ }
+    setTimeout(finish, 2000);
+  }
+
+  function reachable(ok, fail) {
+    if (typeof window.fetch !== "function") { ok(); return; }
+    var settled = false;
+    var timer = setTimeout(function () { if (!settled) { settled = true; fail(); } }, 4000);
+    window.fetch(server + "/api/state?session=ltv", { mode: "no-cors", cache: "no-store" }).then(function () {
+      if (!settled) { settled = true; clearTimeout(timer); ok(); }
+    })["catch"](function () {
+      if (!settled) { settled = true; clearTimeout(timer); fail(); }
+    });
+  }
+
+  function start() {
+    if (busy) { return; }
+    busy = true;
+    clearTimeout(retry);
+    msg("Connecting…");
+    if (!server) { busy = false; msg("No server address in this build"); return; }
+    reachable(function () {
+      report(function () { location.replace(target); });
+    }, function () {
+      busy = false;
+      msg("Cannot reach the ATV server");
+      retry = setTimeout(start, 5000);
+    });
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.keyCode === 461 || e.keyCode === 27) {   // Back: leave the app
+      e.preventDefault();
+      if (window.PalmSystem && window.PalmSystem.platformBack) { window.PalmSystem.platformBack(); } else { window.close(); }
+      return;
+    }
+    start();
+  });
+  start();
+})();
+</script>
+</body>
+</html>
