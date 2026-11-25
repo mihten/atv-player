@@ -146,11 +146,20 @@ export function paletteFor(item) {
   });
 }
 
+// The UI accent (icons, eyebrow, EQ, progress bars, glows) is calmer than the extracted `vibrant`: on the OLED a
+// vivid cover (e.g. a pure blue) made it far too strong. Same hue, saturation 0.30-0.42, brightness 0.92 (chosen on
+// the TV, option C). Extraction itself stays the 1:1 Artwork.swift port.
+export const UI_SAT_MIN = 0.30, UI_SAT_MAX = 0.42, UI_BRI = 0.92;
+export function uiAccent(v) {
+  const x = hsb(v);
+  return fromHSB(x.h, Math.min(UI_SAT_MAX, Math.max(UI_SAT_MIN, x.s)), UI_BRI);
+}
+
 /** The app-wide accent: CSS variables on the root (they cross-fade, see @property in app.css). */
 export function applyPalette(p) {
-  const s = document.documentElement.style;
-  s.setProperty("--accent", css(p.vibrant));
-  s.setProperty("--accent-55", css(p.vibrant, 0.55));
+  const s = document.documentElement.style, a = uiAccent(p.vibrant);
+  s.setProperty("--accent", css(a));
+  s.setProperty("--accent-55", css(a, 0.55));
   s.setProperty("--base", css(p.base));
   p.tones.forEach((t, i) => s.setProperty(`--t${i}`, css(t)));
   s.setProperty("--vib75", css(withBrightness(p.vibrant, 0.75)));

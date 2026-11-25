@@ -8,7 +8,7 @@ import { PlayerView } from "./views/player.js";
 import { HomeView } from "./views/home.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.4.0";
+export const LTV_VERSION = "0.4.1";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";

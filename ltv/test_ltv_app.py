@@ -681,8 +681,13 @@ try:
         check(wait(lambda: cur() == S), "song with a cover loaded")
         page.wait_for_timeout(2000)
         acc = js("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()")
-        want_acc = js(f"import('/static/ltv/palette.js').then(m => m.paletteFor({{id: {S}, art: true}}).then(p => m.css(p.vibrant)))")
-        check(acc == want_acc and acc != "rgb(167, 139, 250)", f"accent = the cover's vibrant colour ({acc} vs {want_acc})")
+        want_acc = js(f"import('/static/ltv/palette.js').then(m => m.paletteFor({{id: {S}, art: true}}).then(p => m.css(m.uiAccent(p.vibrant))))")
+        check(acc == want_acc and acc != "rgb(167, 139, 250)", f"accent = the cover's calmed vibrant colour ({acc} vs {want_acc})")
+        # UI accent = option C: same hue, saturation clamped to 0.30-0.42, brightness 0.92 (values worked out by hand)
+        ua = js("""import('/static/ltv/palette.js').then(m => [m.css(m.uiAccent({r: 0.04, g: 0.02, b: 1})),
+                   m.css(m.uiAccent({r: 1, g: 0, b: 0})), m.css(m.uiAccent({r: 0.75, g: 0.8, b: 0.95}))])""")
+        check(ua == ["rgb(138, 136, 235)", "rgb(235, 136, 136)", "rgb(164, 182, 235)"],
+              f"UI accent: vivid blue / pure red capped at s 0.42 v 0.92, pale blue lifted to s 0.30 ({ua})")
         res = js(f"""import('/static/ltv/palette.js').then(async (m) => {{
             const img = new Image(); img.src = '/art/{S}'; await img.decode();
             const c = document.createElement('canvas'); c.width = c.height = 32;
