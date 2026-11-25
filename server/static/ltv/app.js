@@ -1,0 +1,181 @@
+// LTVPlayer: boot, socket wiring, screens and keys (phase P3: plain Home + player).
+// Every user action is a command to the server; playback changes only when its load / control comes back.
+// Socket down (plan 9.5): OK still plays / pauses the element itself, ◀ / ▶ seek it, next / previous say so.
+
+import { Socket } from "./ws.js";
+import { Engine } from "./engine.js";
+import { PlayerView } from "./views/player.js";
+import { HomeView } from "./views/home.js";
+
+export const LTV_VERSION = "0.3.0";
+
+const Q = new URLSearchParams(location.search);
+const DEBUG = Q.get("debug") === "1";
+const KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, OK: 13, BACK: 461, BACKSPACE: 8, ESC: 27, PLAY: 415, PAUSE: 19,
+              STOP: 413, REW: 412, FF: 417, CH_UP: 33, CH_DOWN: 34 };
+const SEEK_STEP = 10;
+
+if (innerWidth && innerWidth !== 1920) document.documentElement.style.zoom = String(innerWidth / 1920);
+
+const video = document.getElementById("v");
+const $ = (id) => document.getElementById(id);
+let screen = "home";
+let state = null;
+let everOpen = false;
+
+// ---------------------------------------------------------------- notice capsule, reconnect pill
+let noticeTimer = null;
+function notice(text, ms) {
+  const el = $("capsule");
+  clearTimeout(noticeTimer);
+  el.textContent = text || "";
+  el.classList.toggle("on", !!text);
+  if (text && ms) noticeTimer = setTimeout(() => el.classList.remove("on"), ms);
+}
+
+const ui = {
+  item(it) { player.setItem(it); home.setItem(it); },
+  present() { show("player"); },
+  notice,
+  changed() { player.update(); home.update(); },
+};
+
+const sock = new Socket({
+  onMessage(m) {
+    switch (m.type) {
+      case "state": state = m.state; player.setState(state); break;
+      case "load": engine.load(m); break;
+      case "control": engine.control(m); break;
+      case "notice": notice(m.text, 5000); break;
+      default: break;   // sessions, playlists, auto, future types: not used in P3
+    }
+  },
+  onOpen(down) {
+    $("pill").classList.remove("on");
+    home.setConnected(true);
+    if (!everOpen) {
+      everOpen = true;
+      sock.log(`ltv ${LTV_VERSION} ua=${navigator.userAgent} ${innerWidth}x${innerHeight} dpr=${devicePixelRatio} ` +
+               `zoom=${document.documentElement.style.zoom || 1} from=${Q.get("from") || "-"} palm=${!!window.PalmSystem}`);
+    } else {
+      sock.log(`socket back after ${Math.round(down / 100) / 10} s`);
+    }
+  },
+  onClose() {
+    $("pill").classList.add("on");
+    home.setConnected(false);
+    sock.log("socket down");   // kept and sent after the reconnect
+  },
+});
+const engine = new Engine(video, sock, ui);
+const player = new PlayerView($("player"), engine);
+const home = new HomeView($("home"), engine, LTV_VERSION);
+sock.connect();
+
+// ---------------------------------------------------------------- screens
+function show(name) {
+  if (screen === name) return;
+  screen = name;
+  document.body.dataset.screen = name;
+  if (name === "player") player.show();
+}
+document.body.dataset.screen = screen;
+
+function close() {
+  const palm = window.PalmSystem;
+  sock.log("exit: Back twice on Home");
+  setTimeout(() => { if (palm && palm.platformBack) palm.platformBack(); else window.close(); }, 200);
+}
+
+// ---------------------------------------------------------------- keys
+let seekTarget = null, seekAt = 0, backAt = 0;
+
+function playPause(want) {
+  if (!engine.item) return;
+  const play = want ?? video.paused;
+  if (sock.open) sock.cmd(play ? "play" : "pause");
+  else if (play === video.paused) engine.localToggle();
+}
+
+function step(name) {
+  if (!engine.item) return;
+  if (!sock.open) { notice("Not connected to the server", 3000); return; }
+  if (name === "prev") sock.cmd("prev", { position: Math.round(engine.position() * 100) / 100 });
+  else sock.cmd("next");
+}
+
+function seekBy(delta) {
+  if (!engine.item) return;
+  const d = engine.duration();
+  const base = seekTarget !== null && performance.now() - seekAt < 1500 ? seekTarget : engine.position();
+  let target = Math.max(0, base + delta);
+  if (d) target = Math.min(target, Math.max(0, d - 2));
+  seekTarget = target;   // held keys add up before the server's seek comes back (the TV Player's rule)
+  seekAt = performance.now();
+  player.preview = target;
+  setTimeout(() => { if (performance.now() - seekAt >= 1400) { player.preview = null; player.update(); } }, 1500);
+  if (sock.open) sock.cmd("seek", { position: Math.round(target * 1000) / 1000 });
+  else engine.seekTo(target, "key");
+  player.update();
+}
+
+function playerKey(k) {
+  switch (k) {
+    case KEY.OK: playPause(); break;
+    case KEY.PLAY: playPause(true); break;
+    case KEY.PAUSE: case KEY.STOP: playPause(false); break;
+    case KEY.UP: case KEY.CH_DOWN: step("prev"); break;
+    case KEY.DOWN: case KEY.CH_UP: step("next"); break;
+    case KEY.LEFT: case KEY.REW: seekBy(-SEEK_STEP); break;
+    case KEY.RIGHT: case KEY.FF: seekBy(SEEK_STEP); break;
+    case KEY.BACK: case KEY.BACKSPACE: case KEY.ESC: show("home"); return;
+    default: return;
+  }
+  player.show();
+}
+
+function homeKey(k) {
+  if (k === KEY.OK) {
+    if (engine.item) show("player");
+    else if (sock.open) { sock.cmd("play_collection", { collection: "videos", shuffle: true }); sock.log("home: shuffle music videos"); }
+    else notice("Not connected to the server", 3000);
+  } else if (k === KEY.PLAY || k === KEY.PAUSE) {
+    playPause(k === KEY.PLAY);
+  } else if (k === KEY.BACK || k === KEY.BACKSPACE || k === KEY.ESC) {
+    if (performance.now() - backAt < 2000) { close(); return; }
+    backAt = performance.now();
+    notice("Press Back again to close", 2000);
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  const k = e.keyCode;
+  if (DEBUG) sock.log(`key ${k}${e.repeat ? " repeat" : ""} on ${screen}`);
+  if (Object.values(KEY).includes(k)) e.preventDefault();
+  if (engine.blocked && (k === KEY.OK || k === KEY.PLAY)) { engine.unblock(); return; }
+  if (screen === "player") playerKey(k); else homeKey(k);
+}, true);
+
+document.addEventListener("mousemove", () => { if (screen === "player") player.show(); }, true);
+
+// ---------------------------------------------------------------- life cycle (plan 12.2)
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    const was = !video.paused;
+    if (was) { engine.wantPlay = false; video.pause(); sock.cmd("pause"); }
+    sock.log(`hidden${was ? ": paused" : ""}`);
+  } else {
+    sock.log("visible");
+    sock.wake();
+  }
+});
+
+window.addEventListener("error", (e) => {
+  if (e.target && e.target !== window) return;   // media / image errors have their own handling
+  sock.log(`JSERR ${e.message || ""} ${(e.filename || "").split("/").pop()}:${e.lineno || ""}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  sock.log(`JSERR unhandled rejection ${e.reason && (e.reason.stack || e.reason.message) || e.reason}`.slice(0, 600));
+});
+
+window.ltv = { engine, sock, player, home, get screen() { return screen; }, get state() { return state; } };

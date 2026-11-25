@@ -1,12 +1,17 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=1920, height=1080">
 <title>LTVPlayer</title>
-<script>
-// Until the app exists (phase P3) the launcher's target forwards to the device probe.
-location.replace("probe.html" + location.search);
-</script>
+<link rel="stylesheet" href="app.css">
+<script type="module" src="app.js"></script>
 </head>
-<body style="background:#0b0716"></body>
+<body>
+<video id="v" preload="auto" playsinline></video>
+<section id="player" class="screen"></section>
+<section id="home" class="screen"></section>
+<div id="capsule"></div>
+<div id="pill">Reconnecting…</div>
+</body>
 </html>
