@@ -6,9 +6,10 @@ import { Socket } from "./ws.js";
 import { Engine } from "./engine.js";
 import { PlayerView } from "./views/player.js";
 import { HomeView } from "./views/home.js";
+import { Lists } from "./views/lists.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.4.1";
+export const LTV_VERSION = "0.5.0";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -21,6 +22,7 @@ if (innerWidth && innerWidth !== 1920) document.documentElement.style.zoom = Str
 const video = document.getElementById("v");
 const $ = (id) => document.getElementById(id);
 let screen = "home";
+let menu = "home";     // the menu screen the player returns to on Back (home | lists)
 let state = null;
 let everOpen = false;
 
@@ -45,20 +47,20 @@ function accent(it) {
 applyPalette(FALLBACK);
 
 const ui = {
-  item(it) { player.setItem(it); home.setItem(it); accent(it); },
+  item(it) { player.setItem(it); home.setItem(it); lists.setItem(it); accent(it); },
   present() { show("player"); },
   notice,
-  changed() { player.update(); home.update(); },
+  changed() { player.update(); home.update(); lists.playing(engine.isPlaying()); },
 };
 
 const sock = new Socket({
   onMessage(m) {
     switch (m.type) {
-      case "state": state = m.state; player.setState(state); home.setState(state); break;
+      case "state": state = m.state; player.setState(state); home.setState(state); lists.setState(state); break;
       case "load": engine.load(m); break;
       case "control": engine.control(m); break;
       case "notice": notice(m.text, 5000); break;
-      case "playlists": case "auto": home.onMessage(m); break;
+      case "playlists": case "auto": home.onMessage(m); lists.onMessage(m); break;
       default: break;   // sessions, audio_copies, future types
     }
   },
@@ -66,6 +68,7 @@ const sock = new Socket({
     $("pill").classList.remove("on");
     home.setConnected(true);
     home.loadAll();   // on start and after every reconnect (plan 10.4)
+    if (everOpen) lists.onMessage({ type: "reconnect" });
     if (!everOpen) {
       everOpen = true;
       sock.log(`ltv ${LTV_VERSION} ua=${navigator.userAgent} ${innerWidth}x${innerHeight} dpr=${devicePixelRatio} ` +
@@ -82,10 +85,17 @@ const sock = new Socket({
 });
 const engine = new Engine(video, sock, ui);
 const player = new PlayerView($("player"), engine);
+const isVideoPlaying = () => engine.isPlaying() && engine.item?.kind === "video";
+const lists = new Lists($("lists"), {
+  engine, sock, notice, isVideoPlaying,
+  state: () => state,
+  homeData: () => home.data,
+});
 const home = new HomeView($("home"), {
-  engine, sock, notice, version: LTV_VERSION,
+  engine, sock, notice, version: LTV_VERSION, isVideoPlaying,
   showPlayer: () => show("player"),
-  isVideoPlaying: () => engine.isPlaying() && engine.item?.kind === "video",
+  openList: (kind, params) => { lists.open(kind, params); show("lists"); },
+  onData: () => lists.homeData(),
 });
 sock.connect();
 
@@ -93,9 +103,11 @@ sock.connect();
 function show(name) {
   if (screen === name) return;
   screen = name;
+  if (name !== "player") menu = name;
   document.body.dataset.screen = name;
   if (name === "player") player.show();
   home.shown(name === "home");
+  lists.shown(name === "lists");
 }
 document.body.dataset.screen = screen;
 
@@ -146,10 +158,19 @@ function playerKey(k) {
     case KEY.DOWN: case KEY.CH_UP: step("next"); break;
     case KEY.LEFT: case KEY.REW: seekBy(-SEEK_STEP); break;
     case KEY.RIGHT: case KEY.FF: seekBy(SEEK_STEP); break;
-    case KEY.BACK: case KEY.BACKSPACE: case KEY.ESC: show("home"); return;
+    case KEY.BACK: case KEY.BACKSPACE: case KEY.ESC: show(menu); return;
     default: return;
   }
   player.show();
+}
+
+function listsKey(k) {
+  if (lists.key(k)) return;   // arrows move the focus, OK activates
+  if (k === KEY.PLAY || k === KEY.PAUSE) {
+    playPause(k === KEY.PLAY);
+  } else if (k === KEY.BACK || k === KEY.BACKSPACE || k === KEY.ESC) {
+    if (!lists.back()) show("home");   // the last list screen: Home with its focus
+  }
 }
 
 function homeKey(k) {
@@ -168,7 +189,7 @@ document.addEventListener("keydown", (e) => {
   if (DEBUG) sock.log(`key ${k}${e.repeat ? " repeat" : ""} on ${screen}`);
   if (Object.values(KEY).includes(k)) e.preventDefault();
   if (engine.blocked && (k === KEY.OK || k === KEY.PLAY)) { engine.unblock(); return; }
-  if (screen === "player") playerKey(k); else homeKey(k);
+  if (screen === "player") playerKey(k); else if (screen === "lists") listsKey(k); else homeKey(k);
 }, true);
 
 document.addEventListener("mousemove", () => { if (screen === "player") player.show(); }, true);
@@ -193,4 +214,4 @@ window.addEventListener("unhandledrejection", (e) => {
   sock.log(`JSERR unhandled rejection ${e.reason && (e.reason.stack || e.reason.message) || e.reason}`.slice(0, 600));
 });
 
-window.ltv = { engine, sock, player, home, get screen() { return screen; }, get state() { return state; } };
+window.ltv = { engine, sock, player, home, lists, get screen() { return screen; }, get state() { return state; } };

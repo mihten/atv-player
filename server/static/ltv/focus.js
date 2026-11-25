@@ -9,8 +9,27 @@
 const SAFE_TOP = 40, SAFE_BOTTOM = 1080 - 50, VIEW_W = 1760;
 const FPS_LOGS = 20;   // shelf / page moves measured per app start (P4 exit: FPS numbers from the TV)
 
+/** One FPS line for a move (requestAnimationFrame for 0.7 s). budget = {left, measuring}, shared by the engines of a
+ *  screen family so the journal gets at most `left` lines. */
+export function measureMove(budget, kind, section, log, video) {
+  if (budget.left <= 0 || budget.measuring) return;
+  budget.left -= 1;
+  budget.measuring = true;
+  let t0 = 0, frames = 0, last = 0, gap = 0;
+  const tick = (t) => {
+    frames += 1;
+    gap = Math.max(gap, t - last);
+    last = t;
+    if (t - t0 < 700) { requestAnimationFrame(tick); return; }
+    budget.measuring = false;
+    const fps = frames / ((t - t0) / 1000);
+    log?.(`fps ${kind} ${section}: ${fps.toFixed(1)} fps, max frame gap ${Math.round(gap)} ms${video ? ", over a playing video" : ""}`);
+  };
+  requestAnimationFrame((t) => { t0 = last = t; requestAnimationFrame(tick); });
+}
+
 export class Focus {
-  /** opts: {onActivate(el), log(text), videoPlaying() -> bool} */
+  /** opts: {onActivate(el), log(text), videoPlaying() -> bool, fps: shared budget (optional)} */
   constructor(root, opts) {
     this.root = root;
     this.opts = opts;
@@ -19,7 +38,7 @@ export class Focus {
     this.tx = new Map();       // track -> translateX
     this.ty = 0;
     this.pointer = false;
-    this.fpsLeft = FPS_LOGS;
+    this.fps = opts.fps || { left: FPS_LOGS, measuring: false };
     this.lastOk = 0;
     this.moveRaf = 0;
     root.addEventListener("mousemove", (e) => this.onMouse(e));
@@ -148,10 +167,13 @@ export class Focus {
     const sec = el.closest("[data-section]"), page = this.page();
     if (sec && page) {
       let y = this.ty;
-      const top = sec.offsetTop, bottom = top + sec.offsetHeight;
+      // a grid section may be taller than the screen: keep the tile itself in view (its untransformed offset in the page)
+      const grid = sec.hasAttribute("data-grid");
+      const top = grid ? el.getBoundingClientRect().top - page.getBoundingClientRect().top - 24 : sec.offsetTop;
+      const bottom = grid ? top + el.offsetHeight + 48 : top + sec.offsetHeight;
       if (bottom + y > SAFE_BOTTOM) y = SAFE_BOTTOM - bottom;
       if (top + y < SAFE_TOP) y = SAFE_TOP - top;
-      if (this.sections()[0] === sec) y = 0;   // the first section brings the header back
+      if (this.sections()[0] === sec && (!grid || el.offsetTop === this.focusables(sec)[0].offsetTop)) y = 0;   // the first section / grid row brings the header back
       y = Math.min(0, y);
       if (y !== this.ty) { this.setY(y); moved = moved ? "both" : "page"; }
     }
@@ -247,23 +269,8 @@ export class Focus {
     }
   }
 
-  // ---------------------------------------------------------------- FPS of a move (requestAnimationFrame for 0.7 s)
+  // ---------------------------------------------------------------- FPS of a move
   measure(kind, section) {
-    if (this.fpsLeft <= 0 || this.measuring) return;
-    this.fpsLeft -= 1;
-    this.measuring = true;
-    const video = !!this.opts.videoPlaying?.();
-    let t0 = 0, frames = 0, last = 0, gap = 0;
-    const tick = (t) => {
-      frames += 1;
-      gap = Math.max(gap, t - last);
-      last = t;
-      if (t - t0 < 700) { requestAnimationFrame(tick); return; }
-      this.measuring = false;
-      const fps = frames / ((t - t0) / 1000);
-      this.opts.log?.(`fps ${kind} ${section}: ${fps.toFixed(1)} fps, max frame gap ${Math.round(gap)} ms` +
-                      `${video ? ", over a playing video" : ""}`);
-    };
-    requestAnimationFrame((t) => { t0 = last = t; requestAnimationFrame(tick); });
+    measureMove(this.fps, kind, section, this.opts.log, !!this.opts.videoPlaying?.());
   }
 }

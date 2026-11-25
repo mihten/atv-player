@@ -1,34 +1,15 @@
 // LTVPlayer: Home (port of Sources/HomeView.swift, Aurora look; plan 10.4). Header with the wordmark and the
 // connection pill, the Now Playing hero, then the shelves Browse, For you, Playlists, Play, Music videos.
 // Every action is a command to the server (plan 8.2: list starts are shuffled, a picked item plays first).
-// The list screens behind Browse / For you / Playlists come in P5.
+// Browse / For you / Playlists open the list screens (views/lists.js, P5).
 
 import { Focus } from "../focus.js";
 import { Backdrop } from "../backdrop.js";
 import { icon } from "../icons.js";
 import { getJSON, formatTime, plural, playlistDetail, mixDetail, mixEmpty, esc } from "../api.js";
-import { forItem, css, withBrightness } from "../palette.js";
+import { thumb, card, poster, bars } from "./tiles.js";
 
 const W = 1760;
-const NOT_YET = "Coming in the next update";
-
-/** Cover <img> (loaded lazily by the focus engine) or a coloured placeholder with a note symbol. */
-function thumb(item, cls = "") {
-  if (item && item.art) return `<img class="th ${cls}" data-src="/art/${item.id}" decoding="async" alt="">`;
-  const p = forItem(item ? item.id : 0);
-  return `<div class="th ph ${cls}" style="background:linear-gradient(135deg, ${css(withBrightness(p.vibrant, 0.62, 0.55))}, ` +
-         `${css(p.tones[0])} 60%, ${css(p.base)})">${icon(item && item.kind === "video" ? "videos" : "note", 44)}</div>`;
-}
-
-function mosaic(items, seed) {
-  if (items.length >= 4) return `<div class="mosaic">${items.slice(0, 4).map((i) => thumb(i)).join("")}</div>`;
-  if (items.length) return thumb(items[0]);
-  const p = forItem(seed * 7);
-  return `<div class="th ph" style="background:linear-gradient(135deg, ${css(withBrightness(p.vibrant, 0.72))}, ` +
-         `${css(p.tones[0])} 55%, ${css(p.base)})">${icon("playlists", 120)}</div>`;
-}
-
-const bars = () => `<span class="eq">${"<i></i>".repeat(5)}</span>`;
 
 export class HomeView {
   /** ctx: {engine, sock, notice(text, ms), showPlayer(), version, isVideoPlaying()} */
@@ -191,29 +172,22 @@ export class HomeView {
     out.push(this.shelf("browse", "Browse", browse.map(([k, t, ic]) => `
       <div class="tile browse" data-focus="browse:${k}" data-action="browse" data-key="${k}">${icon(ic, 40)}<span>${t}</span></div>`).join(""), false));
     if (d.auto.length) {
-      out.push(this.shelf("foryou", "For you", d.auto.map((l, i) => this.card(`auto:${l.key}`, "auto", l.key,
+      out.push(this.shelf("foryou", "For you", d.auto.map((l, i) => card(`auto:${l.key}`, "auto", l.key,
         l.key === "loved" ? `♥ ${l.name}` : l.name, plural(l.count, "item"), d.autoItems[l.key] || [], 1000000 + i)).join("")));
     }
     if (d.playlists.length) {
-      out.push(this.shelf("playlists", "Playlists", d.playlists.slice(0, 30).map((p) => this.card(`playlist:${p.id}`, "playlist", p.id,
+      out.push(this.shelf("playlists", "Playlists", d.playlists.slice(0, 30).map((p) => card(`playlist:${p.id}`, "playlist", p.id,
         p.name, playlistDetail(p), d.covers[p.id] || [], p.id)).join("")));
     }
     out.push(this.shelf("play", "Play", this.playTiles(), false));
     if (d.videos.length) {
-      out.push(this.shelf("videos", "Music videos", d.videos.slice(0, 40).map((v) => `
-        <div class="tile poster" data-focus="video:${v.id}" data-action="video" data-key="${v.id}">${thumb(v)}
-          <div class="fade"></div><div class="cap"><div class="cap-t">${esc(v.title)}</div>
-          ${v.artist ? `<div class="cap-s">${esc(v.artist)}</div>` : ""}</div></div>`).join("")));
+      out.push(this.shelf("videos", "Music videos", d.videos.slice(0, 40).map((v) => poster(v)).join("")));
     }
     this.$(".h-shelves").innerHTML = out.join("");
     this.focus.tx.clear();
     for (const t of this.root.querySelectorAll("[data-track]")) this.focus.setX(t, 0);
     this.focus.refresh();
-  }
-
-  card(focusId, action, key, name, detail, items, seed) {
-    return `<div class="tile card" data-focus="${focusId}" data-action="${action}" data-key="${esc(key)}">${mosaic(items, seed)}
-      <div class="fade"></div><div class="cap"><div class="cap-t two">${esc(name)}</div><div class="cap-s">${esc(detail)}</div></div></div>`;
+    this.ctx.onData?.();
   }
 
   /** Mix tiles that hold something (an empty mix shows no tile) + "Shuffle music videos" over the rest of the width. */
@@ -239,7 +213,7 @@ export class HomeView {
   }
 
   activate(el) {
-    const { sock, notice, showPlayer, engine } = this.ctx;
+    const { sock, notice, showPlayer, engine, openList } = this.ctx;
     const a = el.dataset.action, key = el.dataset.key;
     const send = (args, what) => {
       if (!sock.open) { notice("Not connected to the server", 3000); return; }
@@ -255,9 +229,14 @@ export class HomeView {
       send({ collection: "mix", mix: Number(key) }, `mix ${key}`);
     } else if (a === "video") {
       send({ collection: "videos", start_id: Number(key) }, `music video ${key}`);
-    } else {
-      notice(NOT_YET, 2500);
-      sock.log(`home: ${a} ${key}: list screens come in P5`);
+    } else if (a === "browse") {
+      openList(key);   // playlists | folders | videos | queue
+    } else if (a === "auto") {
+      const l = this.data.auto.find((x) => x.key === key);
+      openList("auto", { key, name: l ? l.name : key });
+    } else if (a === "playlist") {
+      const p = this.data.playlists.find((x) => String(x.id) === key);
+      openList("playlist", { id: Number(key), name: p ? p.name : "Playlist" });
     }
   }
 

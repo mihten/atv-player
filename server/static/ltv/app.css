@@ -49,7 +49,7 @@ html, body {
 
 .screen { position: fixed; inset: 0; width: 1920px; height: 1080px; z-index: 10; opacity: 0; visibility: hidden;
           transition: opacity .25s ease, visibility 0s linear .25s; overflow: hidden; }
-body[data-screen="home"] #home, body[data-screen="player"] #player {
+body[data-screen="home"] #home, body[data-screen="player"] #player, body[data-screen="lists"] #lists {
   opacity: 1; visibility: visible; transition: opacity .25s ease, visibility 0s;
 }
 .ico { display: block; flex: none; }
@@ -215,6 +215,60 @@ img.th.broken { visibility: hidden; }
 .chev-r { right: -72px; }
 body.pointer .shelf.can-left .chev-l, body.pointer .shelf.can-right .chev-r { display: flex; }
 .chev.focused { background: var(--accent); color: #000; }
+
+/* ---------------------------------------------------------------- list screens (P5, plan 10.5 / 10.7) */
+#lists { background: #000; }
+.l-bd { position: absolute; inset: 0; }
+.l-screen { position: absolute; inset: 0; }
+.l-screen.hidden { display: none; }
+.l-page { position: relative; padding: 40px 80px 70px; transition: transform .35s cubic-bezier(.25, .8, .25, 1); }
+.l-head { margin-bottom: 30px; }
+.l-title { font-size: 58px; font-weight: 800; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l-count { font-size: 26px; opacity: .6; margin-top: 6px; min-height: 34px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l-sec + .l-sec { margin-top: 26px; }
+.l-h { font-size: 34px; font-weight: 800; opacity: .92; }
+.l-text { font-size: 26px; opacity: .65; display: flex; align-items: center; min-height: 76px; }
+.grid { position: relative; display: flex; flex-wrap: wrap; gap: 40px; padding: 24px 0; width: 1760px; }
+.tile.poster.grid { width: 410px; height: 231px; }
+.tile.poster.grid > .th { width: 410px; height: 231px; }
+
+/* virtualised rows: absolutely placed by top (the focus lift is a transform) */
+.l-rows { position: relative; width: 1760px; }
+.l-rows > *, .l-rows > .row { position: absolute; left: 0; width: 1760px; }
+.l-header { height: 84px; display: flex; align-items: flex-end; padding: 0 0 14px 4px; font-size: 30px; font-weight: 800; opacity: .92; }
+
+.row {
+  position: relative; width: 1760px; height: 84px; padding: 0 26px; border-radius: 18px;
+  display: flex; align-items: center; gap: 22px;
+  transition: transform .32s var(--spring), background-color .2s ease;
+}
+.row.focused { transform: scale(1.02); background: rgba(255, 255, 255, .14); box-shadow: 0 10px 24px rgba(0, 0, 0, .35);
+               border-top: 1px solid rgba(255, 255, 255, .25); z-index: 2; }
+.row.pressed { transform: scale(.98); transition: transform .12s ease-out; }
+.row.dim { opacity: .45; }
+.row.now .r-title { font-weight: 800; }
+.r-num { flex: none; width: 70px; text-align: right; font-size: 24px; opacity: .55; font-variant-numeric: tabular-nums; }
+.r-th { position: relative; flex: none; width: 96px; height: 54px; display: flex; align-items: center; }
+.r-th .th { height: 54px; border-radius: 8px; object-fit: cover; }
+.r-th.wide .th { width: 96px; }
+.r-th.sq .th { width: 54px; }
+.r-th .th.ph .ico { width: 26px; height: 26px; }
+.r-th.sym { color: var(--accent); padding-left: 7px; }
+.r-now { position: absolute; left: 0; top: 0; height: 54px; border-radius: 8px; background: rgba(0, 0, 0, .45);
+         display: flex; align-items: center; justify-content: center; }
+.r-th.wide .r-now { width: 96px; }
+.r-th.sq .r-now { width: 54px; }
+.r-now .eq { height: 22px; gap: 2px; }
+.r-now .eq i { width: 3px; height: 22px; background: #fff; }
+#lists.playing .r-now .eq i { animation-play-state: running; }
+.r-text { flex: 1; min-width: 0; }
+.r-title { font-size: 28px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r-sub { display: flex; align-items: center; gap: 10px; font-size: 22px; margin-top: 2px; white-space: nowrap; overflow: hidden; }
+.r-subt { opacity: .6; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+.r-subt:empty { display: none; }
+.r-chip { flex: none; font-size: 16px; font-weight: 700; padding: 1px 10px; border-radius: 8px; background: rgba(255, 255, 255, .14); opacity: .8; }
+.r-right { flex: none; font-size: 22px; opacity: .6; font-variant-numeric: tabular-nums; }
+.r-love { color: var(--accent); margin-right: 14px; }
 
 /* ---------------------------------------------------------------- Player (P3) */
 #player { background: transparent; }

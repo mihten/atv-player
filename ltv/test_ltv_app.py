@@ -14,7 +14,12 @@ titles with diacritics): Home sections and tiles, key sequences end on the expec
 per section, no wrap, the focused tile stays in view (shelf / page transforms), lazy covers, Back from the player keeps
 the focus, pointer focus + chevron + wheel, arrow keys leave pointer mode, OK on each kind of tile sends the exact
 command, font + accent colour, the palette port against a Python port of Shared/Artwork.swift, FPS log lines.
-Screenshots of Home and player go to outdir.
+List screens (P5): Playlists (For you + playlist card grids), a playlist (Play, entries by position, a deleted file dimmed and
+skipped, start_index), the open playlist reloads on a change / shows "deleted", an auto-list (Play / start_id), Music
+videos (Play + 4-column poster grid, the page follows the focus), Folders (roots, "including subfolders" / "only this
+folder", files with start_id), Queue (opens centred on the playing entry, virtualised rows, jump + log line, the focus
+stays on track changes, pointer / wheel), Back from the player returns to the list with its focus, Back to Home.
+Screenshots of Home, lists and player go to outdir.
 Desktop Chromium cannot play HEVC / most MKV: codec questions belong to the TV probe, not here.
 """
 import json
@@ -167,20 +172,27 @@ ff("-f", "lavfi", "-i", "sine=frequency=660:duration=8", "-c:a", "wavpack", "-me
    "-metadata", "artist=Tester", str(lib / "songs" / "02 Song Wav.wv"))
 ff("-f", "lavfi", "-i", "sine=frequency=700:duration=10", "-c:a", "flac", "-metadata", "title=Song Hang",
    "-metadata", "artist=Tester", str(lib / "songs" / "03 Song Hang.flac"))
+# P5: a song that is deleted later (a missing playlist entry) and one in a subfolder (a folder with files + subfolders)
+GONE_PATH = lib / "songs" / "04 Song Gone.flac"
+ff("-f", "lavfi", "-i", "sine=frequency=740:duration=6", "-c:a", "flac", "-metadata", "title=Song Gone",
+   "-metadata", "artist=Tester", str(GONE_PATH))
+(lib / "songs" / "bonus").mkdir(parents=True, exist_ok=True)
+ff("-f", "lavfi", "-i", "sine=frequency=780:duration=6", "-c:a", "flac", "-metadata", "title=Song Bonus",
+   "-metadata", "artist=Tester", str(lib / "songs" / "bonus" / "05 Song Bonus.flac"))
 # P4: enough music videos for a scrolling shelf; three carry titles as long as the longest in a real library (76-80
 # characters) and a 60-character artist, with č ć š ž đ (the font must have them)
 LONG = ["Ljubičasta šuma u ožujku (Đurđevdanski koncert uživo, proširena verzija s gostima)",
         "Čežnja za žutim šljivama i đurđicama (akustična verzija snimljena kod kuće, 2026)",
         "Šapat noći nad Dravom - posljednja pjesma večeri (cijeli nastup bez prekida, HD)"]
 LONG_ARTIST = "Đurđa Šimunović-Čačić & Orkestar Žarko Ćosić i Prijatelji"
-for n in range(8):
+for n in range(16):   # 20 music videos in all: the 4-column grid of P5 is taller than one screen
     title = LONG[n] if n < 3 else f"Extra {n}"
     path = lib / "more" / f"extra{n}.webm"
     path.parent.mkdir(parents=True, exist_ok=True)
     ff("-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=2", "-f", "lavfi", "-i", "sine=frequency=500:duration=2",
        "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "50k", "-c:a", "libopus",
        "-metadata", f"title={title}", "-metadata", f"artist={LONG_ARTIST if n < 3 else 'Clipper'}", str(path))
-N_ITEMS = 15
+N_ITEMS = 25
 
 env = dict(os.environ, ATV_ROOTS=json.dumps({"music": str(lib)}), ATV_DATA=str(tmp / "data"),
            ATV_CACHE=str(tmp / "cache"), ATV_PORT=str(PORT))
@@ -227,6 +239,7 @@ try:
     items = {it["title"]: it for it in get("/api/library?all=1")["items"]}
     A, B, C = items["Clip A"]["id"], items["Clip B"]["id"], items["Clip C"]["id"]
     M, S, W, HANG = items["Two Tracks"]["id"], items["Song One"]["id"], items["Song Wav"]["id"], items["Song Hang"]["id"]
+    GONE, BONUS = items["Song Gone"]["id"], items["Song Bonus"]["id"]
     check(get(f"/api/item/{M}").get("audio_ord") == 1, "two-track clip: server's default audio track is ord 1")
 
     with sync_playwright() as p:
@@ -607,12 +620,21 @@ try:
             c = cmds("play_collection")
             return c[-1] if c else None
 
+        keys("ArrowDown")
+        b_tile = focused()
+        keys("Enter")
+        check(wait(lambda: js("ltv.screen") == "lists"), f"OK on a Browse tile ({b_tile}): its list screen")
+        keys("Escape")
+        check(wait(lambda: js("ltv.screen") == "home") and focused() == b_tile, "Back from the list: Home with the focus on that tile")
         keys("ArrowDown", "Enter")
-        check(wait(lambda: "Coming in the next update" in page.inner_text("#capsule")), "OK on a Browse tile: notice (lists come in P5)")
+        check(wait(lambda: js("ltv.screen") == "lists") and wait(lambda: any(l.startswith("list: open auto ") for l in journal())),
+              "OK on a For you card: its auto-list screen (log line)")
+        keys("Escape")
         keys("ArrowDown", "Enter")
-        check(wait(lambda: any("home: auto" in l for l in journal())), "OK on a For you card: notice + log line")
-        keys("ArrowDown", "Enter")
-        check(wait(lambda: any("home: playlist" in l for l in journal())), "OK on a playlist card: notice + log line")
+        check(wait(lambda: js("ltv.screen") == "lists") and wait(lambda: any(l.startswith("list: open playlist ") for l in journal())),
+              "OK on a playlist card: the playlist screen (log line)")
+        keys("Escape")
+        check(wait(lambda: js("ltv.screen") == "home") and (focused() or "").startswith("playlist:"), "Back: Home on the playlist card")
         keys("ArrowDown", "ArrowLeft", "ArrowLeft")
         check(focused() == "mix:1", "Play row: ◀ to Mix 1")
         n0 = len(cmds("play_collection"))
@@ -706,8 +728,7 @@ try:
         rc("play_ids", ids=[long_ids[0]], start_index=0)
         check(wait(lambda: cur() == long_ids[0]), "long-title video loaded")
         keys("Escape", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp")
-        page.wait_for_timeout(800)
-        check(focused() == "hero" and ty() == 0, "back at the hero for the long-title look")
+        check(wait(lambda: focused() == "hero" and ty() == 0), "back at the hero for the long-title look")
         t = rect(".hero-title")
         check(t["h"] <= 2 * 58 * 1.12 + 6, f"hero title at most 2 lines ({t['h']:.0f} px)")
         if js("document.querySelector('.hero-next')"):
@@ -721,6 +742,287 @@ try:
         page.screenshot(path=str(OUT / "p4-home-longtitle.png"))
         check(not errors, f"P4: no page errors ({errors[:2]})")
         check(not any(l.startswith("JSERR") for l in journal()), "P4: no JSERR lines")
+        page.close()
+        b.close()
+
+        # ======================================================== P5: list screens + Queue
+        b = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
+        page = b.new_page(viewport={"width": 1920, "height": 1080})
+        errors, sent = [], []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("websocket", lambda ws: ws.on("framesent", lambda f: sent.append(f if isinstance(f, str) else "")))
+        remote = b.new_page()
+        remote.goto(BASE + "/api/state?session=ltv")
+        open_remote()
+        p_gaps = send_json("/api/playlists", {"name": "Gaps", "ids": [S, GONE, A]})["id"]
+        GONE_PATH.unlink()
+        rc("rescan")
+        check(wait(lambda: GONE not in [i["id"] for i in get("/api/library?all=1")["items"]] and not state()["scanning"], 40),
+              "seed: 'Song Gone' deleted + rescanned (a missing playlist entry)")
+        page.goto(BASE + "/static/ltv/index.html")
+        check(wait(lambda: state()["players"] == 1), "P5: the page joins")
+        check(wait(lambda: js("[...document.querySelectorAll('#home [data-section]')].map(s => s.dataset.section)").count("playlists") == 1, 15),
+              "P5: Home loaded")
+
+        def lf():
+            return js("document.querySelector('#lists .l-screen:not(.hidden) .focused')?.dataset.focus || null")
+
+        def ltext(sel):
+            return js("(s) => document.querySelector('#lists .l-screen:not(.hidden) ' + s)?.textContent || null", sel)
+
+        def lall(sel):
+            return js("(s) => [...document.querySelectorAll('#lists .l-screen:not(.hidden) ' + s)].map(e => e.textContent.trim())", sel)
+
+        def strip(m):
+            return {k: v for k, v in (m or {}).items() if k != "type"}
+
+        def count_items(n):
+            return "1 item" if n == 1 else f"{n} items"
+
+        def new_cmd(n0, name="play_collection"):
+            return strip(cmds(name)[-1]) if wait(lambda: len(cmds(name)) > n0) else None
+
+        def home_tile(focus_id):   # from anywhere on Home: hero, ▼ to Browse, ◀ to the start, then ▶ to the tile
+            keys("ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft")
+            for _ in range(4):
+                if focused() == focus_id:
+                    break
+                keys("ArrowRight")
+            return focused() == focus_id
+
+        def leave_player():   # a start opens the player when the server's load arrives: wait for it, then Back
+            wait(lambda: js("ltv.screen") == "player")
+            keys("Escape")
+            wait(lambda: js("ltv.screen") != "player")
+
+        def to_menu():   # Back until Home
+            for _ in range(6):
+                if js("ltv.screen") == "home":
+                    return
+                keys("Escape")
+                page.wait_for_timeout(150)
+
+        # ---- Playlists: For you + playlists as card grids
+        check(home_tile("browse:playlists"), "Home: Browse / Playlists focused")
+        keys("Enter")
+        check(wait(lambda: js("ltv.screen") == "lists" and ltext(".l-title") == "Playlists"), "Playlists screen: title")
+        check(wait(lambda: ltext(".l-count") == "3 playlists"), f"Playlists: count line '3 playlists' ({ltext('.l-count')})")
+        check(js("[...document.querySelectorAll('#lists .l-screen:not(.hidden) [data-section]')].map(s => s.dataset.section)") == ["foryou", "playlists"],
+              "Playlists: sections For you, Playlists")
+        check(len(lall("[data-section=playlists] .tile.card")) == 3 and "♥ Loved" in (ltext("[data-focus='auto:loved']") or ""),
+              "Playlists: 3 playlist cards, '♥ Loved' card")
+        check(lf() == "auto:loved", f"Playlists: focus starts on the first card ({lf()})")
+        page.wait_for_timeout(400)
+        page.screenshot(path=str(OUT / "p5-playlists.png"))
+        keys("ArrowDown")
+        check((lf() or "").startswith("playlist:"), f"▼: the playlist grid ({lf()})")
+        for _ in range(3):
+            if lf() == f"playlist:{p_road}":
+                break
+            keys("ArrowRight")
+        check(lf() == f"playlist:{p_road}", "▶: the Road Trip card")
+        keys("Enter")
+
+        # ---- one playlist: Play, rows by position; Back from the player returns here with the focus
+        check(wait(lambda: ltext(".l-title") == "Road Trip"), "playlist screen: title 'Road Trip'")
+        check(wait(lambda: re.fullmatch(r"6 items · 6 videos · \d+:\d\d", ltext(".l-count") or "")), f"playlist: count line ({ltext('.l-count')})")
+        check(wait(lambda: lf() == "play") and "6 items" in (ltext(".row.play") or ""), "playlist: focus on Play, '6 items'")
+        check(lall(".l-header") == ["Songs and videos"] and len(lall(".l-rows .row")) == 7, "playlist: header + Play + 6 rows")
+        check(wait(lambda: any(l.startswith(f"playlist {p_road} shown: 6 entries") for l in journal())), "journal: 'playlist <id> shown: 6 entries'")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "playlist", "playlist": p_road, "shuffle": True},
+              f"OK on Play: play_collection playlist shuffled ({strip(last_cmd())})")
+        check(wait(lambda: js("ltv.screen") == "player"), "the start opens the player")
+        keys("Escape")
+        check(wait(lambda: js("ltv.screen") == "lists") and lf() == "play", "Back from the player: the playlist screen, focus kept")
+        keys("ArrowDown", "ArrowDown", "ArrowDown")
+        check(lf() == "p:2", f"▼ x3: the third entry ({lf()})")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "playlist", "playlist": p_road, "start_index": 2, "shuffle": True},
+              f"OK on an entry: start_index = its position ({strip(last_cmd())})")
+        check(wait(lambda: cur() == vids[2]), "the picked entry plays first")
+        leave_player()
+        check(wait(lambda: js("ltv.screen") == "lists") and lf() == "p:2", "Back: entry still focused")
+        check(wait(lambda: js("!!document.querySelector('#lists .l-screen:not(.hidden) [data-focus=\"p:2\"] .r-now')")),
+              "the playing entry shows the bars on its thumb")
+        page.screenshot(path=str(OUT / "p5-playlist.png"))
+        send_json(f"/api/playlists/{p_road}", {"name": "Road Trip 2"}, "PUT")
+        check(wait(lambda: ltext(".l-title") == "Road Trip 2") and lf() == "p:2", "playlists message: the open playlist reloads, focus kept")
+        keys("Escape")
+        check(wait(lambda: ltext(".l-title") == "Playlists") and lf() == f"playlist:{p_road}", "Back: Playlists with the card focused")
+
+        # ---- a playlist with a deleted file: dimmed, not focusable, Play counts the playable ones
+        for _ in range(3):
+            if lf() == f"playlist:{p_gaps}":
+                break
+            keys("ArrowLeft")
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == "Gaps"), "playlist 'Gaps' opened")
+        check(wait(lambda: "1 missing" in (ltext(".l-count") or "")) and "2 items" in (ltext(".row.play") or ""),
+              f"Gaps: '1 missing' in the count line, Play '2 items' ({ltext('.l-count')})")
+        check(js("(() => { const r = document.querySelector('#lists .l-screen:not(.hidden) .row.dim'); "
+                 "return !!r && !r.hasAttribute('data-focus') && r.textContent.includes('file was deleted or moved'); })()"),
+              "missing entry: dimmed, not focusable, 'file was deleted or moved'")
+        keys("ArrowDown", "ArrowDown")
+        check(lf() == "p:2", f"▼ x2: skips the missing entry ({lf()})")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "playlist", "playlist": p_gaps, "start_index": 2, "shuffle": True},
+              f"OK past a missing entry: start_index 2 ({strip(last_cmd())})")
+        check(wait(lambda: cur() == A), "the server maps the position past the missing entry (Clip A plays)")
+        leave_player()
+        send_json(f"/api/playlists/{p_gaps}", {}, "DELETE")
+        check(wait(lambda: ltext(".l-text") == "This playlist was deleted."), "deleted while open: 'This playlist was deleted.'")
+        to_menu()
+        check(js("ltv.screen") == "home" and focused() == "browse:playlists", "Back x2: Home, Browse / Playlists focused")
+
+        # ---- auto-list (For you card on Home)
+        keys("ArrowDown")
+        check(focused() == "auto:loved" or wait(lambda: (focused() or "").startswith("auto:")), f"▼: a For you card ({focused()})")
+        while focused() != "auto:loved" and js("!!document.querySelector('[data-focus=\"auto:loved\"]')"):
+            before = focused()
+            keys("ArrowLeft")
+            if focused() == before:
+                break
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == "Loved" and ltext(".l-count") == "5 items"), "Loved: title + '5 items'")
+        check(wait(lambda: len(lall(".r-love")) == 5), "Loved: every row shows ♥")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "loved", "shuffle": True}, f"Loved / Play: shuffled ({strip(last_cmd())})")
+        leave_player()
+        keys("ArrowDown")
+        first = lf()
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(first and first.startswith("i:") and
+              new_cmd(n0) == {"cmd": "play_collection", "collection": "loved", "start_id": int(first[2:]), "shuffle": True},
+              f"Loved / an item: start_id ({first}, {strip(last_cmd())})")
+        check(wait(lambda: cur() == int(first[2:])), "the picked item plays first")
+        leave_player()
+        to_menu()
+
+        # ---- Music videos: Play row + 4-column poster grid
+        check(home_tile("browse:videos"), "Home: Browse / Music videos")
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == "Music videos" and ltext(".l-count") == count_items(len(vids))),
+              f"Music videos: title + '{len(vids)} items'")
+        check(len(lall(".tile.poster.grid")) == len(vids), f"Music videos: {len(vids)} posters")
+        check(abs(rect("#lists .l-screen:not(.hidden) .tile.poster.grid")["w"] - 410) < 2, "posters 410 px wide")
+        tops = js("[...document.querySelectorAll('#lists .l-screen:not(.hidden) .tile.poster.grid')].slice(0, 5).map(e => Math.round(e.getBoundingClientRect().top))")
+        check(len(set(tops[:4])) == 1 and tops[4] > tops[0], f"4 posters per row ({tops})")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "videos", "shuffle": True}, "Music videos / Play: shuffled")
+        leave_player()
+        keys("ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowRight")   # the last grid row
+        page.wait_for_timeout(600)
+        pick = lf()
+        r = rect("#lists .l-screen:not(.hidden) .focused")
+        check((pick or "").startswith("video:") and js("ltv.lists.top().focus.ty") < 0 and r["t"] >= 0 and r["b"] <= 1080,
+              f"▼ x5 to the last grid row: the page moved, the poster is on screen ({pick}, {r})")
+        page.screenshot(path=str(OUT / "p5-videos.png"))
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(pick and new_cmd(n0) == {"cmd": "play_collection", "collection": "videos", "start_id": int(pick.split(":")[1]), "shuffle": True},
+              f"OK on a poster: start_id ({strip(last_cmd())})")
+        leave_player()
+        keys("ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp")
+        check(wait(lambda: lf() == "play" and js("ltv.lists.top().focus.ty") == 0), "▲ back to Play: page at the top")
+        to_menu()
+
+        # ---- Folders: roots -> folder (subfolders only) -> folder (files + subfolder)
+        check(home_tile("browse:folders"), "Home: Browse / Folders")
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == "Folders" and lf() == "r:music"), "Folders: the root row focused")
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == "music" and lf() == "play"), "root folder opened, Play focused")
+        check(lall(".row.play .r-title") == ["Play (including subfolders)"], f"root has only subfolders: one Play row ({lall('.row.play .r-title')})")
+        check(lall(".l-header") == ["Folders"], "root: header Folders")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "folder", "root": "music", "folder": "", "recursive": True, "shuffle": True},
+              f"Play (including subfolders): recursive ({strip(last_cmd())})")
+        leave_player()
+        for _ in range(4):
+            if lf() == "f:songs":
+                break
+            keys("ArrowDown")
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == "songs"), "folder 'songs' opened")
+        check(wait(lambda: lall(".row.play .r-title") == ["Play (including subfolders)", "Play (only this folder)"]),
+              f"songs: both Play rows ({lall('.row.play .r-title')})")
+        check(lall(".l-header") == ["Folders", "Files"], "songs: headers Folders, Files")
+        keys("ArrowDown")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "folder", "root": "music", "folder": "songs", "recursive": False, "shuffle": True},
+              f"Play (only this folder): recursive false ({strip(last_cmd())})")
+        leave_player()
+        page.screenshot(path=str(OUT / "p5-folder.png"))
+        for _ in range(6):
+            if lf() == f"i:{S}":
+                break
+            keys("ArrowDown")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(new_cmd(n0) == {"cmd": "play_collection", "collection": "folder", "root": "music", "folder": "songs", "recursive": False,
+                              "start_id": S, "shuffle": True}, f"OK on a file: only this folder, start_id ({strip(last_cmd())})")
+        leave_player()
+        to_menu()
+
+        # ---- Queue: 60 entries, opens centred on the playing one, virtualised, jump, focus stays on track changes
+        all_ids = [i["id"] for i in get("/api/library?all=1")["items"]]
+        rc("play_ids", ids=all_ids * 4, start_index=40)
+        check(wait(lambda: len(state()["queue"]) == len(all_ids) * 4 and state()["index"] == 40), f"queue of {len(all_ids) * 4}, playing #41")
+        nq = len(all_ids) * 4
+        leave_player()   # the remote's start opened the player
+        check(wait(lambda: js("ltv.screen") == "home"), "Home")
+        check(home_tile("browse:queue"), "Home: Browse / Queue")
+        keys("Enter")
+        check(wait(lambda: ltext(".l-title") == f"Queue · {nq}"), f"Queue: title 'Queue · {nq}'")
+        check(wait(lambda: lf() == "q:40"), f"Queue opens focused on the playing entry ({lf()})")
+        r = rect("#lists .l-screen:not(.hidden) .focused")
+        check(abs((r["t"] + r["b"]) / 2 - 540) < 60, f"... centred on the screen ({r['t']:.0f}-{r['b']:.0f})")
+        check("Now playing" in (ltext("[data-focus='q:40']") or "") and js("document.querySelector('#lists [data-focus=\"q:40\"]').classList.contains('now')")
+              and (ltext("[data-focus='q:40'] .r-num") or "").strip() == "41", "playing entry: number 41, 'Now playing', marked")
+        nrows = len(lall(".l-rows .row"))
+        check(0 < nrows < nq - 10, f"virtualised: {nrows} of {nq} rows in the page")
+        check(wait(lambda: not any(t.startswith("Item #") for t in lall(".l-rows .r-title"))), "queue titles known (library loaded once)")
+        page.screenshot(path=str(OUT / "p5-queue.png"))
+        keys("ArrowDown", "ArrowDown", "ArrowDown")
+        check(lf() == "q:43", f"▼ x3: entry 44 ({lf()})")
+        n0 = len(cmds("jump"))
+        keys("Enter")
+        check(new_cmd(n0, "jump") == {"cmd": "jump", "index": 43}, f"OK: cmd jump index 43 ({strip(cmds('jump')[-1] if cmds('jump') else None)})")
+        check(wait(lambda: any(re.match(rf"queue: jump to 44 of {nq} \(item \d+\)", l) for l in journal())), "journal: 'queue: jump to 44 of …'")
+        check(wait(lambda: state()["index"] == 43) and wait(lambda: js("ltv.screen") == "player"), "the server plays entry 44, the player opens")
+        keys("Escape")
+        check(wait(lambda: js("ltv.screen") == "lists") and lf() == "q:43", "Back: the queue, focus on 44")
+        check(wait(lambda: js("document.querySelector('#lists [data-focus=\"q:43\"]')?.classList.contains('now')")), "the marker moved to 44")
+        rc("next")
+        check(wait(lambda: state()["index"] == 44) and wait(lambda: js("document.querySelector('#lists [data-focus=\"q:44\"]')?.classList.contains('now')")),
+              "track change from the remote: marker on 45")
+        check(lf() == "q:43", f"... the focus does not move ({lf()})")
+        keys(*["ArrowUp"] * 46)
+        page.wait_for_timeout(600)
+        check(lf() == "q:0" and js("ltv.lists.top().list.ty") == 0, f"▲ to the first entry: the title is back ({lf()})")
+        check(wait(lambda: any(l.startswith("fps list queue:") for l in journal())), "FPS line for a list move")
+        box = rect("#lists .l-screen:not(.hidden) [data-focus='q:3']")
+        page.mouse.move(box["l"] + 300, box["t"] + box["h"] / 2)
+        page.wait_for_timeout(300)
+        check(lf() == "q:3", f"pointer over a row focuses it ({lf()})")
+        page.mouse.wheel(0, 120)
+        page.wait_for_timeout(500)
+        check(js("ltv.lists.top().list.ty") < 0, "wheel scrolls the list")
+        keys("ArrowDown")
+        check(not js("document.body.classList.contains('pointer')"), "an arrow key leaves pointer mode")
+        to_menu()
+        check(js("ltv.screen") == "home" and focused() == "browse:queue", "Back: Home on Browse / Queue")
+        check(not errors, f"P5: no page errors ({errors[:2]})")
+        check(not any(l.startswith("JSERR") for l in journal()), "P5: no JSERR lines")
         page.close()
         b.close()
 finally:

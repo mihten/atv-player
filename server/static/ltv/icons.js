@@ -16,6 +16,9 @@ const P = {
   note: '<path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
   chevronLeft: '<path d="M15 4.5 7.5 12l7.5 7.5"/>',
   chevronRight: '<path d="M9 4.5 16.5 12 9 19.5"/>',
+  playOutline: '<path d="M7 4.5v15l12-7.5z"/>',
+  drive: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5.5 13 8 5h8l2.5 8"/><circle cx="17" cy="16.5" r=".9" fill="currentColor"/>',
+  warning: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.5"/><circle cx="12" cy="17" r=".9" fill="currentColor"/>',
 };
 
 export function icon(name, size = 40, extra = "") {
