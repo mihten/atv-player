@@ -733,7 +733,7 @@ function applyLook() { root.dataset.look = look; root.dataset.motion = motion ? 
 
 /* ── State ── */
 // mode: "auto" = follow whichever app (Apple TV / iPhone) is playing; "tv" / "phone" = pinned. session = the queue shown.
-let mode = ["tv", "phone", "box", "mtv"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
+let mode = ["tv", "phone", "box", "mtv", "ltv"].includes(localStorage.getItem("atvSession")) ? localStorage.getItem("atvSession") : "auto";
 let session = mode === "auto" ? "tv" : mode, sessionList = [], followTimer = null;
 let ws, lib = [], byId = new Map(), st = null, clockOffset = 0, tab = "search", query = "", openFolders = new Set();
 let scope = null, plQuery = "";  // scope = {root, folder}: Search limited to one folder (incl. subfolders); plQuery = filter inside the open playlist
@@ -1006,6 +1006,7 @@ function onState(s) {
   // Server 0.10.0: the Apple TV and the iPhone each have their own queue; this page controls one of them.
   $("conn").textContent = s.session === "box" ? boxStatus(s)
     : s.session === "mtv" ? (s.players ? "TV Player running" : "TV Player not running")
+    : s.session === "ltv" ? (s.players ? "LTVPlayer running" : "LTVPlayer not running")
     : (s.players ? "app connected" : "app not open");
   if (s.sessions) sessionList = s.sessions;
   showShot(s.session || session);
@@ -1053,12 +1054,12 @@ function boxStatus(s) {
 }
 
 /** Selector: Auto + one entry per app (▶ = playing). Auto shows which one it currently follows. atv-audio's own
- *  queue and the TV Player's only while that program runs (or while it is the one chosen). */
+ *  queue, the TV Player's and LTVPlayer's only while that program runs (or while it is the one chosen). */
 function drawSelector() {
   if (document.activeElement === $("out")) return;
   const label = (x) => `${x.name}${x.playing ? " ▶" : ""}`;
   const cur = sessionList.find((x) => x.session === session);
-  const shown = sessionList.filter((x) => !SERVER_SOUND.includes(x.session) || x.players || mode === x.session || session === x.session);
+  const shown = sessionList.filter((x) => ![...SERVER_SOUND, "ltv"].includes(x.session) || x.players || mode === x.session || session === x.session);
   $("out").innerHTML = `<option value="auto"${mode === "auto" ? " selected" : ""}>Auto${mode === "auto" && cur ? `: ${esc(label(cur))}` : ""}</option>` +
     shown.map((x) => `<option value="${esc(x.session)}"${mode === x.session ? " selected" : ""}>${esc(label(x))}</option>`).join("");
 }
@@ -1804,6 +1805,7 @@ async function audioSheet() {
       remoteSection(m);
     const intro = sess === "mtv" ? tvp
       : sess === "phone" ? `<div class="set-hint">The iPhone plays on the phone itself (or CarPlay): nothing to set here.</div>`
+      : sess === "ltv" ? `<div class="set-hint">LTVPlayer plays on the TV's own sound: nothing to set here.</div>`
       : sess === "tv" ? `<div class="set-hint">The Apple TV chooses its sound itself: Settings › Sound › Sound output. With ATV-Server it plays on the headphones below.</div>`
       : `<div class="set-hint">The Web Player always plays on the headphones below.</div>`;
     // aptX HD <-> aptX Adaptive of the connected Bluetooth headphones (the sink offers it only when the headset has both)
@@ -1811,7 +1813,7 @@ async function audioSheet() {
     const cods = cur && (a.codecs || []).length > 1 ? a.codecs : [];
     const codecRow = cods.length ? sec("Codec") + `<div class="set-seg">${cods.map((c) => `<button class="pill${c.codec === cur ? " primary" : ""}" data-a="codec" data-codec="${esc(c.codec)}">${esc(c.label)}</button>`).join("")}</div>` +
       `<div class="set-hint">Playing on ${esc(codecLabel(cur))}. Switching cuts the sound for a few seconds (the headphones chime); pause first. aptX Adaptive plays 24 bit / 96 kHz when Hi-Res is on in the headphones' app.</div>` : "";
-    const heads = sess === "phone" ? "" : sec("Headphones · ATV-Server") +
+    const heads = sess === "phone" || sess === "ltv" ? "" : sec("Headphones · ATV-Server") +
       (!k.connected ? `<div class="set-hint">${progs.length ? "Switching…" : "ATV-Server is not running."}</div>` :
         `<div class="set-hint">${dg ? "Headphones on the ATV-Server server's USB dongle." : "Bluetooth headphones paired with the ATV-Server server (its own adapter, not the TV Player's)."} The Apple TV, the Web Player and the TV Player play on them when their sound is set to ATV-Server.</div>` +
         progRows +

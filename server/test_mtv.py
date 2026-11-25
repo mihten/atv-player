@@ -54,7 +54,7 @@ async def main(tmp):
             check(st["session"] == "mtv" and st["session_name"] == "TV Player", "state of session mtv, named TV Player")
             check(st["sink"] is None and st["sound"] == box_sound.DEFAULT and st["notice"] is None,
                   "mtv: no sink, default sound settings, no notice")
-            check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv"], "sessions list has mtv last")
+            check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv", "ltv"], "sessions list has mtv and ltv")
             check("sound" not in await H.state(http, "tv") and "sound" not in await H.state(http, "phone"),
                   "TV and iPhone sessions still carry no server-side sound")
 

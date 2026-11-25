@@ -117,7 +117,7 @@ async def main(tmp):
             ids = [items[f"0{n} Song{n}"]["id"] for n in range(1, 5)]
             st = await H.state(http, "box")
             check(st["session"] == "box" and st["session_name"] == "Web Player", "session box named Web Player")
-            check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv"], "sessions list has the box")
+            check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv", "ltv"], "sessions list has the box")
             check(st["sound"] == box_sound.DEFAULT and len(st["sound_presets"]) == 7, "box state: sound + presets")
             check(st["sound_curves"]["a:momentum4"][0] == -3.0 and len(st["sound_curves"]) == 5,
                   "box state: preset curves for the custom editor (5 = no off / custom)")

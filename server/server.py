@@ -63,7 +63,7 @@ DB = DATA / "library.db"
 STATE_FILE = DATA / "state.json"
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = int(os.environ.get("ATV_PORT", "8080"))
-VERSION = "0.31.0"
+VERSION = "0.32.0"
 ROOT_NAMES = SETTINGS.root_names()  # display name per root key (same in-place rule)
 STARTED = time.time()
 
@@ -277,11 +277,13 @@ def collection(name, root=None, folder=None, recursive=True, playlist=None, mix=
 # one session at a time: ?session=<kind> on /ws or a {"type": "select", "session": <kind>} message.
 
 STATE_VERSION = 3  # 3 = repeat is always "all" (stored "off" / "one" are dropped on load)
-KINDS = ("tv", "phone", "box", "mtv")
+KINDS = ("tv", "phone", "box", "mtv", "ltv")
 # "box": the atv-audio program plays this queue by itself (player role kind=box), the web remote is its only UI.
 # "mtv": a video player on its own screen output (mtv/ in the repo); its own queue, controlled from its on-screen UI
 # and the web remote. Unlike "box" it never shares an output with the Apple TV.
-KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "Web Player", "mtv": "TV Player"}
+# "ltv": a web app on a TV (static/ltv/, LTVPlayer); plays its own queue on its own screen and sound, controlled from
+# its own UI and the web remote. It never shares an output with anything: no sink, no server-side sound, no Stop.
+KIND_NAMES = {"tv": "Apple TV", "phone": "iPhone", "box": "Web Player", "mtv": "TV Player", "ltv": "LTVPlayer"}
 # Sessions whose player gets its sound settings (preset, boost, loudness) from the server: `sound` before every load.
 SERVER_SOUND = ("box", "mtv")
 SAVED_KEYS = ("queue", "original", "index", "shuffle", "repeat", "position", "source", "source_items",
@@ -313,7 +315,7 @@ class Session:
         # entry -> the song it replaced (also for a version picked by hand); pinned: entries picked by hand with
         # switch_version, which the flag never changes back; dropped: video -> songs left out for it ("no doubles"),
         # put back when the flag goes off.
-        self.prefer_videos = False
+        self.prefer_videos = kind == "ltv"  # LTVPlayer shows pictures: on by default (a stored state wins on load)
         self.prefer_reset = False  # a stored "prefer videos" was switched off at load (Web Player): see on_startup
         self.swapped: dict[int, int] = {}
         self.pinned: list[int] = []
@@ -367,7 +369,8 @@ class Session:
             "players": len(self.players), "scanning": SCANNING, "last_scan": LAST_SCAN, "version": VERSION,
             "server_name": server_name(), "disk": DISK,
             "sink": (sink_state(self.kind) if self.kind == "tv" else box_sink_state() if self.kind == "box"
-                     else mtv_sink_state() if self.kind == "mtv" else phone_sink_state()),
+                     else mtv_sink_state() if self.kind == "mtv" else phone_sink_state() if self.kind == "phone"
+                     else None),
             **(box_extra(self) if self.kind in SERVER_SOUND else {}),
             **({"output": mtv_output(self)} if self.kind == "mtv" else {}),
         }
@@ -2696,10 +2699,13 @@ async def on_message(s, data, role, ws=None):
 
 @web.middleware
 async def api_no_store(request, handler):
-    """API answers change with every edit; without this the apps' URL cache may hand out an old playlist."""
+    """API answers change with every edit; without this the apps' URL cache may hand out an old playlist.
+    LTVPlayer's files (/static/ltv/) are revalidated on every load (ETag), so a copied update shows at the next start."""
     resp = await handler(request)
     if request.path.startswith("/api/") and "Cache-Control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-store"
+    elif request.path.startswith("/static/ltv/") and "Cache-Control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
