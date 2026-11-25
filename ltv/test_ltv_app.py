@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer app checks (phase P3 "engine"): the page in desktop Chromium as the ltv player of a THROWAWAY server.
+"""LTVPlayer app checks (P3 "engine" + P4 "navigation"): the page in desktop Chromium as the ltv player of a THROWAWAY server.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_app.py [outdir]
 
@@ -9,7 +9,12 @@ Playwright and drives it from a second page acting as the web remote. Checks: jo
 OK shuffles music videos, remote play / pause / seek / next / prev / jump, end of an item advances the queue, an
 unplayable item is skipped, a load that never starts fails after 30 s, the default audio track is selected, player keys
 send the right commands, Back / Back twice, hidden page pauses, a server restart does not stop the picture and the
-session shows playing again, blocked autoplay waits for OK. Screenshots of Home and player go to outdir.
+session shows playing again, blocked autoplay waits for OK. Navigation (P4, seeded playlists / mix / loved items, long
+titles with diacritics): Home sections and tiles, key sequences end on the expected tiles, Up / Down remember the tile
+per section, no wrap, the focused tile stays in view (shelf / page transforms), lazy covers, Back from the player keeps
+the focus, pointer focus + chevron + wheel, arrow keys leave pointer mode, OK on each kind of tile sends the exact
+command, font + accent colour, the palette port against a Python port of Shared/Artwork.swift, FPS log lines.
+Screenshots of Home and player go to outdir.
 Desktop Chromium cannot play HEVC / most MKV: codec questions belong to the TV probe, not here.
 """
 import json
@@ -64,6 +69,94 @@ def song_with_cover(path, seconds, freq, title):
        "-metadata", "artist=Tester", "-metadata", "album=Test Album", str(path))
 
 
+
+# ---------------------------------------------------------------- Python port of Palette.extract (Shared/Artwork.swift)
+def _hsb(c):
+    mx, mn = max(c["r"], c["g"], c["b"]), min(c["r"], c["g"], c["b"])
+    d, h = mx - mn, 0.0
+    if d > 0:
+        if mx == c["r"]:
+            h = ((c["g"] - c["b"]) / d) % 6 if (c["g"] - c["b"]) >= 0 else -((-(c["g"] - c["b"]) / d) % 6)
+        elif mx == c["g"]:
+            h = (c["b"] - c["r"]) / d + 2
+        else:
+            h = (c["r"] - c["g"]) / d + 4
+        h /= 6
+        if h < 0:
+            h += 1
+    return h, (0 if mx == 0 else d / mx), mx
+
+
+def _rgb(h, s, v):
+    import math
+    h6 = (h - math.floor(h)) * 6
+    i, f = int(h6) % 6, h6 - math.floor(h6)
+    p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+    r, g, b = [(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q)][i]
+    return {"r": r, "g": g, "b": b}
+
+
+def _bright(c, v, s=None):
+    h, s0, _ = _hsb(c)
+    return _rgb(h, s0 if s is None else s, v)
+
+
+def py_extract(px):
+    bins = [[0.0, 0.0, 0.0, 0.0] for _ in range(12)]
+    dark, total = [0.0, 0.0, 0.0, 0.0], 0.0
+    for i in range(0, len(px), 4):
+        c = {"r": px[i] / 255, "g": px[i + 1] / 255, "b": px[i + 2] / 255}
+        h, s, v = _hsb(c)
+        if v < 0.5:
+            w = 0.2 + s
+            dark[0] += c["r"] * w; dark[1] += c["g"] * w; dark[2] += c["b"] * w; dark[3] += w
+        if not (s > 0.18 and v > 0.14):
+            continue
+        w = s * v * v
+        k = min(11, int(h * 12))
+        bins[k][0] += c["r"] * w; bins[k][1] += c["g"] * w; bins[k][2] += c["b"] * w; bins[k][3] += w
+        total += w
+    ranked = [{"r": b[0] / b[3], "g": b[1] / b[3], "b": b[2] / b[3]}
+              for b in sorted([b for b in bins if b[3] > 0 and b[3] > total * 0.04], key=lambda b: -b[3])]
+    shadow = {"r": dark[0] / dark[3], "g": dark[1] / dark[3], "b": dark[2] / dark[3]} if dark[3] > 0 else None
+    if not ranked:
+        h = _hsb(shadow)[0] if shadow else 0.6
+        return {"base": _rgb(h, 0.15, 0.08), "tones": [_rgb(h, 0.12, 0.32), _rgb(h, 0.1, 0.22), _rgb(h + 0.5, 0.1, 0.18),
+                _rgb(h, 0.05, 0.4)], "vibrant": _rgb(0.58, 0.25, 0.95)}
+    top = ranked[0]
+    th, ts, tv = _hsb(top)
+    if shadow:
+        sh, ss, _ = _hsb(shadow)
+        depth = _rgb(sh, min(0.8, max(0.35, ss * 1.4)), 0.3)
+    else:
+        depth = _rgb(th, ts * 0.8, 0.28)
+    lift = lambda c: _bright(c, min(0.62, max(0.38, _hsb(c)[2] * 0.7)))  # noqa: E731
+    t0 = lift(top)
+    t1 = lift(ranked[1]) if len(ranked) > 1 else _rgb(th, ts, 0.3)
+    t3 = lift(ranked[2]) if len(ranked) > 2 else {k: (t0[k] + depth[k]) / 2 for k in "rgb"}
+    dh, ds, _ = _hsb(depth)
+    return {"base": _rgb(dh, min(0.7, ds), 0.09), "tones": [t0, t1, depth, t3],
+            "vibrant": _rgb(th, max(ts, 0.55), 1)}
+
+
+def pal_close(a, b, tol=1e-6):
+    if isinstance(a, dict) and "r" in a:
+        return all(abs(a[k] - b[k]) <= tol for k in "rgb")
+    return pal_close(a["base"], b["base"]) and pal_close(a["vibrant"], b["vibrant"]) and \
+        all(pal_close(x, y) for x, y in zip(a["tones"], b["tones"]))
+
+
+def synthetic():
+    def fill(*colours):   # equal stripes of the given RGB colours over 32 x 32 pixels
+        out = []
+        for i in range(1024):
+            out += list(colours[i * len(colours) // 1024]) + [255]
+        return out
+    return {"red": fill((255, 0, 0)), "two colours": fill((20, 90, 200), (230, 120, 30)),
+            "greyscale": fill((10, 10, 10), (128, 128, 128), (240, 240, 240)),
+            "three hues + shadow": fill((200, 30, 60), (40, 160, 70), (60, 40, 180), (15, 10, 30))}
+
+
 lib = tmp / "lib"
 webm(lib / "videos" / "Clipper - Clip A.webm", 20, 400, "Clip A")
 webm(lib / "videos" / "Clipper - Clip B.webm", 20, 500, "Clip B")
@@ -74,6 +167,20 @@ ff("-f", "lavfi", "-i", "sine=frequency=660:duration=8", "-c:a", "wavpack", "-me
    "-metadata", "artist=Tester", str(lib / "songs" / "02 Song Wav.wv"))
 ff("-f", "lavfi", "-i", "sine=frequency=700:duration=10", "-c:a", "flac", "-metadata", "title=Song Hang",
    "-metadata", "artist=Tester", str(lib / "songs" / "03 Song Hang.flac"))
+# P4: enough music videos for a scrolling shelf; three carry titles as long as the longest in a real library (76-80
+# characters) and a 60-character artist, with č ć š ž đ (the font must have them)
+LONG = ["Ljubičasta šuma u ožujku (Đurđevdanski koncert uživo, proširena verzija s gostima)",
+        "Čežnja za žutim šljivama i đurđicama (akustična verzija snimljena kod kuće, 2026)",
+        "Šapat noći nad Dravom - posljednja pjesma večeri (cijeli nastup bez prekida, HD)"]
+LONG_ARTIST = "Đurđa Šimunović-Čačić & Orkestar Žarko Ćosić i Prijatelji"
+for n in range(8):
+    title = LONG[n] if n < 3 else f"Extra {n}"
+    path = lib / "more" / f"extra{n}.webm"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ff("-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=2", "-f", "lavfi", "-i", "sine=frequency=500:duration=2",
+       "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "50k", "-c:a", "libopus",
+       "-metadata", f"title={title}", "-metadata", f"artist={LONG_ARTIST if n < 3 else 'Clipper'}", str(path))
+N_ITEMS = 15
 
 env = dict(os.environ, ATV_ROOTS=json.dumps({"music": str(lib)}), ATV_DATA=str(tmp / "data"),
            ATV_CACHE=str(tmp / "cache"), ATV_PORT=str(PORT))
@@ -116,7 +223,7 @@ def server_up(n_items, secs=60):
 
 start_server()
 try:
-    check(server_up(7), "throwaway library scanned (7 items)")
+    check(server_up(N_ITEMS), f"throwaway library scanned ({N_ITEMS} items)")
     items = {it["title"]: it for it in get("/api/library?all=1")["items"]}
     A, B, C = items["Clip A"]["id"], items["Clip B"]["id"], items["Clip C"]["id"]
     M, S, W, HANG = items["Two Tracks"]["id"], items["Song One"]["id"], items["Song Wav"]["id"], items["Song Hang"]["id"]
@@ -161,8 +268,8 @@ try:
             except Exception:
                 return False
 
-        def js(expr):
-            return page.evaluate(expr)
+        def js(expr, arg=None):
+            return page.evaluate(expr) if arg is None else page.evaluate(expr, arg)
 
         def vt():
             return js("document.getElementById('v').currentTime")
@@ -187,12 +294,12 @@ try:
         # ---- boot: joins as the ltv player, start line, Home with the empty card
         page.goto(BASE + "/static/ltv/index.html?from=test")
         check(wait(lambda: state()["players"] == 1), "the page joins as the ltv player (players 1)")
-        check(wait(lambda: any(l.startswith("ltv 0.3.0 ua=") and "from=test" in l for l in journal())),
-              "start line 'ltv 0.3.0 ua=… from=test' in the journal")
+        check(wait(lambda: any(re.match(r"ltv \d+\.\d+\.\d+ ua=", l) and "from=test" in l for l in journal())),
+              "start line 'ltv <version> ua=… from=test' in the journal")
         check(wait(lambda: js("ltv.screen") == "home" and page.inner_text(".h-conn") == "Connected"),
               "Home shown, pill says Connected")
-        check(page.inner_text(".h-etitle") == "Nothing playing yet", "empty card: 'Nothing playing yet'")
-        page.screenshot(path=str(OUT / "p3-home-empty.png"))
+        check(page.inner_text(".hero-etitle") == "Nothing playing yet", "empty card: 'Nothing playing yet'")
+        page.screenshot(path=str(OUT / "p4-home-empty.png"))
 
         # ---- Home OK with nothing loaded: shuffle music videos -> player screen, picture plays
         page.keyboard.press("Enter")
@@ -270,11 +377,13 @@ try:
         check(wait(lambda: state()["playing"] is True), "OK while paused: cmd play, playing")
         t0 = vt()
         page.keyboard.press("ArrowRight")
+        wait(lambda: cmds("seek"), 3)
         sk = cmds("seek")
         check(bool(sk) and abs(sk[-1]["position"] - (t0 + 10)) < 1.5, f"▶: cmd seek +10 ({sk[-1]['position'] if sk else None} vs {t0:.1f})")
         check(wait(lambda: vt() >= t0 + 8), "▶: the element jumps forward")
         page.keyboard.press("ArrowLeft")
         page.keyboard.press("ArrowLeft")
+        wait(lambda: len(cmds("seek")) >= 3, 3)
         sk = cmds("seek")
         check(len(sk) >= 3 and sk[-1]["position"] < sk[-2]["position"] < sk[-3]["position"],
               "◀ twice: targets add up before the server answers")
@@ -292,8 +401,8 @@ try:
         check(wait(lambda: js("ltv.screen") == "home"), "Back on the player: Home")
         page.wait_for_timeout(1200)
         check(not js("document.getElementById('v').paused") and state()["playing"], "leaving the player does not pause")
-        page.screenshot(path=str(OUT / "p3-home-playing.png"))
-        check(page.inner_text(".h-eyebrow") == "NOW PLAYING", "Home card: NOW PLAYING")
+        page.screenshot(path=str(OUT / "p4-home-playing.png"))
+        check(page.inner_text(".hero-state") == "NOW PLAYING", "Home card: NOW PLAYING")
         page.keyboard.press("Escape")
         check(wait(lambda: "Press Back again to close" in page.inner_text("#capsule")), "Back on Home: 'Press Back again to close'")
         check(not js("window.__closed || 0"), "one Back does not close")
@@ -333,7 +442,7 @@ try:
         check(js("document.getElementById('pill').classList.contains('on')"), "server down: 'Reconnecting…' pill")
         n_got = len(got)
         start_server()
-        check(server_up(7), "server back")
+        check(server_up(N_ITEMS), "server back")
         open_remote()   # the web remote's socket died with the server
         check(wait(lambda: state()["players"] == 1 and state()["playing"] is True, 20),
               "after the reconnect the session shows playing again")
@@ -382,6 +491,233 @@ try:
         check(wait(lambda: state()["playing"] is True and cur() == B), "OK starts it")
         page.close()
         b.close()
+
+        # ======================================================== P4: Home navigation on a seeded library
+        def send_json(path, body, method="POST"):
+            req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), method=method,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read() or b"{}")
+
+        lib_items = get("/api/library?all=1")["items"]
+        vids = [i["id"] for i in get("/api/collection/videos")["items"]]
+        long_ids = [i["id"] for i in lib_items if i["title"] in LONG]
+        p_road = send_json("/api/playlists", {"name": "Road Trip", "ids": vids[:6]})["id"]
+        p_long = send_json("/api/playlists", {"name": LONG[0], "ids": vids[2:5] + [S]})["id"]
+        send_json("/api/mixes/1", {"name": "Evening", "sources": [{"type": "playlist", "id": p_road}]}, "PUT")
+        check([m.get("playlists") for m in state()["mixes"]][:1] == [1], f"seed: mix 1 holds a playlist ({state()['mixes']})")
+
+        b = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
+        page = b.new_page(viewport={"width": 1920, "height": 1080})
+        errors, sent = [], []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("websocket", lambda ws: ws.on("framesent", lambda f: sent.append(f if isinstance(f, str) else "")))
+        remote = b.new_page()
+        remote.goto(BASE + "/api/state?session=ltv")
+        open_remote()
+        for i in vids[:5]:
+            rc("love", id=i, on=True)
+        page.goto(BASE + "/static/ltv/index.html")
+        check(wait(lambda: state()["players"] == 1), "P4: the page joins")
+
+        def focused():
+            return js("document.querySelector('#home .focused')?.dataset.focus || null")
+
+        def keys(*names):
+            for n in names:
+                page.keyboard.press(n)
+                page.wait_for_timeout(120)
+
+        def rect(sel):
+            return js(f"(() => {{ const r = document.querySelector({json.dumps(sel)}).getBoundingClientRect(); "
+                      "return {l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height}; })()")
+
+        def ty():
+            return js("ltv.home.focus.ty")
+
+        def tx(section):
+            return js(f"ltv.home.focus.tx.get(document.querySelector('[data-section=\"{section}\"] [data-track]')) || 0")
+
+        want = ["hero", "browse", "foryou", "playlists", "play", "videos"]
+        check(wait(lambda: js("[...document.querySelectorAll('#home [data-section]')].map(s => s.dataset.section)") == want, 15),
+              f"Home sections in order {want}")
+        check(js("[...document.querySelectorAll('[data-section=browse] [data-focus]')].map(e => e.dataset.focus)") ==
+              ["browse:playlists", "browse:folders", "browse:videos", "browse:queue"], "Browse: Playlists, Folders, Music videos, Queue")
+        check(wait(lambda: "♥ Loved" in page.inner_text("[data-focus='auto:loved']")) and "5 items" in page.inner_text("[data-focus='auto:loved']"),
+              "For you: '♥ Loved' card with '5 items'")
+        road = page.inner_text(f"[data-focus='playlist:{p_road}']")
+        check("Road Trip" in road and re.search(r"6 items · 6 videos · \d+:\d\d", road),
+              f"Playlists: 'Road Trip' with '6 items · 6 videos · m:ss' ({road!r})")
+        check(js(f"document.querySelectorAll('[data-section=playlists] .tile').length") == 2, "Playlists: 2 cards")
+        mix = page.inner_text("[data-focus='mix:1']")
+        check("Evening" in mix and "1 playlist" in mix, f"Play: mix tile 'Evening' / '1 playlist' ({mix!r})")
+        check(js("document.querySelector('[data-focus=\"mix:2\"]')") is None, "Play: the empty mix 2 has no tile")
+        check(abs(rect("[data-focus='shuffle-videos']")["w"] - 1300) < 2 and abs(rect("[data-focus='mix:1']")["w"] - 420) < 2,
+              "Play: Mix 1 420 px, 'Shuffle music videos' fills the rest (1300 px)")
+        check(js("document.querySelectorAll('[data-section=videos] .tile.poster').length") == len(vids),
+              f"Music videos: {len(vids)} posters")
+        last_poster = f"[data-focus='video:{vids[-1]}'] img"
+        check(js(f"document.querySelector({json.dumps(last_poster)})?.hasAttribute('data-src')") is True,
+              "lazy covers: the last poster (off screen) is not loaded yet")
+        check(js("document.fonts.check('800 58px Nunito', 'čćšžđ ČĆŠŽĐ')") and
+              wait(lambda: js("[...document.fonts].some(f => f.family.includes('Nunito') && f.status === 'loaded')")),
+              "font: Nunito loaded, covers č ć š ž đ")
+        page.screenshot(path=str(OUT / "p4-home-top.png"))
+
+        # ---- keys: focus path, no wrap, Up / Down remember per section
+        check(focused() == "hero", "focus starts on the hero")
+        keys("ArrowDown")
+        check(focused() in ("browse:folders", "browse:videos"), f"▼ from the hero: the Browse tile nearest its centre ({focused()})")
+        keys("ArrowRight", "ArrowRight", "ArrowRight")
+        check(focused() == "browse:queue", "▶ x3: Browse / Queue")
+        keys("ArrowRight")
+        check(focused() == "browse:queue", "▶ at the end: no wrap")
+        keys("ArrowDown")
+        check((focused() or "").startswith("auto:"), f"▼: a For you card ({focused()})")
+        keys("ArrowUp")
+        check(focused() == "browse:queue", "▲: back on the remembered Browse tile")
+        keys("ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft")
+        check(focused() == "browse:playlists", "◀ x4: first tile, no wrap")
+        keys("ArrowDown", "ArrowDown")
+        check(focused() == f"playlist:{p_road}", f"▼ x2: first playlist card ({focused()})")
+        keys("ArrowDown")
+        check(focused() in ("mix:1", "shuffle-videos"), f"▼: a Play tile ({focused()})")
+        keys("ArrowDown")
+        check((focused() or "").startswith("video:"), f"▼: a music video poster ({focused()})")
+        page.wait_for_timeout(500)
+        check(ty() < 0, f"page moved up to show the poster shelf (translateY {ty()})")
+        r = rect("#home .focused")
+        check(r["t"] >= 0 and r["b"] <= 1080, f"focused poster fully on screen ({r})")
+        keys(*["ArrowRight"] * (len(vids) + 2))
+        page.wait_for_timeout(600)
+        check(focused() == f"video:{vids[-1]}", "▶ to the end of the poster shelf: last poster")
+        check(tx("videos") < 0, f"poster shelf moved left (translateX {tx('videos')})")
+        r = rect("#home .focused")
+        check(r["r"] <= 1920 and r["l"] >= 0, f"last poster on screen ({r})")
+        check(js(f"document.querySelector({json.dumps(last_poster)})?.hasAttribute('data-src')") is False,
+              "lazy covers: the last poster loaded once near the view")
+        page.screenshot(path=str(OUT / "p4-home-videos.png"))
+        check(wait(lambda: any(l.startswith("fps shelf videos:") for l in journal())), "FPS line for a shelf move in the journal")
+        keys("ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp")
+        page.wait_for_timeout(500)
+        check(focused() == "hero" and ty() == 0, "▲ x5: back on the hero, page at the top")
+
+        # ---- OK on each kind of tile
+        def last_cmd():
+            c = cmds("play_collection")
+            return c[-1] if c else None
+
+        keys("ArrowDown", "Enter")
+        check(wait(lambda: "Coming in the next update" in page.inner_text("#capsule")), "OK on a Browse tile: notice (lists come in P5)")
+        keys("ArrowDown", "Enter")
+        check(wait(lambda: any("home: auto" in l for l in journal())), "OK on a For you card: notice + log line")
+        keys("ArrowDown", "Enter")
+        check(wait(lambda: any("home: playlist" in l for l in journal())), "OK on a playlist card: notice + log line")
+        keys("ArrowDown", "ArrowLeft", "ArrowLeft")
+        check(focused() == "mix:1", "Play row: ◀ to Mix 1")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(wait(lambda: len(cmds("play_collection")) > n0) and
+              {k: v for k, v in last_cmd().items() if k != "type"} == {"cmd": "play_collection", "collection": "mix", "mix": 1, "shuffle": True},
+              f"OK on Mix 1: play_collection mix 1 shuffled ({last_cmd()})")
+        check(wait(lambda: js("ltv.screen") == "player"), "a start opens the player")
+        keys("Escape")
+        check(wait(lambda: js("ltv.screen") == "home") and focused() == "mix:1", "Back: Home with the focus on Mix 1")
+        keys("ArrowRight")
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(wait(lambda: len(cmds("play_collection")) > n0) and
+              {k: v for k, v in last_cmd().items() if k != "type"} == {"cmd": "play_collection", "collection": "videos", "shuffle": True},
+              f"OK on Shuffle music videos: play_collection videos shuffled ({last_cmd()})")
+        keys("Escape")
+        keys("ArrowDown", "ArrowRight", "ArrowRight")
+        pick = focused()
+        n0 = len(cmds("play_collection"))
+        keys("Enter")
+        check(wait(lambda: len(cmds("play_collection")) > n0) and
+              {k: v for k, v in last_cmd().items() if k != "type"} ==
+              {"cmd": "play_collection", "collection": "videos", "start_id": int(pick.split(":")[1]), "shuffle": True},
+              f"OK on a poster: play_collection videos start_id {pick} shuffled ({last_cmd()})")
+        check(wait(lambda: js("ltv.screen") == "player") and wait(lambda: cur() == int(pick.split(":")[1])),
+              "the picked video plays first")
+        keys("Escape")
+        check(wait(lambda: js("ltv.screen") == "home") and focused() == pick, "Back from the player keeps the poster focused")
+
+        # ---- pointer: hover focuses, chevron, wheel; an arrow key leaves pointer mode
+        keys(*["ArrowLeft"] * (len(vids) + 1))
+        page.wait_for_timeout(500)
+        check(focused() == f"video:{vids[0]}" and tx("videos") == 0, "◀ to the first poster: shelf back at the start")
+        box = rect("#home .focused")
+        page.mouse.move(box["l"] + box["w"] / 2, box["t"] + box["h"] / 2)
+        page.wait_for_timeout(300)
+        hovered = focused()
+        check(js("document.body.classList.contains('pointer')") and (hovered or "").startswith("video:"),
+              f"pointer: mode on, the poster under it is focused ({hovered})")
+        x0 = tx("videos")
+        chev = rect("[data-section=videos] .chev-r")
+        check(chev["w"] > 0, "pointer: right chevron shown on a shelf that can scroll")
+        page.mouse.click(chev["l"] + chev["w"] / 2, chev["t"] + chev["h"] / 2)
+        page.wait_for_timeout(500)
+        check(tx("videos") < x0, f"chevron click moved the shelf ({x0} -> {tx('videos')})")
+        x1 = tx("videos")
+        vis = js("""(() => { const p = [...document.querySelectorAll('[data-section=videos] .tile.poster')].find(e => {
+            const r = e.getBoundingClientRect(); return r.left >= 100 && r.right <= 1800; });
+            const r = p.getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2, id: p.dataset.focus}; })()""")
+        page.mouse.move(vis["x"], vis["y"])
+        page.wait_for_timeout(300)
+        check(focused() == vis["id"], f"pointer on a visible poster focuses it ({vis['id']})")
+        page.mouse.wheel(0, -120)
+        page.wait_for_timeout(500)
+        check(tx("videos") > x1, f"wheel over the shelf moved it back ({x1} -> {tx('videos')})")
+        under = js("document.elementFromPoint(%d, %d)?.closest('[data-focus]')?.dataset.focus || null" % (vis["x"], vis["y"]))
+        check(under is not None and under != vis["id"] and focused() == under,
+              f"after the shelf moved under the pointer, the tile now under it is focused ({focused()} / {under})")
+        page.screenshot(path=str(OUT / "p4-home-pointer.png"))
+        keys("ArrowLeft")
+        check(not js("document.body.classList.contains('pointer')"), "an arrow key leaves pointer mode")
+
+        # ---- accent from the cover, palette port, long titles
+        rc("play_ids", ids=[S], start_index=0)
+        check(wait(lambda: cur() == S), "song with a cover loaded")
+        page.wait_for_timeout(2000)
+        acc = js("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()")
+        want_acc = js(f"import('/static/ltv/palette.js').then(m => m.paletteFor({{id: {S}, art: true}}).then(p => m.css(p.vibrant)))")
+        check(acc == want_acc and acc != "rgb(167, 139, 250)", f"accent = the cover's vibrant colour ({acc} vs {want_acc})")
+        res = js(f"""import('/static/ltv/palette.js').then(async (m) => {{
+            const img = new Image(); img.src = '/art/{S}'; await img.decode();
+            const c = document.createElement('canvas'); c.width = c.height = 32;
+            const x = c.getContext('2d'); x.imageSmoothingQuality = 'medium'; x.drawImage(img, 0, 0, 32, 32);
+            const px = x.getImageData(0, 0, 32, 32).data;
+            return {{px: Array.from(px), pal: m.extractPixels(px)}}; }})""")
+        check(pal_close(res["pal"], py_extract(res["px"])), "palette of a real cover = Python port of Artwork.swift")
+        for name, px in synthetic().items():
+            got = js("(a) => import('/static/ltv/palette.js').then(m => m.extractPixels(Uint8ClampedArray.from(a)))", px)
+            check(pal_close(got, py_extract(px)), f"palette port, synthetic '{name}' = Python port")
+        check(pal_close(js("(a) => import('/static/ltv/palette.js').then(m => m.extractPixels(Uint8ClampedArray.from(a)))",
+                           synthetic()["red"])["vibrant"], {"r": 1, "g": 0, "b": 0}) and
+              pal_close(js("(a) => import('/static/ltv/palette.js').then(m => m.extractPixels(Uint8ClampedArray.from(a)))",
+                           synthetic()["red"])["tones"][0], {"r": 0.62, "g": 0, "b": 0}),
+              "palette: pure red -> vibrant (1,0,0), tone0 (0.62,0,0) (worked out by hand from the Swift rules)")
+        rc("play_ids", ids=[long_ids[0]], start_index=0)
+        check(wait(lambda: cur() == long_ids[0]), "long-title video loaded")
+        keys("Escape", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowUp")
+        page.wait_for_timeout(800)
+        check(focused() == "hero" and ty() == 0, "back at the hero for the long-title look")
+        t = rect(".hero-title")
+        check(t["h"] <= 2 * 58 * 1.12 + 6, f"hero title at most 2 lines ({t['h']:.0f} px)")
+        if js("document.querySelector('.hero-next')"):
+            check(rect(".hero-text")["r"] <= rect(".hero-next")["l"] + 1, "hero text does not run into UP NEXT")
+        bad = js("""[...document.querySelectorAll('#home .tile')].filter(t => {
+            const r = t.getBoundingClientRect();
+            return [...t.querySelectorAll('.cap, .cap-t, .cap-s, span')].some(c => {
+              const q = c.getBoundingClientRect(); return q.width && (q.left < r.left - 1 || q.right > r.right + 1 || q.bottom > r.bottom + 1); });
+          }).map(t => t.dataset.focus)""")
+        check(not bad, f"no caption runs out of its tile ({bad})")
+        page.screenshot(path=str(OUT / "p4-home-longtitle.png"))
+        check(not errors, f"P4: no page errors ({errors[:2]})")
+        check(not any(l.startswith("JSERR") for l in journal()), "P4: no JSERR lines")
+        page.close()
+        b.close()
 finally:
     if srv and srv.poll() is None:
         srv.terminate()
@@ -392,7 +728,7 @@ finally:
             srv.wait(10)
     log = srvlog.read_text(errors="replace")
     print("server tracebacks:", log.count("Traceback"))
-    shutil.copy(srvlog, OUT / "p3-check-server.log")
+    shutil.copy(srvlog, OUT / "ltv-check-server.log")
     if log.count("Traceback"):
         fails.append("server tracebacks")
 print(f"FAILED {len(fails)}" if fails else "ALL PASSED")

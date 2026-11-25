@@ -1,4 +1,4 @@
-// LTVPlayer: boot, socket wiring, screens and keys (phase P3: plain Home + player).
+// LTVPlayer: boot, socket wiring, screens and keys (Home with the focus engine since P4, plain player since P3).
 // Every user action is a command to the server; playback changes only when its load / control comes back.
 // Socket down (plan 9.5): OK still plays / pauses the element itself, ◀ / ▶ seek it, next / previous say so.
 
@@ -6,8 +6,9 @@ import { Socket } from "./ws.js";
 import { Engine } from "./engine.js";
 import { PlayerView } from "./views/player.js";
 import { HomeView } from "./views/home.js";
+import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.3.0";
+export const LTV_VERSION = "0.4.0";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -33,8 +34,18 @@ function notice(text, ms) {
   if (text && ms) noticeTimer = setTimeout(() => el.classList.remove("on"), ms);
 }
 
+// ---------------------------------------------------------------- accent = the current cover's colours (plan 11.1)
+let accentFor = null;
+function accent(it) {
+  const id = it ? it.id : null;
+  if (id === accentFor) return;
+  accentFor = id;
+  paletteFor(it).then((p) => { if (accentFor === id) applyPalette(p); });
+}
+applyPalette(FALLBACK);
+
 const ui = {
-  item(it) { player.setItem(it); home.setItem(it); },
+  item(it) { player.setItem(it); home.setItem(it); accent(it); },
   present() { show("player"); },
   notice,
   changed() { player.update(); home.update(); },
@@ -43,16 +54,18 @@ const ui = {
 const sock = new Socket({
   onMessage(m) {
     switch (m.type) {
-      case "state": state = m.state; player.setState(state); break;
+      case "state": state = m.state; player.setState(state); home.setState(state); break;
       case "load": engine.load(m); break;
       case "control": engine.control(m); break;
       case "notice": notice(m.text, 5000); break;
-      default: break;   // sessions, playlists, auto, future types: not used in P3
+      case "playlists": case "auto": home.onMessage(m); break;
+      default: break;   // sessions, audio_copies, future types
     }
   },
   onOpen(down) {
     $("pill").classList.remove("on");
     home.setConnected(true);
+    home.loadAll();   // on start and after every reconnect (plan 10.4)
     if (!everOpen) {
       everOpen = true;
       sock.log(`ltv ${LTV_VERSION} ua=${navigator.userAgent} ${innerWidth}x${innerHeight} dpr=${devicePixelRatio} ` +
@@ -69,7 +82,11 @@ const sock = new Socket({
 });
 const engine = new Engine(video, sock, ui);
 const player = new PlayerView($("player"), engine);
-const home = new HomeView($("home"), engine, LTV_VERSION);
+const home = new HomeView($("home"), {
+  engine, sock, notice, version: LTV_VERSION,
+  showPlayer: () => show("player"),
+  isVideoPlaying: () => engine.isPlaying() && engine.item?.kind === "video",
+});
 sock.connect();
 
 // ---------------------------------------------------------------- screens
@@ -78,6 +95,7 @@ function show(name) {
   screen = name;
   document.body.dataset.screen = name;
   if (name === "player") player.show();
+  home.shown(name === "home");
 }
 document.body.dataset.screen = screen;
 
@@ -135,11 +153,8 @@ function playerKey(k) {
 }
 
 function homeKey(k) {
-  if (k === KEY.OK) {
-    if (engine.item) show("player");
-    else if (sock.open) { sock.cmd("play_collection", { collection: "videos", shuffle: true }); sock.log("home: shuffle music videos"); }
-    else notice("Not connected to the server", 3000);
-  } else if (k === KEY.PLAY || k === KEY.PAUSE) {
+  if (home.key(k)) return;   // arrows move the focus, OK activates the focused tile
+  if (k === KEY.PLAY || k === KEY.PAUSE) {
     playPause(k === KEY.PLAY);
   } else if (k === KEY.BACK || k === KEY.BACKSPACE || k === KEY.ESC) {
     if (performance.now() - backAt < 2000) { close(); return; }
