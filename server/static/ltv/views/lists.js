@@ -4,13 +4,17 @@
 // the focus engine of Home; row lists use VList, which renders only a window of rows (a queue can hold 2000 entries).
 // Every start is a command to the server and follows the Apple TV app: shuffled, a picked entry plays first (plan 8.2).
 
-import { Focus, measureMove } from "../focus.js";
+import { Focus, measureMove, markMoving } from "../focus.js";
 import { Backdrop } from "../backdrop.js";
 import { getJSON, plural, playlistDetail, esc } from "../api.js";
 import { card, poster, rowInner, count } from "./tiles.js";
+import { settings } from "../settings.js";
 
-const ROW = 84, ROW_PITCH = 96, HEADER = 84, TEXT = 76;
+// Row heights per Settings → Theme → Text size in lists (the CSS classes ts-compact / ts-small on <body> match them).
+const SIZES = { normal: { row: 84, pitch: 96 }, compact: { row: 68, pitch: 78 }, small: { row: 56, pitch: 64 } };
+const HEADER = 84, TEXT = 76;
 const SAFE_TOP = 60, SAFE_BOTTOM = 1080 - 80, WINDOW = 700;   // rows rendered beyond the screen above and below
+const size = () => SIZES[settings.get("textSize")] || SIZES.normal;
 
 // ==================================================================== VList: a virtualised vertical list
 // entries: {key, type: "row" | "header" | "text", focusable, html() -> inner markup, act()}
@@ -43,9 +47,10 @@ export class VList {
     this.entries = entries;
     this.ys = [];
     let y = 0;
+    const pitch = size().pitch;
     for (const e of entries) {
       this.ys.push(y);
-      y += e.type === "header" ? HEADER : e.type === "text" ? TEXT : ROW_PITCH;
+      y += e.type === "header" ? HEADER : e.type === "text" ? TEXT : pitch;
     }
     this.total = y;
     this.body.style.height = `${y}px`;
@@ -67,10 +72,15 @@ export class VList {
     return -1;
   }
 
-  height(i) { const t = this.entries[i].type; return t === "header" ? HEADER : t === "text" ? TEXT : ROW; }
+  height(i) { const t = this.entries[i].type; return t === "header" ? HEADER : t === "text" ? TEXT : size().row; }
   bodyTop() { return this.body.offsetTop; }
   minTy() { return Math.min(0, 1080 - 70 - (this.bodyTop() + this.total)); }
-  clampTy() { this.ty = Math.max(this.minTy(), Math.min(0, this.ty)); this.page.style.transform = `translateY(${this.ty}px)`; }
+  clampTy() {
+    const before = this.ty;
+    this.ty = Math.max(this.minTy(), Math.min(0, this.ty));
+    if (this.ty !== before || this.page.style.transform !== `translateY(${this.ty}px)`) markMoving();
+    this.page.style.transform = `translateY(${this.ty}px)`;
+  }
 
   /** Render the rows near the view (and the focused one); drop the rest. */
   render() {
@@ -147,7 +157,7 @@ export class VList {
   centre(i) {
     if (i < 0) return;
     this.fi = i;
-    this.ty = 540 - (this.bodyTop() + this.ys[i] + ROW / 2);
+    this.ty = 540 - (this.bodyTop() + this.ys[i] + size().row / 2);
     this.page.style.transition = "none";
     this.clampTy();
     void this.page.offsetHeight;   // apply the jump before the transition comes back
@@ -201,7 +211,7 @@ export class VList {
 
   onWheel(e) {
     this.setPointer(true);
-    this.ty -= Math.sign(e.deltaY) * 3 * ROW_PITCH;
+    this.ty -= Math.sign(e.deltaY) * 3 * size().pitch;
     this.clampTy();
     this.render();
     this.measure();
@@ -219,7 +229,7 @@ function frame(title) {
   return el;
 }
 
-class Screen {
+export class Screen {
   constructor(lists, kind, params, title) {
     this.lists = lists;
     this.ctx = lists.ctx;
@@ -247,7 +257,7 @@ class Screen {
 }
 
 // -------------------------------------------------------------------- row screens (VList)
-class RowScreen extends Screen {
+export class RowScreen extends Screen {
   constructor(lists, kind, params, title) {
     super(lists, kind, params, title);
     const body = document.createElement("div");
@@ -271,8 +281,8 @@ class RowScreen extends Screen {
   }
 }
 
-const header = (key, label) => ({ key: `h:${key}`, type: "header", focusable: false, html: () => esc(label) });
-const text = (key, label) => ({ key: `t:${key}`, type: "text", focusable: false, html: () => esc(label) });
+export const header = (key, label) => ({ key: `h:${key}`, type: "header", focusable: false, html: () => esc(label) });
+export const text = (key, label) => ({ key: `t:${key}`, type: "text", focusable: false, html: () => esc(label) });
 
 /** A media item row: title, detail, playing marker, ♥, duration. */
 function itemRow(lists, key, it, sub, act, extra = {}) {
@@ -406,8 +416,8 @@ class FolderScreen extends RowScreen {
 /** The play queue (QueueView.swift): numbered, the playing entry marked; OK = jump (the server starts it and opens the
  *  player). Opens centred on the playing entry; later track changes do not move the focus. */
 class QueueScreen extends RowScreen {
-  constructor(lists) {
-    super(lists, "queue", {}, "Queue");
+  constructor(lists, p = {}) {   // p.back = "player": opened from the quick menu, Back returns to the player
+    super(lists, "queue", p, "Queue");
     this.byId = new Map();     // titles from /api/library?all=1 (loaded when the queue holds an unknown id)
     this.loading = false;
     this.lastQueue = "";
@@ -543,9 +553,9 @@ class VideosScreen extends GridScreen {
   }
 }
 
-const KINDS = {
+export const KINDS = {
   playlists: (l) => new PlaylistsScreen(l), videos: (l) => new VideosScreen(l), folders: (l) => new RootsScreen(l),
-  queue: (l) => new QueueScreen(l), auto: (l, p) => new AutoScreen(l, p), playlist: (l, p) => new PlaylistScreen(l, p),
+  queue: (l, p) => new QueueScreen(l, p), auto: (l, p) => new AutoScreen(l, p), playlist: (l, p) => new PlaylistScreen(l, p),
   folder: (l, p) => new FolderScreen(l, p),
 };
 
@@ -594,6 +604,11 @@ export class Lists {
   key(k) { return this.top()?.key(k) || false; }
   isCurrent(id) { return this.ctx.engine.item?.id === id; }
   setState(st) { for (const s of this.stack) s.setState(st); }
+  /** A setting changed: the text size re-lays every list; the top screen redraws its values. */
+  settingsChanged(k) {
+    if (k === "textSize") for (const s of this.stack) s.list?.setEntries(s.list.entries);
+    this.top()?.refresh?.();
+  }
   setItem() { this.top()?.repaint(); }
   playing(on) { this.root.classList.toggle("playing", on); }
   onMessage(m) { for (const s of this.stack) s.onMessage(m); }

@@ -18,7 +18,8 @@ function ranges(tr) {
 }
 
 export class Engine {
-  /** ui: {item(it), present(), notice(text, ms), changed()} */
+  /** ui: {item(it), present(), notice(text, ms), changed(), stopped()}. Hooks (set by app.js): gate() -> true while a
+   *  start must wait (the headphones' ready), onLoad(item, autoplay) before a new item opens, onSeek() after a seek. */
   constructor(video, sock, ui) {
     this.v = video;
     this.sock = sock;
@@ -28,6 +29,10 @@ export class Engine {
     this.wantPlay = false;
     this.started = false;
     this.blocked = false;
+    this.stopped = false;   // Stop: the picture is gone, the item stays (Play loads it again from 0:00, server-side)
+    this.gate = null;
+    this.onLoad = null;
+    this.onSeek = null;
     this.L = null;   // per-load facts for the log
     this.seek = null;
     this.stall = null;
@@ -47,13 +52,13 @@ export class Engine {
   }
 
   position() {
-    if (!this.item) return 0;
+    if (!this.item || this.stopped) return 0;
     if (this.v.readyState < 1) return this.L ? this.L.startAt : 0;   // before metadata: where it will start
     return this.v.currentTime;
   }
 
   isPlaying() {
-    return !!this.item && this.started && !this.v.paused && !this.v.ended;
+    return !!this.item && !this.stopped && this.started && !this.v.paused && !this.v.ended;
   }
 
   status() {
@@ -94,11 +99,13 @@ export class Engine {
     this.wantPlay = !!m.autoplay;
     this.started = false;
     this.blocked = false;
+    this.stopped = false;
     this.seek = null;
     this.stall = null;
     const startAt = Math.max(0, Number(m.position) || 0);
     this.L = { id: it.id, t0: now(), startAt, meta: null, first: null, frame: null, seeks: 0, missed: 0,
                stalls: 0, waiting: 0, done: false, errorSent: false, endedSent: false };
+    this.onLoad?.(it, !!m.autoplay);
     this.v.preload = "auto";
     this.v.src = "/media/" + it.id;
     const load = this.loadId;
@@ -125,10 +132,15 @@ export class Engine {
   control(m) {
     if (!this.item) return;
     const a = m.action;
+    if (a === "stop") {
+      this.stop();
+      return;
+    }
+    if (this.stopped) return;   // nothing loaded: the server answers a Play with a new load
     if (a === "play" || (a === "toggle" && this.v.paused)) {
       this.wantPlay = true;
       this.tryPlay();
-    } else if (a === "pause" || a === "toggle" || a === "stop") {
+    } else if (a === "pause" || a === "toggle") {
       this.wantPlay = false;
       this.v.pause();
     } else if (a === "seek") {
@@ -137,8 +149,38 @@ export class Engine {
     this.status();
   }
 
+  /** Stop (Red / the web remote): the picture goes away, the item stays current; the server's next Play loads it again. */
+  stop() {
+    if (this.stopped) return;
+    const at = this.v.currentTime;
+    this.finish("stopped");
+    this.wantPlay = false;
+    this.stopped = true;
+    this.seek = null;
+    this.stall = null;
+    this.loadId += 1;
+    this.v.pause();
+    this.v.removeAttribute("src");
+    this.v.load();
+    this.log(`stop #${this.item.id} at ${r1(at)}`);
+    this.status();
+    this.ui.stopped?.();
+  }
+
+  /** A pause the app decides itself (headphones gone, sound output changed): the element and the server. */
+  localPause(why) {
+    if (!this.item || this.stopped) return;
+    this.wantPlay = false;
+    this.v.pause();
+    this.sock.cmd("pause");
+    this.log(`paused (${why})`);
+    this.status();
+  }
+
   // ---------------------------------------------------------------- local actions
   tryPlay() {
+    if (this.stopped || !this.v.getAttribute("src")) return;
+    if (this.gate && this.gate()) return;   // the headphones' sound is not ready yet (at most 3 s)
     const load = this.loadId;
     let p;
     try { p = this.v.play(); } catch (e) { p = Promise.reject(e); }
@@ -174,7 +216,7 @@ export class Engine {
   }
 
   seekTo(target, why) {
-    if (!this.item) return;
+    if (!this.item || this.stopped) return;
     const d = this.duration();
     const t = Math.max(0, d ? Math.min(target, d - 0.5) : target);
     if (this.seek && this.seek.running === null) this.seekLine("superseded");
@@ -182,6 +224,7 @@ export class Engine {
                   paused: this.v.paused };
     this.L.seeks += 1;
     this.v.currentTime = t;
+    this.onSeek?.();
   }
 
   // ---------------------------------------------------------------- element events

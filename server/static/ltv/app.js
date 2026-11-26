@@ -1,21 +1,30 @@
-// LTVPlayer: boot, socket wiring, screens and keys (Home with the focus engine since P4, plain player since P3).
-// Every user action is a command to the server; playback changes only when its load / control comes back.
-// Socket down (plan 9.5): OK still plays / pauses the element itself, ◀ / ▶ seek it, next / previous say so.
+// LTVPlayer: boot, socket wiring, screens and keys. Every user action is a command to the server; playback changes only
+// when its load / control comes back. Socket down (plan 9.5): OK still plays / pauses the element itself, ◀ / ▶ seek it,
+// next / previous say so.
+// Keys (0.6.0): Green = play / pause and Red = Stop on EVERY screen (his remote has no transport keys); in the player OK
+// = play / pause on release, hold OK >= 0.5 s = the lyrics screen, Blue = the quick menu, ▲▼ / CH = previous / next,
+// ◀ ▶ = jump back / forward (Settings → Playback). Stop: the picture goes away and the menu shows again; Play starts the
+// item again from 0:00 (server-side, like the TV Player).
 
 import { Socket } from "./ws.js";
 import { Engine } from "./engine.js";
 import { PlayerView } from "./views/player.js";
 import { HomeView } from "./views/home.js";
 import { Lists } from "./views/lists.js";
+import { QuickMenu } from "./views/quick.js";
+import "./views/settings.js";   // registers the Settings pages in the list stack
+import { SinkLink } from "./audio.js";
+import { LyricsStore } from "./lyrics.js";
+import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.5.0";
+export const LTV_VERSION = "0.6.0";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
 const KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, OK: 13, BACK: 461, BACKSPACE: 8, ESC: 27, PLAY: 415, PAUSE: 19,
-              STOP: 413, REW: 412, FF: 417, CH_UP: 33, CH_DOWN: 34 };
-const SEEK_STEP = 10;
+              STOP: 413, REW: 412, FF: 417, CH_UP: 33, CH_DOWN: 34, RED: 403, GREEN: 404, YELLOW: 405, BLUE: 406 };
+const HOLD_MS = 500;
 
 if (innerWidth && innerWidth !== 1920) document.documentElement.style.zoom = String(innerWidth / 1920);
 
@@ -25,6 +34,14 @@ let screen = "home";
 let menu = "home";     // the menu screen the player returns to on Back (home | lists)
 let state = null;
 let everOpen = false;
+
+// ---------------------------------------------------------------- settings that shape the page
+function applyBody() {
+  document.body.classList.toggle("ts-compact", settings.get("textSize") === "compact");
+  document.body.classList.toggle("ts-small", settings.get("textSize") === "small");
+  document.body.classList.toggle("no-fx", !settings.get("effects"));
+}
+applyBody();
 
 // ---------------------------------------------------------------- notice capsule, reconnect pill
 let noticeTimer = null;
@@ -47,21 +64,30 @@ function accent(it) {
 applyPalette(FALLBACK);
 
 const ui = {
-  item(it) { player.setItem(it); home.setItem(it); lists.setItem(it); accent(it); },
-  present() { show("player"); },
+  item(it) { player.setItem(it); home.setItem(it); lists.setItem(it); accent(it); quick.refresh(); },
+  present() { quick.close(); show("player"); },
   notice,
   changed() { player.update(); home.update(); lists.playing(engine.isPlaying()); },
+  stopped() { quick.close(); if (screen === "player") show(menu); home.update(); player.update(); },
+  version: LTV_VERSION,
 };
 
 const sock = new Socket({
   onMessage(m) {
     switch (m.type) {
-      case "state": state = m.state; player.setState(state); home.setState(state); lists.setState(state); break;
+      case "state":
+        state = m.state;
+        audio.setSink(state.sink);
+        player.setState(state); home.setState(state); lists.setState(state); quick.refresh();
+        break;
       case "load": engine.load(m); break;
       case "control": engine.control(m); break;
       case "notice": notice(m.text, 5000); break;
+      case "sink_ready": audio.ready(m.id); break;
+      case "sound_out": audio.setOn(m.mode === "headphones", "web remote"); break;
       case "playlists": case "auto": home.onMessage(m); lists.onMessage(m); break;
-      default: break;   // sessions, audio_copies, future types
+      case "mixes": lists.top()?.refresh?.(); break;
+      default: break;   // sessions, sound (made for the headphones), volume (the TV's own keys), future types
     }
   },
   onOpen(down) {
@@ -72,10 +98,12 @@ const sock = new Socket({
     if (!everOpen) {
       everOpen = true;
       sock.log(`ltv ${LTV_VERSION} ua=${navigator.userAgent} ${innerWidth}x${innerHeight} dpr=${devicePixelRatio} ` +
-               `zoom=${document.documentElement.style.zoom || 1} from=${Q.get("from") || "-"} palm=${!!window.PalmSystem}`);
+               `zoom=${document.documentElement.style.zoom || 1} from=${Q.get("from") || "-"} palm=${!!window.PalmSystem} ` +
+               `settings=${settings.stored} sound=${settings.get("headphones") ? "headphones" : "tv"}`);
     } else {
       sock.log(`socket back after ${Math.round(down / 100) / 10} s`);
     }
+    audio.sendConfig();   // the server forgets the route of a player that left
   },
   onClose() {
     $("pill").classList.add("on");
@@ -84,12 +112,16 @@ const sock = new Socket({
   },
 });
 const engine = new Engine(video, sock, ui);
-const player = new PlayerView($("player"), engine);
+const audio = new SinkLink(engine, sock, ui);
+const lyrics = new LyricsStore((t) => sock.log(t));
+const player = new PlayerView($("player"), engine, { lyrics, log: (t) => sock.log(t) });
 const isVideoPlaying = () => engine.isPlaying() && engine.item?.kind === "video";
 const lists = new Lists($("lists"), {
-  engine, sock, notice, isVideoPlaying,
+  engine, sock, notice, isVideoPlaying, audio, version: LTV_VERSION,
   state: () => state,
   homeData: () => home.data,
+  prompt: (title, value) => prompt(title, value),
+  switchCodec: (c) => switchCodec(c),
 });
 const home = new HomeView($("home"), {
   engine, sock, notice, version: LTV_VERSION, isVideoPlaying,
@@ -97,15 +129,21 @@ const home = new HomeView($("home"), {
   openList: (kind, params) => { lists.open(kind, params); show("lists"); },
   onData: () => lists.homeData(),
 });
+const quick = new QuickMenu(player.root.querySelector(".qm"), {
+  engine, sock, audio, player, notice, state: () => state, log: (t) => sock.log(t),
+  openQueue: () => { lists.open("queue", { back: "player" }); show("lists"); },
+});
+settings.on((k) => { applyBody(); lists.settingsChanged(k); quick.refresh(); });
 sock.connect();
 
 // ---------------------------------------------------------------- screens
 function show(name) {
   if (screen === name) return;
   screen = name;
-  if (name !== "player") menu = name;
+  if (name !== "player") { menu = name; quick.close(); }
   document.body.dataset.screen = name;
   if (name === "player") player.show();
+  player.shown(name === "player");
   home.shown(name === "home");
   lists.shown(name === "lists");
 }
@@ -117,14 +155,46 @@ function close() {
   setTimeout(() => { if (palm && palm.platformBack) palm.platformBack(); else window.close(); }, 200);
 }
 
-// ---------------------------------------------------------------- keys
+// ---------------------------------------------------------------- the text prompt (the TV's own keyboard)
+let promptDone = null;
+function prompt(title, value) {
+  const box = $("prompt"), input = box.querySelector("input");
+  box.querySelector(".pr-t").textContent = title;
+  input.value = value || "";
+  box.classList.add("on");
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+  return new Promise((ok) => {
+    promptDone = (v) => { promptDone = null; box.classList.remove("on"); input.blur(); ok(v); };
+  });
+}
+
+// ---------------------------------------------------------------- actions
 let seekTarget = null, seekAt = 0, backAt = 0;
 
 function playPause(want) {
   if (!engine.item) return;
+  if (engine.stopped) {   // after a Stop: Play loads the item again from 0:00 (server-side)
+    if (want === false) return;
+    if (!sock.open) { notice("Not connected to the server", 3000); return; }
+    audio.acknowledge("play");
+    sock.cmd("play");
+    sock.log("key: play after stop");
+    return;
+  }
   const play = want ?? video.paused;
+  if (play) {
+    if (audio.holdPlay()) return;   // the headphones are missing: the notice once, the next Play plays muted
+    audio.acknowledge("play");
+  }
   if (sock.open) sock.cmd(play ? "play" : "pause");
   else if (play === video.paused) engine.localToggle();
+}
+
+function stop() {
+  if (!engine.item || engine.stopped) return;
+  if (!sock.open) { notice("Not connected to the server", 3000); return; }
+  sock.cmd("stop");
+  sock.log(`key: stop on ${screen}`);
 }
 
 function step(name) {
@@ -135,7 +205,7 @@ function step(name) {
 }
 
 function seekBy(delta) {
-  if (!engine.item) return;
+  if (!engine.item || engine.stopped) return;
   const d = engine.duration();
   const base = seekTarget !== null && performance.now() - seekAt < 1500 ? seekTarget : engine.position();
   let target = Math.max(0, base + delta);
@@ -149,19 +219,71 @@ function seekBy(delta) {
   player.update();
 }
 
-function playerKey(k) {
+/** Settings → Sound → Codec: pause first (the server refuses while it plays), switch, play again once the headphones
+ *  report the new codec (the switch cuts the sound for 2-4 s). */
+async function switchCodec(codec) {
+  const was = engine.isPlaying();
+  if (was) playPause(false);
+  const until = async (cond, ms) => {
+    const end = performance.now() + ms;
+    while (performance.now() < end && !cond()) await new Promise((r) => setTimeout(r, 100));
+    return cond();
+  };
+  if (was) await until(() => state && !state.playing, 3000);
+  sock.send({ type: "sink_codec", codec });
+  sock.log(`settings: codec -> ${codec}`);
+  const ok = await until(() => state?.sink?.output?.codec === codec, 12000);
+  sock.log(`settings: codec ${ok ? "now" : "still not"} ${codec}`);
+  if (was) playPause(true);
+}
+
+// ---------------------------------------------------------------- keys
+// okHeld: OK is down (keydown seen, no keyup yet). A keydown while held within 600 ms of the last one is the TV's key
+// repeat (also when it comes without e.repeat); a lost keyup cannot block OK for longer than that.
+let okDown = 0, okLast = 0, okHeld = false, holdTimer = null, holdFired = false, okSwallow = false;
+
+function playerKey(k, e) {
+  if (quick.isOpen && quick.key(k)) return;
   switch (k) {
-    case KEY.OK: playPause(); break;
+    case KEY.OK: {
+      const t = performance.now(), repeat = e.repeat || (okHeld && t - okLast < 600);
+      okLast = t;
+      if (repeat) return;   // held: one press (the TV repeats keydown)
+      okHeld = true;
+      clearTimeout(holdTimer);
+      okDown = t;
+      holdFired = false;
+      holdTimer = setTimeout(() => {   // still down after HOLD_MS: the lyrics screen
+        holdTimer = null;
+        holdFired = true;
+        player.toggleLyricsScreen("hold OK");
+      }, HOLD_MS);
+      return;
+    }
+    case KEY.BLUE: quick.open(); return;
     case KEY.PLAY: playPause(true); break;
-    case KEY.PAUSE: case KEY.STOP: playPause(false); break;
+    case KEY.PAUSE: playPause(false); break;
     case KEY.UP: case KEY.CH_DOWN: step("prev"); break;
     case KEY.DOWN: case KEY.CH_UP: step("next"); break;
-    case KEY.LEFT: case KEY.REW: seekBy(-SEEK_STEP); break;
-    case KEY.RIGHT: case KEY.FF: seekBy(SEEK_STEP); break;
+    case KEY.LEFT: case KEY.REW: seekBy(-settings.get("seekBack")); break;
+    case KEY.RIGHT: case KEY.FF: seekBy(settings.get("seekForward")); break;
     case KEY.BACK: case KEY.BACKSPACE: case KEY.ESC: show(menu); return;
     default: return;
   }
   player.show();
+}
+
+function okUp() {
+  if (okSwallow) { okSwallow = false; return; }
+  if (holdTimer) {   // released before HOLD_MS: a press = play / pause
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    playPause();
+    player.show();
+  } else if (holdFired) {
+    holdFired = false;
+    sock.log(`key: OK held ${Math.round(performance.now() - okDown)} ms`);
+  }
 }
 
 function listsKey(k) {
@@ -169,6 +291,7 @@ function listsKey(k) {
   if (k === KEY.PLAY || k === KEY.PAUSE) {
     playPause(k === KEY.PLAY);
   } else if (k === KEY.BACK || k === KEY.BACKSPACE || k === KEY.ESC) {
+    if (lists.top()?.params?.back === "player") { lists.back(); show("player"); return; }   // the queue from the quick menu
     if (!lists.back()) show("home");   // the last list screen: Home with its focus
   }
 }
@@ -187,9 +310,28 @@ function homeKey(k) {
 document.addEventListener("keydown", (e) => {
   const k = e.keyCode;
   if (DEBUG) sock.log(`key ${k}${e.repeat ? " repeat" : ""} on ${screen}`);
+  if (promptDone) {   // the text prompt has the TV keyboard: only OK / Back are ours
+    if (k === KEY.OK) { e.preventDefault(); promptDone($("prompt").querySelector("input").value); }
+    else if (k === KEY.BACK || k === KEY.ESC) { e.preventDefault(); promptDone(null); }
+    return;
+  }
   if (Object.values(KEY).includes(k)) e.preventDefault();
-  if (engine.blocked && (k === KEY.OK || k === KEY.PLAY)) { engine.unblock(); return; }
-  if (screen === "player") playerKey(k); else if (screen === "lists") listsKey(k); else homeKey(k);
+  if (engine.blocked && (k === KEY.OK || k === KEY.PLAY || k === KEY.GREEN)) {
+    engine.unblock();
+    if (k === KEY.OK) okSwallow = true;
+    return;
+  }
+  if (e.repeat && (k === KEY.RED || k === KEY.GREEN || k === KEY.STOP || k === KEY.BLUE)) return;
+  if (k === KEY.GREEN) { playPause(); if (screen === "player") player.show(); quick.refresh(); return; }
+  if (k === KEY.RED || k === KEY.STOP) { stop(); return; }
+  if (screen === "player") playerKey(k, e); else if (screen === "lists") listsKey(k); else homeKey(k);
+}, true);
+
+document.addEventListener("keyup", (e) => {
+  if (e.keyCode === KEY.OK) okHeld = false;
+  if (promptDone) return;
+  if (e.keyCode === KEY.OK && screen === "player" && !quick.isOpen) okUp();
+  else if (e.keyCode === KEY.OK) { clearTimeout(holdTimer); holdTimer = null; okSwallow = false; }
 }, true);
 
 document.addEventListener("mousemove", () => { if (screen === "player") player.show(); }, true);
@@ -198,6 +340,10 @@ document.addEventListener("mousemove", () => { if (screen === "player") player.s
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     const was = !video.paused;
+    if (was && settings.get("keepMusic") && engine.item?.kind === "audio") {   // music keeps playing, videos pause
+      sock.log("hidden: music keeps playing");
+      return;
+    }
     if (was) { engine.wantPlay = false; video.pause(); sock.cmd("pause"); }
     sock.log(`hidden${was ? ": paused" : ""}`);
   } else {
@@ -214,4 +360,5 @@ window.addEventListener("unhandledrejection", (e) => {
   sock.log(`JSERR unhandled rejection ${e.reason && (e.reason.stack || e.reason.message) || e.reason}`.slice(0, 600));
 });
 
-window.ltv = { engine, sock, player, home, lists, get screen() { return screen; }, get state() { return state; } };
+window.ltv = { engine, sock, player, home, lists, quick, audio, lyrics, settings,
+               get screen() { return screen; }, get state() { return state; } };

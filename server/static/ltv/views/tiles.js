@@ -1,13 +1,14 @@
 // LTVPlayer: markup shared by Home and the list screens: cover thumbs, playlist mosaics, cards, posters, list rows.
-// Covers are <img data-src> (loaded lazily by the focus engines); without art a coloured placeholder with a symbol.
+// Covers are <img data-src> (loaded lazily by the focus engines) in the size they are shown at (`/art/<id>?s=<px>`, a
+// cached smaller copy: the TV decodes and uploads far less than the 800 px cover); without art a coloured placeholder.
 
 import { icon } from "../icons.js";
 import { formatTime, esc } from "../api.js";
 import { forItem, css, withBrightness } from "../palette.js";
 
 /** Cover <img> (lazy) or a coloured placeholder with a note / film symbol. */
-export function thumb(item, cls = "") {
-  if (item && item.art) return `<img class="th ${cls}" data-src="/art/${item.id}" decoding="async" alt="">`;
+export function thumb(item, cls = "", px = 160) {
+  if (item && item.art) return `<img class="th ${cls}" data-src="/art/${item.id}?s=${px}" decoding="async" alt="">`;
   const p = forItem(item ? item.id : 0);
   return `<div class="th ph ${cls}" style="background:linear-gradient(135deg, ${css(withBrightness(p.vibrant, 0.62, 0.55))}, ` +
          `${css(p.tones[0])} 60%, ${css(p.base)})">${icon(item && item.kind === "video" ? "videos" : "note", 44)}</div>`;
@@ -15,8 +16,8 @@ export function thumb(item, cls = "") {
 
 /** 2 x 2 mosaic of the first four covers, one cover if fewer, a palette placeholder if none (PlaylistCardLabel). */
 export function mosaic(items, seed) {
-  if (items.length >= 4) return `<div class="mosaic">${items.slice(0, 4).map((i) => thumb(i)).join("")}</div>`;
-  if (items.length) return thumb(items[0]);
+  if (items.length >= 4) return `<div class="mosaic">${items.slice(0, 4).map((i) => thumb(i, "", 160)).join("")}</div>`;
+  if (items.length) return thumb(items[0], "", 320);
   const p = forItem(seed * 7);
   return `<div class="th ph" style="background:linear-gradient(135deg, ${css(withBrightness(p.vibrant, 0.72))}, ` +
          `${css(p.tones[0])} 55%, ${css(p.base)})">${icon("playlists", 120)}</div>`;
@@ -30,7 +31,7 @@ export function card(focusId, action, key, name, detail, items, seed) {
 
 /** 16:9 music video poster with the title on a dark fade (PosterLabel). cls "grid" = the 410 x 231 list size. */
 export function poster(v, cls = "") {
-  return `<div class="tile poster ${cls}" data-focus="video:${v.id}" data-action="video" data-key="${v.id}">${thumb(v)}
+  return `<div class="tile poster ${cls}" data-focus="video:${v.id}" data-action="video" data-key="${v.id}">${thumb(v, "", 480)}
     <div class="fade"></div><div class="cap"><div class="cap-t">${esc(v.title)}</div>
     ${v.artist ? `<div class="cap-s">${esc(v.artist)}</div>` : ""}</div></div>`;
 }

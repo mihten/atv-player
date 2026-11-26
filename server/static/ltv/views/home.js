@@ -123,7 +123,7 @@ export class HomeView {
       const sub = [it.artist, it.kind === "video" ? null : it.album].filter(Boolean).join(" · ");
       const up = (this.state?.upcoming || []).slice(0, 3);
       el.innerHTML = `
-        <div class="hero-art">${it.art ? `<img src="/art/${it.id}" decoding="async" alt="">` : thumb(it)}
+        <div class="hero-art">${it.art ? `<img src="/art/${it.id}?s=640" decoding="async" alt="">` : thumb(it)}
           ${it.kind === "video" ? `<span class="hero-badge">${icon("videos", 34)}</span>` : ""}</div>
         <div class="hero-text">
           <div class="hero-eyebrow">${bars()}<span class="hero-state"></span></div>
@@ -148,7 +148,7 @@ export class HomeView {
     const playing = e.isPlaying();
     el.classList.toggle("playing", playing);
     const st = el.querySelector(".hero-state");
-    if (st) st.textContent = playing ? "NOW PLAYING" : "PAUSED";
+    if (st) st.textContent = playing ? "NOW PLAYING" : e.stopped ? "STOPPED" : "PAUSED";
     const d = e.duration(), t = e.position();
     const fill = el.querySelector(".hero-fill");
     if (fill) fill.style.transform = `scaleX(${d ? Math.min(1, t / d) : 0})`;
@@ -168,7 +168,7 @@ export class HomeView {
   renderShelves() {
     const d = this.data, out = [];
     const browse = [["playlists", "Playlists", "playlists"], ["folders", "Folders", "folder"],
-                    ["videos", "Music videos", "videos"], ["queue", "Queue", "queue"]];
+                    ["videos", "Music videos", "videos"], ["queue", "Queue", "queue"], ["settings", "Settings", "gear"]];
     out.push(this.shelf("browse", "Browse", browse.map(([k, t, ic]) => `
       <div class="tile browse" data-focus="browse:${k}" data-action="browse" data-key="${k}">${icon(ic, 40)}<span>${t}</span></div>`).join(""), false));
     if (d.auto.length) {
@@ -221,7 +221,12 @@ export class HomeView {
       sock.log(`home: ${what}`);
     };
     if (a === "hero") {
-      if (engine.item) showPlayer();
+      if (engine.item && engine.stopped) {   // after a Stop: Play starts the item again from 0:00 (the server loads it)
+        if (!sock.open) { notice("Not connected to the server", 3000); return; }
+        sock.cmd("play");
+        sock.log("home: play after stop (hero)");
+        showPlayer();
+      } else if (engine.item) showPlayer();
       else send({ collection: "videos" }, "shuffle music videos (hero)");
     } else if (a === "shuffle") {
       send({ collection: "videos" }, "shuffle music videos");
@@ -230,7 +235,7 @@ export class HomeView {
     } else if (a === "video") {
       send({ collection: "videos", start_id: Number(key) }, `music video ${key}`);
     } else if (a === "browse") {
-      openList(key);   // playlists | folders | videos | queue
+      openList(key);   // playlists | folders | videos | queue | settings
     } else if (a === "auto") {
       const l = this.data.auto.find((x) => x.key === key);
       openList("auto", { key, name: l ? l.name : key });

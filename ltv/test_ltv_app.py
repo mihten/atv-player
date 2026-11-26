@@ -555,7 +555,8 @@ try:
         check(wait(lambda: js("[...document.querySelectorAll('#home [data-section]')].map(s => s.dataset.section)") == want, 15),
               f"Home sections in order {want}")
         check(js("[...document.querySelectorAll('[data-section=browse] [data-focus]')].map(e => e.dataset.focus)") ==
-              ["browse:playlists", "browse:folders", "browse:videos", "browse:queue"], "Browse: Playlists, Folders, Music videos, Queue")
+              ["browse:playlists", "browse:folders", "browse:videos", "browse:queue", "browse:settings"],
+              "Browse: Playlists, Folders, Music videos, Queue, Settings")
         check(wait(lambda: "♥ Loved" in page.inner_text("[data-focus='auto:loved']")) and "5 items" in page.inner_text("[data-focus='auto:loved']"),
               "For you: '♥ Loved' card with '5 items'")
         road = page.inner_text(f"[data-focus='playlist:{p_road}']")
@@ -580,15 +581,15 @@ try:
         # ---- keys: focus path, no wrap, Up / Down remember per section
         check(focused() == "hero", "focus starts on the hero")
         keys("ArrowDown")
-        check(focused() in ("browse:folders", "browse:videos"), f"▼ from the hero: the Browse tile nearest its centre ({focused()})")
+        check(focused() == "browse:videos", f"▼ from the hero: the Browse tile nearest its centre ({focused()})")
         keys("ArrowRight", "ArrowRight", "ArrowRight")
-        check(focused() == "browse:queue", "▶ x3: Browse / Queue")
+        check(focused() == "browse:settings", "▶ x3: Browse / Settings (from Music videos, the tile under the hero)")
         keys("ArrowRight")
-        check(focused() == "browse:queue", "▶ at the end: no wrap")
+        check(focused() == "browse:settings", "▶ at the end: no wrap")
         keys("ArrowDown")
         check((focused() or "").startswith("auto:"), f"▼: a For you card ({focused()})")
         keys("ArrowUp")
-        check(focused() == "browse:queue", "▲: back on the remembered Browse tile")
+        check(focused() == "browse:settings", "▲: back on the remembered Browse tile")
         keys("ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft")
         check(focused() == "browse:playlists", "◀ x4: first tile, no wrap")
         keys("ArrowDown", "ArrowDown")

@@ -162,6 +162,7 @@ def tracked(kind):
 class Req:
     def __init__(self, i):
         self.match_info = {"id": str(i)}
+        self.query = {}  # art() reads ?s= (0.33.0)
 
 
 async def concurrency():
@@ -209,10 +210,14 @@ for f in server.CACHE.joinpath("art").glob("*"):
     f.unlink()
 
 
+RED_BIG = solid("red-big.jpg", "ff0000", "1000x750")   # bigger than every ?s= size: the full thumbnail is 800 px
+GREEN_BIG = solid("green-big.jpg", "00ff00", "1000x750")
+
+
 async def http_cache():
     vid = LIBDIR / "http.mkv"
     subprocess.run(["mkvmerge", "-q", "-o", str(vid), "--attachment-name", "cover.jpg", "--attachment-mime-type",
-                    "image/jpeg", "--attach-file", str(RED), str(base_video("http"))], check=True, capture_output=True)
+                    "image/jpeg", "--attach-file", str(RED_BIG), str(base_video("http"))], check=True, capture_output=True)
     server.LIB.clear()
     server.LIB[500] = {"id": 500, "kind": "video", "root": "v", "relpath": vid.name, "duration": 2.0,
                        "mtime": vid.stat().st_mtime}
@@ -230,15 +235,34 @@ async def http_cache():
         check(r2.status == 304, f"http: unchanged cover revalidates to 304 ({r2.status})")
         r3 = await c.get("/art/500", headers={"If-Modified-Since": lm})
         check(r3.status == 304, f"http: If-Modified-Since also 304 ({r3.status})")
+        # ?s=<px> (0.33.0, LTVPlayer): a cached smaller copy, the next size up of 160 / 320 / 480 / 640
+        rs = await c.get("/art/500?s=300")
+        bs = await rs.read()
+        size = Image.open(BytesIO(bs)).size if rs.status == 200 else None
+        check(rs.status == 200 and size and max(size) == 320 and max(Image.open(BytesIO(b1)).size) == 800 and colour(bs) == "red",
+              f"http: ?s=300 -> a 320 px copy of the cover ({rs.status}, {size})")
+        check((server.CACHE / "art" / "500.v2.s320.jpg").exists(), "... cached as <id>.v2.s320.jpg (kept by drop_old_art)")
+        rs2 = await c.get("/art/500?s=300", headers={"If-None-Match": rs.headers.get("ETag") or "x"})
+        check(rs2.status == 304, f"... and revalidates to 304 ({rs2.status})")
+        for q in ("s=2000", "s=abc", "s=-5"):
+            rq = await c.get(f"/art/500?{q}")
+            bq = await rq.read()
+            check(rq.status == 200 and bq == b1, f"http: ?{q} -> the full thumbnail")
         # the file gets a new cover (as when covers are embedded later): new mtime -> new thumbnail, not 304
         time.sleep(1.1)
-        subprocess.run(["mkvpropedit", "-q", str(vid), "--replace-attachment", f"name:cover.jpg:{GREEN}"],
+        subprocess.run(["mkvpropedit", "-q", str(vid), "--replace-attachment", f"name:cover.jpg:{GREEN_BIG}"],
                        check=True, capture_output=True)
         server.LIB[500]["mtime"] = vid.stat().st_mtime
         r4 = await c.get("/art/500", headers={"If-None-Match": etag, "If-Modified-Since": lm})
         b4 = await r4.read()
         check(r4.status == 200 and colour(b4) == "green",
               f"http: changed cover -> 200 with the NEW picture ({r4.status}, {colour(b4) if b4 else 'empty'})")
+        r5 = await c.get("/art/500?s=160")
+        b5 = await r5.read()
+        r6 = await c.get("/art/500?s=300")
+        b6 = await r6.read()
+        check(colour(b5) == "green" and colour(b6) == "green" and max(Image.open(BytesIO(b5)).size) == 160,
+              "http: after the change the small copies are made again from the new cover")
 
 
 asyncio.run(http_cache())

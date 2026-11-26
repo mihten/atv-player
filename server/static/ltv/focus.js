@@ -9,6 +9,14 @@
 const SAFE_TOP = 40, SAFE_BOTTOM = 1080 - 50, VIEW_W = 1760;
 const FPS_LOGS = 20;   // shelf / page moves measured per app start (P4 exit: FPS numbers from the TV)
 
+/** body.moving for the length of a move: the backdrop holds still meanwhile (R1, TV frame rate). */
+let movingTimer = 0;
+export function markMoving() {
+  document.body.classList.add("moving");
+  clearTimeout(movingTimer);
+  movingTimer = setTimeout(() => document.body.classList.remove("moving"), 420);
+}
+
 /** One FPS line for a move (requestAnimationFrame for 0.7 s). budget = {left, measuring}, shared by the engines of a
  *  screen family so the journal gets at most `left` lines. */
 export function measureMove(budget, kind, section, log, video) {
@@ -187,6 +195,7 @@ export class Focus {
   }
 
   setX(track, x) {
+    if ((this.tx.get(track) || 0) !== x) markMoving();
     this.tx.set(track, x);
     track.style.transform = `translateX(${x}px)`;
     const shelf = track.closest("[data-section]");
@@ -197,6 +206,7 @@ export class Focus {
   }
 
   setY(y) {
+    if (y !== this.ty) markMoving();
     this.ty = y;
     const page = this.page();
     if (page) page.style.transform = `translateY(${y}px)`;

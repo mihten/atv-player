@@ -60,8 +60,8 @@ async def main(tmp):
             st = await H.state(http, "ltv")
             check(st["session"] == "ltv" and st["session_name"] == "LTVPlayer", "state of session ltv, named LTVPlayer")
             check(st["sink"] is None, f"ltv: sink is null ({st['sink']!r})")
-            check("sound" not in st and "notice" not in st and "output" not in st,
-                  "ltv: no server-side sound, notice or output fields")
+            check("sound" in st and "notice" in st and st["output"] is None,
+                  "ltv (0.33.0): server-side sound + notice fields like the TV Player, output null until the player reports")
             check([x["session"] for x in st["sessions"]] == ["tv", "phone", "box", "mtv", "ltv"],
                   "sessions list ends with ltv")
             check(st["prefer_videos"] is True, "a fresh ltv session has prefer videos on")
@@ -85,7 +85,8 @@ async def main(tmp):
             types = [m["type"] for m in seen]
             check(load is not None and load["autoplay"] is True and load["present"] is True
                   and load["item"]["id"] in ids, f"play_collection -> load, autoplay + present ({load and load['item']['id']})")
-            check("sound" not in types, f"no sound message before the load ({types})")
+            check("sound" in types and types.index("sound") < types.index("load"),
+                  f"the server's sound message before the load (0.33.0: the headphones' sound is made by the server) ({types})")
             check(not of_type(await H.drain(box), "load"), "box player gets nothing from the ltv queue")
             st = await H.state(http, "ltv")
             check(sorted(st["queue"]) == ids, "ltv queue holds the collection")
@@ -175,10 +176,12 @@ async def main(tmp):
             await remote.send_json({"type": "cmd", "cmd": "sound", "preset": "t:bass", "boost": 3})
             sink_msgs, ltv_msgs = await H.drain(sink), await H.drain(ltv)
             check(not of_type(sink_msgs, "volume"), "a remote's volume for ltv does not reach the headphones")
-            check(not of_type(ltv_msgs, "volume") and not of_type(ltv_msgs, "control")
-                  and not of_type(ltv_msgs, "sound"), "... and volume / stop / sound reach nothing on ltv either")
+            check(of_type(ltv_msgs, "volume") and {"type": "control", "action": "stop"} in ltv_msgs
+                  and of_type(ltv_msgs, "sound"),
+                  "... on ltv (0.33.0, not on the headphones): its own volume, the Stop, the sound message")
             st = await H.state(http, "ltv")
-            check("sound" not in st and st["sink"] is None, "ltv state unchanged by them")
+            check(st["sound"]["preset"] == "t:bass" and st["sound"]["boost"] == 3 and st["sink"]["route"] is False,
+                  "ltv state: the sound settings kept, its route false (the sink is the TV's)")
 
             # ---- reconnect: the session stops playing; the new player gets the state, then a paused load, no sound
             await status(ltv, st["current"]["id"], True, 1.5)
@@ -191,8 +194,9 @@ async def main(tmp):
             msgs = await H.drain(ltv)
             types = [m["type"] for m in msgs]
             loads = of_type(msgs, "load")
-            check(types and types[0] == "state" and loads and loads[0]["autoplay"] is False and "sound" not in types,
-                  f"ltv reconnect: state, then a paused load, no sound ({types})")
+            check(types and types[0] == "state" and loads and loads[0]["autoplay"] is False
+                  and "sound" in types and types.index("sound") < types.index("load"),
+                  f"ltv reconnect: state, the sound message, then a paused load ({types})")
 
             # ---- the page: revalidated on every load; the web remote and the API keep their own headers
             async with http.get(f"{H.BASE}/static/ltv/index.html") as r:

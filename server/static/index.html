@@ -575,7 +575,7 @@ html[data-look="noir"] .plhead .name, html[data-look="vinyl"] .plhead .name { fo
       <button class="tb sm" id="shuf" title="Shuffle"></button>
       <button class="tb" data-cmd="prev" id="prevBtn" title="Previous"></button>
       <button class="tb play" id="pp" data-cmd="toggle" title="Play / pause"></button>
-      <button class="tb" data-cmd="stop" id="stopBtn" title="Stop: the TV Player's screen goes black, Play starts the item again" style="display:none"></button>
+      <button class="tb" data-cmd="stop" id="stopBtn" title="Stop: the TV Player's / LTVPlayer's picture goes away, Play starts the item again" style="display:none"></button>
       <button class="tb" data-cmd="next" id="nextBtn" title="Next"></button>
       <button class="tb sm" id="shot" title="Screenshot of the Apple TV screen"></button>
     </div>
@@ -872,7 +872,7 @@ function versionsSheet() {
 const vol = { dragUntil: 0, last: 0, timer: null, pending: null };
 function volOut(s = st) {
   if (!s) return null;
-  if (s.session === "mtv") {
+  if (s.session === "mtv" || s.session === "ltv") {
     const k = s.sink;   // its sound goes to the headphones: their own volume (none while they are away); else its HDMI volume
     if (k && k.route) return k.output && k.output.ready ? k.output : null;
     return s.output && s.output.volume != null ? s.output : null;
@@ -884,7 +884,7 @@ function drawVolume(s) {
   const show = !!(out && out.volume != null);
   $("vol").hidden = !show;
   if (!show) return;
-  $("vol").title = s.session === "mtv" && !(s.sink && s.sink.route) ? "TV Player volume (the TV's own volume is separate)" : "ATV-Server volume (the headphones' own volume)";
+  $("vol").title = (s.session === "mtv" || s.session === "ltv") && !(s.sink && s.sink.route) ? `${s.session_name || "TV Player"} volume (the TV's own volume is separate)` : "ATV-Server volume (the headphones' own volume)";
   $("vol").classList.toggle("muted", !!out.muted);
   setIcon($("volMute"), out.muted ? "speakerX" : "speaker");
   $("volMute").classList.toggle("on", !out.muted);
@@ -908,8 +908,8 @@ $("volRange").onchange = () => { vol.dragUntil = Date.now() + 1500; clearTimeout
   const muted = !!(volOut() && volOut().muted); sendVolume(+$("volRange").value, muted); };
 $("volMute").onclick = () => { const o = volOut(); if (o && o.volume != null) sendVolume(o.volume, !o.muted); };
 
-/** Queues whose sound settings live on the server (atv-audio's "box", the TV Player "mtv"): notice + sound settings. */
-const SERVER_SOUND = ["box", "mtv"];
+/** Queues whose sound settings live on the server (atv-audio's "box", the TV Player "mtv", LTVPlayer "ltv"): notice + sound settings. */
+const SERVER_SOUND = ["box", "mtv", "ltv"];
 function drawBox(s) {
   const box = SERVER_SOUND.includes(s.session);
   const n = box && s.notice ? s.notice.text : "";
@@ -1082,8 +1082,8 @@ function follow() {
 
 /** 📷 takes a screenshot of the Apple TV screen: only meaningful on the Apple TV queue. */
 function showShot(which) { $("shot").style.display = which === "tv" ? "" : "none"; showStop(which); }
-/** Stop is the TV Player's: its screen goes black (the other players only pause). */
-function showStop(which) { $("stopBtn").style.display = which === "mtv" ? "" : "none"; }
+/** Stop is the TV Player's and LTVPlayer's: the picture goes away (the other players only pause). */
+function showStop(which) { $("stopBtn").style.display = which === "mtv" || which === "ltv" ? "" : "none"; }
 
 function switchSession(next) {
   session = next;
@@ -1612,7 +1612,7 @@ async function settingsMenu() {
   openSheet(`<div class="st">Settings</div>` + row("look", "look", "Look", "This browser") +
     row("lib", "folder", "Library", cfg ? `${cfg.roots.length} folder${cfg.roots.length === 1 ? "" : "s"}` : "") +
     row("mixes", "shuffle", "Mixes", "The two Home shuffle tiles") +
-    row("audio", "speaker", "Audio", "TV Player, ATV-Server headphones") + row("server", "refresh", "Server", "Status, name, password, restart") +
+    row("audio", "speaker", "Audio", "TV Player, LTVPlayer, ATV-Server headphones") + row("server", "refresh", "Server", "Status, name, password, restart") +
     row("backup", "save", "Backup", "Playlists, Mixes, Loved, play history") +
     (cfg && cfg.admin ? `<div class="set-hint">${ic("lock")} ${cfg.unlocked ? "Unlocked in this browser" : "Locked: changes ask for the admin password"}</div>` : "") +
     `<button class="opt cancel" data-m="close">Done</button>`, (e) => {
@@ -1770,7 +1770,8 @@ async function audioSheet() {
   let lastKey = null;
   const draw = async () => {
     if (!$("sheet").classList.contains("show") || !$("sheetBody").querySelector("[data-audio-sheet]")) { clearInterval(audioPoll); audioPoll = null; return; }
-    let s, m; try { s = await (await fetch("/api/state?session=box")).json(); m = await (await fetch("/api/state?session=mtv")).json(); } catch { return; }
+    const scr = ((st && st.session) || session) === "ltv" ? "ltv" : "mtv";   // the TV screen this sheet shows: TV Player or LTVPlayer
+    let s, m; try { s = await (await fetch("/api/state?session=box")).json(); m = await (await fetch(`/api/state?session=${scr}`)).json(); } catch { return; }
     const k = s.sink || {}, a = k.audio || {}, key = JSON.stringify([k.connected, a, k.output, k.sinks, m.players, m.output, m.sink, rmtOpen, (st && st.session) || session]);
     if (key === lastKey) return;
     lastKey = key;
@@ -1795,17 +1796,17 @@ async function audioSheet() {
     const sessName = ((sessionList || []).find((x) => x.session === sess) || {}).name || "";
     const mo = m.output || {}, mk = m.sink || {};
     const hpOn = mo.sound === "headphones", hpReady = !!(mk.output && mk.output.ready);
-    const seg = (out, label, on) => `<button class="pill${on ? " primary" : ""}" data-a="mtv-sound" data-out="${out}">${label}</button>`;
-    const tvp = !m.players ? sec("TV Player") + `<div class="set-row"><span class="set-dot"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div><div class="set-s">Not running</div></div></div>` :
-      sec("TV Player") + `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div>` +
+    const seg = (out, label, on) => `<button class="pill${on ? " primary" : ""}" data-a="mtv-sound" data-out="${out}" data-session="${scr}">${label}</button>`;
+    const scrName = scr === "ltv" ? "LTVPlayer" : "TV Player";
+    const tvp = !m.players ? sec(scrName) + `<div class="set-row"><span class="set-dot"></span><div class="set-main"><div class="set-t">${esc(mo.name || "TV Player")}</div><div class="set-s">Not running</div></div></div>` :
+      sec(scrName) + `<div class="set-row"><span class="set-dot on"></span><div class="set-main"><div class="set-t">${esc(mo.name || scrName)}</div>` +
       `<div class="set-s">${esc(mo.screen || "Running")}</div></div></div>` +
-      sec("Sound goes to") + `<div class="set-seg">${seg("hdmi", "HDMI · TV or soundbar", !hpOn)}${seg("headphones", "Headphones", hpOn)}</div>` +
+      sec("Sound goes to") + `<div class="set-seg">${seg("hdmi", scr === "ltv" ? "TV · its own sound" : "HDMI · TV or soundbar", !hpOn)}${seg("headphones", "Headphones", hpOn)}</div>` +
       `<div class="set-hint${hpOn && !hpReady ? " set-bad" : ""}">${hpOn ? (hpReady ? `Playing on ${esc(mk.output.name || "the headphones")}${mk.output.codec ? ` · ${esc(codecLabel(mk.output.codec))}` : ""}. The volume bar is the headphones' own volume.`
-        : "The headphones are not connected: playback pauses with a notice. Connect them below.") : "The volume bar is the TV Player's own volume; the TV's or the soundbar's volume is separate."}</div>` +
+        : "The headphones are not connected: playback pauses with a notice. Connect them below.") : scr === "ltv" ? "The TV's own volume keys set the sound." : "The volume bar is the TV Player's own volume; the TV's or the soundbar's volume is separate."}</div>` +
       remoteSection(m);
-    const intro = sess === "mtv" ? tvp
+    const intro = sess === "mtv" || sess === "ltv" ? tvp
       : sess === "phone" ? `<div class="set-hint">The iPhone plays on the phone itself (or CarPlay): nothing to set here.</div>`
-      : sess === "ltv" ? `<div class="set-hint">LTVPlayer plays on the TV's own sound: nothing to set here.</div>`
       : sess === "tv" ? `<div class="set-hint">The Apple TV chooses its sound itself: Settings › Sound › Sound output. With ATV-Server it plays on the headphones below.</div>`
       : `<div class="set-hint">The Web Player always plays on the headphones below.</div>`;
     // aptX HD <-> aptX Adaptive of the connected Bluetooth headphones (the sink offers it only when the headset has both)
@@ -1813,9 +1814,9 @@ async function audioSheet() {
     const cods = cur && (a.codecs || []).length > 1 ? a.codecs : [];
     const codecRow = cods.length ? sec("Codec") + `<div class="set-seg">${cods.map((c) => `<button class="pill${c.codec === cur ? " primary" : ""}" data-a="codec" data-codec="${esc(c.codec)}">${esc(c.label)}</button>`).join("")}</div>` +
       `<div class="set-hint">Playing on ${esc(codecLabel(cur))}. Switching cuts the sound for a few seconds (the headphones chime); pause first. aptX Adaptive plays 24 bit / 96 kHz when Hi-Res is on in the headphones' app.</div>` : "";
-    const heads = sess === "phone" || sess === "ltv" ? "" : sec("Headphones · ATV-Server") +
+    const heads = sess === "phone" ? "" : sec("Headphones · ATV-Server") +
       (!k.connected ? `<div class="set-hint">${progs.length ? "Switching…" : "ATV-Server is not running."}</div>` :
-        `<div class="set-hint">${dg ? "Headphones on the ATV-Server server's USB dongle." : "Bluetooth headphones paired with the ATV-Server server (its own adapter, not the TV Player's)."} The Apple TV, the Web Player and the TV Player play on them when their sound is set to ATV-Server.</div>` +
+        `<div class="set-hint">${dg ? "Headphones on the ATV-Server server's USB dongle." : "Bluetooth headphones paired with the ATV-Server server (its own adapter, not the TV Player's)."} The Apple TV, the Web Player, the TV Player and LTVPlayer play on them when their sound is set to ATV-Server.</div>` +
         progRows +
         (dg ? dongle : a.can_bluetooth ? (devs || `<div class="set-hint">No headphones paired yet.</div>`) +
           `<div class="set-btns"><button class="pill" data-a="scan"${a.scanning ? " disabled" : ""}>${a.scanning ? "Looking…" : "Find headphones"}</button><span class="grow"></span></div>` +
@@ -1851,7 +1852,7 @@ async function audioSheet() {
     }
     if (b.dataset.a === "mtv-sound") {   // the TV Player's sound: HDMI or the atv-audio headphones
       b.disabled = true;
-      return sapi("POST", "/api/mtv-sound", { output: b.dataset.out }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
+      return sapi("POST", "/api/mtv-sound", { output: b.dataset.out, session: b.dataset.session || "mtv" }, audioSheet).catch(() => {}).then(() => setTimeout(draw, 300));
     }
     if (b.dataset.a === "codec") { b.disabled = true; toast("Switching the codec…"); return audioCmd({ op: "set_codec", output: b.dataset.codec }); }
     if (b.dataset.a === "use") { b.disabled = true; toast("Moving the headphones…"); return audioCmd({ op: "set_sink", sink: b.dataset.sink }); }
