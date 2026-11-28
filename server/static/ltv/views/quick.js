@@ -36,6 +36,7 @@ export class QuickMenu {
   }
 
   close() {
+    if (this.isOpen) this.log("closed");
     this.isOpen = false;
     this.list = null;
     this.root.classList.remove("on");

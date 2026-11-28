@@ -295,6 +295,42 @@ img.th.broken { visibility: hidden; }
            font-size: 26px; opacity: .85; font-variant-numeric: tabular-nums; }
 .p-next { opacity: .75; max-width: 1200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------------------------------------------------------------- the Aurora song player (AuroraPlayer, 0.8.0)
+   The backdrop drifts only while the song plays (Theme effects on); cover 640 left (corner 30, accent glow, 0.9 while
+   paused), the column 900 wide: eyebrow, title 76 (3 lines), artist 40, album line 30, fact chips, glow progress, Up next. */
+.pa { display: none; position: absolute; inset: 0; }
+body[data-look="aurora"] #player.song:not(.lyr) .pa { display: block; }
+body[data-look="aurora"] #player.song .p-cover, body[data-look="aurora"] #player.song .p-overlay { display: none; }
+.pa-bd { position: absolute; inset: 0; }
+.pa-row { position: absolute; inset: 0; padding: 0 100px; display: flex; align-items: center; justify-content: center; gap: 100px; }
+.pa-art { flex: none; width: 640px; height: 640px; transform: scale(.9); transition: transform .6s var(--spring); }
+#player.playing .pa-art { transform: scale(1); }
+.pa-art img { width: 100%; height: 100%; object-fit: cover; border-radius: 30px;
+              box-shadow: 0 0 90px var(--accent-55), 0 24px 30px rgba(0, 0, 0, .45); }
+.pa-col { flex: none; width: 900px; display: flex; flex-direction: column; gap: 14px; }
+.pa-eyebrow { font-size: 24px; letter-spacing: 5px; margin-bottom: 6px; }
+.pa-eyebrow .eq { height: 28px; }
+.pa-eyebrow .eq i { width: 6px; height: 28px; }
+#player.playing .pa .eq i { animation-play-state: running; }
+.pa-title { font-size: 76px; font-weight: 900; line-height: 1.08;
+            display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.pa-artist { font-size: 40px; font-weight: 600; opacity: .82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pa-album { font-size: 30px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pa-artist:empty, .pa-album:empty, .pa-chips:empty { display: none; }
+.pa-chips { display: flex; gap: 12px; margin-top: 6px; flex-wrap: nowrap; overflow: hidden; height: 36px; }
+.pa-prog { width: 900px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, .18); margin-top: 26px; }
+.pa-fill { display: block; width: 100%; height: 100%; border-radius: 4px; background: var(--accent); transform-origin: left; transform: scaleX(0);
+           box-shadow: 0 0 14px var(--accent); transition: transform .5s linear; }
+.pa-times { display: flex; justify-content: space-between; font-size: 24px; opacity: .6; font-variant-numeric: tabular-nums; }
+.pa-next { margin-top: 26px; display: flex; flex-direction: column; gap: 14px; }
+
+/* ---------------------------------------------------------------- OLED care (plan 12.4, 0.8.0)
+   A still player screen (song, lyrics screen, paused video) goes to 35 % after a minute without a key (player.js
+   oledTick) and its content moves by --dx / --dy (a few px, a step a minute). Opacity / transform only. */
+.p-dim { position: absolute; inset: 0; z-index: 4; background: #000; opacity: 0; pointer-events: none; transition: opacity 2s ease; }
+#player.dim .p-dim { opacity: .65; }
+#player > :not(.p-dim):not(.qm) { translate: var(--dx, 0) var(--dy, 0); }   /* no transition here: the children keep theirs */
+
 /* ---------------------------------------------------------------- capsule, pill */
 #capsule {
   position: fixed; top: 50px; left: 50%; transform: translateX(-50%); z-index: 50; max-width: 1400px;

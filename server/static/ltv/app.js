@@ -19,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.7.2";
+export const LTV_VERSION = "0.8.0";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -117,7 +117,8 @@ const sock = new Socket({
 const engine = new Engine(video, sock, ui);
 const audio = new SinkLink(engine, sock, ui);
 const lyrics = new LyricsStore((t) => sock.log(t));
-const player = new PlayerView($("player"), engine, { lyrics, log: (t) => sock.log(t) });
+const OLED_MS = Number(Q.get("oled")) || 0;   // tests only: dim / drift after this many ms instead of a minute
+const player = new PlayerView($("player"), engine, { lyrics, log: (t) => sock.log(t), dimAfter: OLED_MS, driftEvery: OLED_MS });
 const isVideoPlaying = () => engine.isPlaying() && engine.item?.kind === "video";
 const lists = new Lists($("lists"), {
   engine, sock, notice, isVideoPlaying, audio, version: LTV_VERSION,
@@ -184,13 +185,17 @@ function playPause(want) {
     sock.log("key: play after stop");
     return;
   }
-  const play = want ?? video.paused;
+  // A start in progress (an autoplay load whose play() has not resolved yet: 0.35-1.4 s on the TV) counts as playing, so
+  // Green / OK pause it instead of sending a Play that changes nothing (0.8.0).
+  const starting = engine.wantPlay && !engine.blocked && video.paused;
+  const play = want ?? (video.paused && !starting);
   if (play) {
     if (audio.holdPlay()) return;   // the headphones are missing: the notice once, the next Play plays muted
     audio.acknowledge("play");
   }
   if (sock.open) sock.cmd(play ? "play" : "pause");
-  else if (play === video.paused) engine.localToggle();
+  else if (!play) { engine.wantPlay = false; video.pause(); engine.status(); }
+  else if (video.paused) engine.localToggle();
 }
 
 function stop() {
@@ -200,9 +205,10 @@ function stop() {
   sock.log(`key: stop on ${screen}`);
 }
 
-function step(name) {
+function step(name, key) {
   if (!engine.item) return;
   if (!sock.open) { notice("Not connected to the server", 3000); return; }
+  sock.log(`key: ${name} (${key})`);   // 0.8.0: next / previous from the keys show in the journal
   if (name === "prev") sock.cmd("prev", { position: Math.round(engine.position() * 100) / 100 });
   else sock.cmd("next");
 }
@@ -270,8 +276,10 @@ function playerKey(k, e) {
     case KEY.YELLOW: player.toggleLyricsScreen("Yellow"); quick.refresh(); return;
     case KEY.PLAY: playPause(true); break;
     case KEY.PAUSE: playPause(false); break;
-    case KEY.UP: case KEY.CH_DOWN: step("prev"); break;
-    case KEY.DOWN: case KEY.CH_UP: step("next"); break;
+    case KEY.UP: step("prev", "▲"); break;
+    case KEY.CH_DOWN: step("prev", "CH-"); break;
+    case KEY.DOWN: step("next", "▼"); break;
+    case KEY.CH_UP: step("next", "CH+"); break;
     case KEY.LEFT: case KEY.REW: seekBy(-settings.get("seekBack")); break;
     case KEY.RIGHT: case KEY.FF: seekBy(settings.get("seekForward")); break;
     case KEY.BACK: case KEY.BACKSPACE: case KEY.ESC: show(menu); return;
@@ -319,6 +327,7 @@ function homeKey(k) {
 document.addEventListener("keydown", (e) => {
   const k = e.keyCode;
   if (DEBUG) sock.log(`key ${k}${e.repeat ? " repeat" : ""} on ${screen}`);
+  if (screen === "player") player.wake();   // OLED care: any key = full brightness (the key still does its job)
   if (promptDone) {   // the text prompt has the TV keyboard: only OK / Back are ours
     if (k === KEY.OK) { e.preventDefault(); promptDone($("prompt").querySelector("input").value); }
     else if (k === KEY.BACK || k === KEY.ESC) { e.preventDefault(); promptDone(null); }
@@ -360,6 +369,7 @@ function menuOkUp() {
 let wheelAcc = 0;
 document.addEventListener("wheel", (e) => {
   if (screen !== "player" || quick.isOpen) return;
+  player.wake("wheel");
   wheelAcc += e.deltaY;
   if (Math.abs(wheelAcc) < 100) return;
   const up = wheelAcc < 0;
