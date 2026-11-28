@@ -1,9 +1,9 @@
 // LTVPlayer: the player screen. Video: the picture full screen with the info overlay at the bottom (appears on every key
 // and pointer move, hides 5 s later while playing, stays while paused) and the lyrics drawn on the picture (Settings →
-// Lyrics; timed tracks only, a second language on top). Song: its cover in the middle. Hold OK = the lyrics screen
+// Lyrics; timed tracks only, a second language on top). Song: its cover in the middle. Blue = the lyrics screen
 // (port of TVLyricsScreen / LyricsPanel: title, progress and up next on the left, the lyrics on the right; time-synced
 // lines light up and scroll by themselves, untimed text follows the progress, a file without lyrics shows what is known
-// about it). The quick menu (views/quick.js) opens over it with Blue.
+// about it). The quick menu (views/quick.js) opens over it on hold OK.
 
 import { settings } from "../settings.js";
 import { chosen, second, textAt, cueAt } from "../lyrics.js";

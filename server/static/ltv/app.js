@@ -1,8 +1,9 @@
 // LTVPlayer: boot, socket wiring, screens and keys. Every user action is a command to the server; playback changes only
 // when its load / control comes back. Socket down (plan 9.5): OK still plays / pauses the element itself, ◀ / ▶ seek it,
 // next / previous say so.
-// Keys (0.6.0): Green = play / pause and Red = Stop on EVERY screen (his remote has no transport keys); in the player OK
-// = play / pause on release, hold OK >= 0.5 s = the lyrics screen, Blue = the quick menu, ▲▼ / CH = previous / next,
+// Keys (0.6.1): Green = play / pause and Red = Stop on EVERY screen (his remote has no transport keys); in the player OK
+// = play / pause on release, hold OK >= 0.5 s = the quick menu, Blue = the lyrics screen on / off (swapped in 0.6.1, his
+// wish), ▲▼ / CH = previous / next,
 // ◀ ▶ = jump back / forward (Settings → Playback). Stop: the picture goes away and the menu shows again; Play starts the
 // item again from 0:00 (server-side, like the TV Player).
 
@@ -18,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.6.0";
+export const LTV_VERSION = "0.6.1";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -243,24 +244,27 @@ async function switchCodec(codec) {
 let okDown = 0, okLast = 0, okHeld = false, holdTimer = null, holdFired = false, okSwallow = false;
 
 function playerKey(k, e) {
+  if (k === KEY.OK) {
+    const t = performance.now(), repeat = e.repeat || (okHeld && t - okLast < 600);
+    okLast = t;
+    // held: one press (the TV repeats keydown). Also keeps the repeats of the hold that opened the quick menu out of it.
+    if (repeat) return;
+    okHeld = true;
+    if (quick.isOpen) { quick.key(k); return; }
+    clearTimeout(holdTimer);
+    okDown = t;
+    holdFired = false;
+    holdTimer = setTimeout(() => {   // still down after HOLD_MS: the quick menu
+      holdTimer = null;
+      holdFired = true;
+      sock.log("key: OK held: quick menu");
+      quick.open();
+    }, HOLD_MS);
+    return;
+  }
   if (quick.isOpen && quick.key(k)) return;
   switch (k) {
-    case KEY.OK: {
-      const t = performance.now(), repeat = e.repeat || (okHeld && t - okLast < 600);
-      okLast = t;
-      if (repeat) return;   // held: one press (the TV repeats keydown)
-      okHeld = true;
-      clearTimeout(holdTimer);
-      okDown = t;
-      holdFired = false;
-      holdTimer = setTimeout(() => {   // still down after HOLD_MS: the lyrics screen
-        holdTimer = null;
-        holdFired = true;
-        player.toggleLyricsScreen("hold OK");
-      }, HOLD_MS);
-      return;
-    }
-    case KEY.BLUE: quick.open(); return;
+    case KEY.BLUE: player.toggleLyricsScreen("Blue"); quick.refresh(); return;
     case KEY.PLAY: playPause(true); break;
     case KEY.PAUSE: playPause(false); break;
     case KEY.UP: case KEY.CH_DOWN: step("prev"); break;
@@ -282,7 +286,6 @@ function okUp() {
     player.show();
   } else if (holdFired) {
     holdFired = false;
-    sock.log(`key: OK held ${Math.round(performance.now() - okDown)} ms`);
   }
 }
 

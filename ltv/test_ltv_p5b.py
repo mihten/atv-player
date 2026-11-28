@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer P5b checks (app 0.6.0 + server 0.33.0): his requests of 2026-11-26 in desktop Chromium as the ltv player of a
+"""LTVPlayer P5b checks (app 0.6.1 + server 0.33.0): his requests of 2026-11-26 in desktop Chromium as the ltv player of a
 THROWAWAY server with a fake atv-audio sink.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_p5b.py [outdir]
@@ -9,8 +9,8 @@ and Green = Play after it (the item loads again from 0:00) / Play-Pause on every
 (Theme text size + effects, Playback jump steps + Prefer videos + keep music, Lyrics language / second language / style,
 Mixes add / remove / rename, Sound with the headphones: equalizer, Boost, Loudness, custom equalizer, codec, lip sync,
 About); lyrics on the video (timed tracks, the chosen language, a second language on top, hidden for songs); the lyrics
-screen (hold OK: synced lines light up and scroll, plain lyrics, "no lyrics" card; a short OK still pauses); the quick
-menu (Blue: rows, love, shuffle, lyrics step, queue and back to the player, the sound rows only with the headphones);
+screen (Blue: synced lines light up and scroll, plain lyrics, "no lyrics" card; a short OK still pauses); the quick
+menu (hold OK: rows, love, shuffle, lyrics step, queue and back to the player, the sound rows only with the headphones);
 the headphones (route, muted picture, clock with the server's time, a start waits for the sink's ready, the output lost
 = pause + notice once, the web remote's choice); sized covers (?s=). Screenshots go to outdir.
 """
@@ -251,8 +251,8 @@ try:
 
         page.goto(BASE + "/static/ltv/index.html?from=test")
         check(wait(lambda: state()["players"] == 1 and js("ltv.screen") == "home"), "the page joins as the ltv player, Home")
-        check(wait(lambda: any(re.match(r"ltv 0\.6\.0 .* settings=0 sound=tv", l) for l in journal())),
-              "start line: ltv 0.6.0, no stored settings, sound=tv")
+        check(wait(lambda: any(re.match(r"ltv 0\.6\.1 .* settings=0 sound=tv", l) for l in journal())),
+              "start line: ltv 0.6.1, no stored settings, sound=tv")
         check(wait(lambda: frames("route") and frames("route")[-1] == {"type": "route", "sink": False}
                    and frames("output") and frames("output")[-1]["sound"] == "hdmi"),
               "on connect: route false + output report (sound hdmi)")
@@ -343,7 +343,7 @@ try:
         go_row("about"); ok()
         check(wait(lambda: top() == "set-about"), "About page")
         about = js("ltv.lists.top().list.entries.map(e => e.html ? e.html() : '').join(' ')")
-        check("0.6.0" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
+        check("0.6.1" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
         back()
 
         # ---------------------------------------------------------------- Mixes: add / remove / rename
@@ -406,9 +406,10 @@ try:
         check(wait(lambda: len(cmds("seek")) > n_seek and abs(cmds("seek")[-1]["position"] - (t0 + 15)) < 1.5),
               "▶ in the player jumps by the setting (+15 s)")
 
-        # ---------------------------------------------------------------- the lyrics screen (hold OK)
-        hold_ok()
-        check(wait(lambda: js("ltv.player.root.classList.contains('lyr')")), "hold OK: the lyrics screen")
+        # ---------------------------------------------------------------- the lyrics screen (Blue)
+        tvkey(406)
+        check(wait(lambda: js("ltv.player.root.classList.contains('lyr')")), "Blue: the lyrics screen")
+        check(not js("ltv.quick.isOpen"), "... Blue no longer opens the quick menu")
         check(wait(lambda: js("document.querySelectorAll('.p-lyr-line').length") == 4), "... the synced lines (4)")
         rc("seek", position=3.0)
         check(wait(lambda: js("(document.querySelector('.p-lyr-line.on') || {}).textContent") == "Second line"),
@@ -417,7 +418,7 @@ try:
         rc("seek", position=7.0)
         check(wait(lambda: js("(document.querySelector('.p-lyr-line.on') || {}).textContent") == "Last line"
                    and js("document.querySelector('.p-lyr-col').style.transform") != y1), "... later: the next line, the column scrolls")
-        check(state()["playing"] is True, "holding OK did not pause")
+        check(state()["playing"] is True, "Blue did not pause")
         page.screenshot(path=str(OUT / "p5b-lyrics-screen.png"))
         page.keyboard.press("Enter")
         check(wait(lambda: state()["playing"] is False), "a short OK on the lyrics screen: pause")
@@ -431,14 +432,31 @@ try:
         rc("play_ids", ids=[SB], start_index=0)
         check(wait(lambda: cur() == SB and "NO LYRICS IN THIS FILE" in page.inner_text(".p-lyr-col")), "no lyrics: the info card")
         check("Song Bare" in page.inner_text(".p-lyr-col") and "Test Album" in page.inner_text(".p-lyr-col"), "... title and album")
-        hold_ok()
-        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "hold OK again: the lyrics screen goes")
+        tvkey(406)
+        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "Blue again: the lyrics screen goes")
 
-        # ---------------------------------------------------------------- the quick menu (Blue)
+        # ---------------------------------------------------------------- the quick menu (hold OK)
         rc("play_ids", ids=[LC, PC, TC], start_index=0)
         check(wait(lambda: cur() == LC and js("ltv.screen") == "player"), "Lyric Clip again")
+        n_love, n_pp = len(cmds("love")), len(cmds("pause")) + len(cmds("play"))
+        tvkey(13, "keydown")   # held like on the TV: keydown repeats every ~50 ms, the first ones without e.repeat
+        for _ in range(16):
+            page.wait_for_timeout(50)
+            tvkey(13, "keydown")
+        tvkey(13, "keyup")
+        check(wait(lambda: js("ltv.quick.isOpen")), "hold OK: the quick menu opens")
+        page.wait_for_timeout(400)
+        check(js("ltv.quick.isOpen") and js("(document.querySelector('.qm-row.focused') || {}).dataset?.qm") == "close"
+              and len(cmds("love")) == n_love and state()["playing"] is True
+              and len(cmds("pause")) + len(cmds("play")) == n_pp,
+              "... the held key's repeats and its release do nothing in the menu (still open on Close, no pause)")
         tvkey(406)
-        check(wait(lambda: js("ltv.quick.isOpen")), "Blue: the quick menu opens")
+        check(wait(lambda: js("ltv.player.root.classList.contains('lyr')")) and js("ltv.quick.isOpen"),
+              "Blue with the menu open: the lyrics screen, the menu stays")
+        check(wait(lambda: js("(document.querySelector('.qm-row[data-qm=lyrscreen] .qm-v') || {}).textContent") == "On"),
+              "... its Lyrics screen row says On")
+        tvkey(406)
+        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "... Blue again: off")
         qrows = js("[...document.querySelectorAll('.qm-row')].map(r => r.dataset.qm)")
         check(qrows == ["close", "love", "shuffle", "queue", "subs", "lyrscreen", "output", "version"],
               f"rows without the headphones ({qrows})")
@@ -474,7 +492,8 @@ try:
         check(wait(lambda: js("ltv.screen") == "lists" and top() == "queue"), "Queue: the queue screen")
         back()
         check(wait(lambda: js("ltv.screen") == "player"), "Back from that queue: the player again")
-        tvkey(406)
+        hold_ok()
+        check(wait(lambda: js("ltv.quick.isOpen")), "hold OK after the queue: the menu again")
         page.keyboard.press("Escape")
         check(wait(lambda: not js("ltv.quick.isOpen") and js("ltv.screen") == "player"), "Back closes the menu, the player stays")
 
@@ -564,7 +583,8 @@ try:
         page.wait_for_timeout(500)
 
         # the quick menu now has the sound rows; volume = the headphones'
-        tvkey(406)
+        hold_ok()
+        check(wait(lambda: js("ltv.quick.isOpen")), "hold OK: the quick menu (headphones)")
         qrows = js("[...document.querySelectorAll('.qm-row')].map(r => r.dataset.qm)")
         check(all(r in qrows for r in ("volume", "eq", "loud", "boost")), f"quick menu with the headphones: volume + sound rows ({qrows})")
         qm_go("volume"); page.keyboard.press("ArrowRight")

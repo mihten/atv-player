@@ -12,7 +12,7 @@ export const DEFAULTS = {
   keepMusic: true,       // leaving the app: music keeps playing, music videos pause
   subsOn: true, subLang: "", subLang2: "",   // lyrics on the video: language "" = the file's default; second = on top
   subSize: 0, subFont: "", subColor: "#ffffff", subBold: false, subOutline: 4, subBox: 0, subMargin: 0,
-  lyricsScreen: false,   // the lyrics instead of the picture (hold OK), remembered like on the Apple TV
+  lyricsScreen: false,   // the lyrics instead of the picture (Blue), remembered like on the Apple TV
   headphones: false,     // sound output: false = the TV's own sound, true = the atv-audio headphones
   lipSync: -100,         // ms, the headphones' sound earlier (-) / later (+), -200..400 in 20 ms steps
   mixSubfolders: true,   // Settings → Mixes → Add folder: include its subfolders

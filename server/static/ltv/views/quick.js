@@ -1,9 +1,9 @@
-// LTVPlayer: the quick menu over the player (Blue; port of Sources/QuickPanel.swift, rows as on the Apple TV): Close
+// LTVPlayer: the quick menu over the player (hold OK; port of Sources/QuickPanel.swift, rows as on the Apple TV): Close
 // menu, Volume (headphones only), ♥ Love, Shuffle, Queue ("n of N", opens the queue), Lyrics / subtitles (◀▶ File
 // default / English / Croatian / Off), Lyrics screen, Audio output (TV / Headphones), Equalizer (a list under the row),
 // Loudness, Boost (◀▶) and Version (a list). The sound rows exist only with the headphones: the TV's own sound cannot be
 // changed by an app. Keys: ▲▼ rows, OK = the row's action (opens / confirms a list), ◀▶ = previous / next value, Back
-// closes an open list, then the menu; Blue closes it; Green / Red keep playing / stopping (app.js).
+// closes an open list, then the menu; Blue (lyrics screen), Green / Red (play / pause, stop) still work (app.js).
 
 import { icon } from "../icons.js";
 import { esc } from "../api.js";
@@ -147,8 +147,7 @@ export class QuickMenu {
       else if (k === 40) this.list.index = Math.min(n - 1, this.list.index + 1);
       else if (k === 13) { r?.pick(this.list.index); this.list = null; }
       else if (k === 461 || k === 8 || k === 27) this.list = null;
-      else if (k === 406) this.close();
-      else return k === 37 || k === 39;   // ◀▶ do nothing in a list
+      else return k === 37 || k === 39;   // ◀▶ do nothing in a list (Blue goes on to app.js: the lyrics screen)
       this.render();
       return true;
     }
@@ -156,7 +155,7 @@ export class QuickMenu {
     else if (k === 40) this.sel = Math.min(rows.length - 1, this.sel + 1);
     else if (k === 37 || k === 39) rows[this.sel]?.step?.(k === 39 ? 1 : -1);
     else if (k === 13) rows[this.sel]?.act();
-    else if (k === 461 || k === 8 || k === 27 || k === 406) { this.close(); return true; }
+    else if (k === 461 || k === 8 || k === 27) { this.close(); return true; }
     else return false;
     if (this.isOpen) this.render();
     return true;
