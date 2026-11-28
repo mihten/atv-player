@@ -98,6 +98,7 @@ class ThemePage extends SettingsPage {
       this.pref("look", "palette", "Look"),
       toggle("effects", "layers", "Theme effects", settings.get("effects"), (v) => settings.set("effects", v)),
       this.pref("textSize", "playlists", "Text size in music & folder lists"),
+      this.pref("dimAfter", "tv", "Dim the player when idle"),
     ];
   }
 }

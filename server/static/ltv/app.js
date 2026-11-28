@@ -19,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.8.0";
+export const LTV_VERSION = "0.8.1";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";

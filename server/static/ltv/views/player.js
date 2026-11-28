@@ -19,8 +19,8 @@ const SUB_SIZE = { 0: 46, 20: 36, 16: 46, 12: 56, 9: 68 };
 const SUB_FONT = { "": '"Nunito", sans-serif', serif: 'Georgia, "Times New Roman", serif', sans: 'Arial, Helvetica, sans-serif',
                    mono: '"Courier New", monospace' };
 const ANCHOR = 0.38;   // where the current synced line sits in the lyrics panel (LyricsMetrics.tv)
-const DIM_AFTER = 60000;     // OLED care: a still player screen dims after a minute without a key ...
-const DRIFT_EVERY = 60000;   // ... and its content moves a few px every minute
+const DRIFT_EVERY = 60000;   // OLED care: a still player screen moves a few px every minute (always on); it also dims
+                             // when Settings → Theme → Dim the player when idle is on (off by default)
 const DRIFT = [[0, 0], [6, 0], [6, 6], [0, 6], [-6, 6], [-6, 0], [-6, -6], [0, -6], [6, -6]];
 const SONG_FPS_LOGS = 8;
 const SONG_FPS_AFTER = 4000;   // ms after the song player came up playing (the cover's spring + the fade are over)
@@ -131,8 +131,7 @@ export class PlayerView {
     // OLED care (plan 12.4): a still screen (song player, paused video, lyrics screen) dims after DIM_AFTER without a
     // key and moves a few px every DRIFT_EVERY; a key (app.js wake) or a new item brings it back at once.
     this.keyAt = performance.now();
-    this.dimAfter = opts.dimAfter || DIM_AFTER;       // ?oled=<ms> in tests (app.js)
-    this.driftEvery = opts.driftEvery || DRIFT_EVERY;
+    this.driftEvery = opts.driftEvery || DRIFT_EVERY;   // ?oled=<ms> in tests (app.js)
     this.dimmed = false;
     this.driftStep = 0;
     this.driftAt = performance.now();
@@ -280,6 +279,14 @@ export class PlayerView {
     this.log(`oled: awake (${why})`);
   }
 
+  /** ms without a key before a still screen dims: Settings → Theme → Dim the player when idle (0 = off, the default:
+   *  the TV's own screen saver covers it, his choice 2026-11-28); ?oled=<ms> (tests) replaces the minutes when it is on. */
+  dimMs() {
+    const min = settings.get("dimAfter");
+    if (!min) return 0;
+    return this.opts.dimAfter || min * 60000;
+  }
+
   oledTick() {
     const what = this.stillScreen(), now = performance.now();
     if (!what) {
@@ -288,7 +295,8 @@ export class PlayerView {
       this.driftAt = now;
       return;
     }
-    if (!this.dimmed && now - this.keyAt >= this.dimAfter) {
+    if (this.dimmed && !this.dimMs()) this.wake("setting off");
+    if (!this.dimmed && this.dimMs() > 0 && now - this.keyAt >= this.dimMs()) {
       this.dimmed = true;
       this.root.classList.add("dim");
       this.log(`oled: dimmed after ${Math.round((now - this.keyAt) / 1000)} s without a key (${what})`);

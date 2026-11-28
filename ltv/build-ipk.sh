@@ -4,6 +4,8 @@
 # Server address: LTV_SERVER (e.g. http://<server>:8080) from the environment or the git-ignored ../local.env.
 # Output: out-dir, else LTV_OUT, else the current directory; <id>_<version>_all.ipk. An existing file is never
 # overwritten: bump "version" in launcher/appinfo.json for a new build. The IPK is not committed.
+# LTV_VARIANT=4k: the 4K-UI trial build = its own app (id com.mihten.ltvplayer4k, title "LTVPlayer 4K", resolution
+# 3840x2160), installed next to the 1080p one; the hosted app is the same and draws its 1920-wide layout zoomed to the window.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 [ -f "$HERE/../local.env" ] && . "$HERE/../local.env"
@@ -16,6 +18,11 @@ field() { sed -n "s/^ *\"$1\": *\"\([^\"]*\)\".*/\1/p" "$HERE/launcher/appinfo.j
 ID=$(field id)
 VER=$(field version)
 [ -n "$ID" ] && [ -n "$VER" ] || { echo "appinfo.json: id / version not found" >&2; exit 1; }
+case "${LTV_VARIANT:-}" in
+  "") ;;
+  4k) ID="${ID}4k" ;;
+  *) echo "LTV_VARIANT: only 4k is known" >&2; exit 1 ;;
+esac
 IPK="$OUT/${ID}_${VER}_all.ipk"
 [ -e "$IPK" ] && { echo "$IPK exists: bump the version in launcher/appinfo.json" >&2; exit 1; }
 
@@ -25,6 +32,12 @@ APP="$W/data/usr/palm/applications/$ID"
 PKG="$W/data/usr/palm/packages/$ID"
 mkdir -p "$APP" "$PKG" "$W/control"
 for f in appinfo.json index.html icon.png largeIcon.png; do cp "$HERE/launcher/$f" "$APP/"; done
+if [ "${LTV_VARIANT:-}" = 4k ]; then
+  sed -i -e "s/\"id\": *\"[^\"]*\"/\"id\": \"$ID\"/" -e 's/"title": *"[^"]*"/"title": "LTVPlayer 4K"/' \
+         -e 's/"resolution": *"[^"]*"/"resolution": "3840x2160"/' "$APP/appinfo.json"
+  grep -q "\"id\": \"$ID\"" "$APP/appinfo.json" && grep -q '"resolution": "3840x2160"' "$APP/appinfo.json" \
+    || { echo "4k: appinfo.json not rewritten" >&2; exit 1; }
+fi
 printf 'window.LTV_SERVER = "%s";\nwindow.LTV_LAUNCHER = "%s";\n' "${LTV_SERVER%/}" "$VER" > "$APP/config.js"
 printf '{\n  "id": "%s",\n  "version": "%s",\n  "app": "%s"\n}\n' "$ID" "$VER" "$ID" > "$PKG/packageinfo.json"
 SIZE=$(du -sk "$W/data" | cut -f1)

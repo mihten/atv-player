@@ -17,6 +17,8 @@ export const DEFAULTS = {
   headphones: false,     // sound output: false = the TV's own sound, true = the atv-audio headphones
   lipSync: -100,         // ms, the headphones' sound earlier (-) / later (+), -200..400 in 20 ms steps
   mixSubfolders: true,   // Settings → Mixes → Add folder: include its subfolders
+  dimAfter: 0,           // Settings → Theme: dim a still player screen after N minutes without a key; 0 = off (his
+                         // choice 2026-11-28: the TV's own screen saver covers it)
 };
 
 export const CHOICES = {
@@ -33,6 +35,7 @@ export const CHOICES = {
   subBox: [[0, "None"], [96, "Light"], [176, "Dark"], [255, "Solid"]],
   subMargin: [[0, "Bottom"], [40, "Slightly higher"], [100, "Higher"]],
   lipSync: Array.from({ length: 31 }, (_, i) => -200 + i * 20).map((ms) => [ms, ms > 0 ? `+${ms} ms` : ms < 0 ? `\u2212${-ms} ms` : "0 ms"]),
+  dimAfter: [[0, "Off"], [1, "After 1 minute"], [5, "After 5 minutes"], [10, "After 10 minutes"]],
 };
 
 export const label = (key, value) => (CHOICES[key] || []).find(([v]) => v === value)?.[1] ?? String(value);

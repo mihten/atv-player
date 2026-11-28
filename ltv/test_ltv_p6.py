@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer P6 (app 0.8.0): the Aurora song player, OLED care and the song player's FPS lines in desktop Chromium as
+"""LTVPlayer P6 (app 0.8.1): the Aurora song player, OLED care and the song player's FPS lines in desktop Chromium as
 the ltv player of a THROWAWAY server.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_p6.py [outdir]
@@ -178,8 +178,13 @@ try:
 
         page.goto(BASE + f"/static/ltv/index.html?from=test&oled={OLED_MS}")
         check(wait(lambda: state()["players"] == 1 and js("ltv.screen") == "home"), "the page joins as the ltv player, Home")
-        check(wait(lambda: any(re.match(r"ltv 0\.8\.0 ", l) for l in journal())), "start line: ltv 0.8.0")
+        check(wait(lambda: any(re.match(r"ltv 0\.8\.1 ", l) for l in journal())), "start line: ltv 0.8.1")
         check(js("document.body.dataset.look") == "aurora", "default look: Aurora")
+        check(js("ltv.settings.get('dimAfter')") == 0, "default: Dim the player when idle = Off (his choice)")
+        js("ltv.lists.open('set-theme')")
+        check(wait(lambda: "Dim the player when idle" in js("document.getElementById('lists').textContent")
+                   and "Off" in js("document.getElementById('lists').textContent")), "Settings → Theme: 'Dim the player when idle  Off'")
+        js("ltv.lists.back()")
 
         # ---------------------------------------------------------------- Aurora song player
         rc("play_ids", ids=[S1, S2], start_index=0)
@@ -208,7 +213,13 @@ try:
               "journal: one 'fps song aurora #<id>: … backdrop drifting' line")
 
         # ---------------------------------------------------------------- OLED care on the song player
-        check(wait(lambda: dimmed(), 6), f"no key for {OLED_MS / 1000} s: the song player dims")
+        # the default (dim off): quiet for longer than the test time = no dim, but the content still moves
+        check(not dimmed(), "dim Off (default): the song player does not dim")
+        check(wait(lambda: css(".pa", "translate") not in ("none", "0px", "0px 0px"), 6),
+              f"... but it still moves a few px (drift is always on: {css('.pa', 'translate')})")
+        check(not dimmed() and n_lines(r"oled: dimmed") == 0, "... still not dimmed, no 'oled: dimmed' line")
+        js("ltv.settings.set('dimAfter', 1)")   # 'After 1 minute'; ?oled= shortens it to OLED_MS
+        check(wait(lambda: dimmed(), 6), f"dim on: no key for {OLED_MS / 1000} s: the song player dims")
         check(n_lines(r"oled: dimmed after \d+ s without a key \(song\)") >= 1, "journal: 'oled: dimmed after … (song)'")
         check(wait(lambda: css(".p-dim", "opacity") == "0.65", 4), "... to 35 % (a black layer at 0.65)")
         check(wait(lambda: css(".pa", "translate") not in ("none", "0px", "0px 0px"), 6), f"... the content moved a few px ({css('.pa', 'translate')})")
@@ -293,6 +304,13 @@ try:
         page.keyboard.press("Escape")
         check(wait(lambda: js("ltv.screen") == "home"), "Back: Home")
         check(wait(lambda: not dimmed(), 3), "left the player: no dim left behind")
+        # the setting back to Off while dimmed: awake at once
+        rc("play_ids", ids=[S1], start_index=0)
+        check(wait(lambda: cur() == S1 and js("ltv.screen") == "player"), "a song again")
+        check(wait(lambda: dimmed(), 6), "... dims (setting still on)")
+        js("ltv.settings.set('dimAfter', 0)")
+        check(wait(lambda: not dimmed(), 3) and wait(lambda: n_lines(r"oled: awake \(setting off\)") == 1),
+              "Dim set to Off while dimmed: full brightness at once ('oled: awake (setting off)')")
 
         check(not errors, f"no page errors ({errors[:2]})")
         check(not any(l.startswith("JSERR") for l in journal()), "no JSERR lines")
