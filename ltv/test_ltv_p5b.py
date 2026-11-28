@@ -9,8 +9,8 @@ and Green = Play after it (the item loads again from 0:00) / Play-Pause on every
 (Theme text size + effects, Playback jump steps + Prefer videos + keep music, Lyrics language / second language / style,
 Mixes add / remove / rename, Sound with the headphones: equalizer, Boost, Loudness, custom equalizer, codec, lip sync,
 About); lyrics on the video (timed tracks, the chosen language, a second language on top, hidden for songs); the lyrics
-screen (Blue: synced lines light up and scroll, plain lyrics, "no lyrics" card; a short OK still pauses); the quick
-menu (hold OK: rows, love, shuffle, lyrics step, queue and back to the player, the sound rows only with the headphones);
+screen (Yellow: synced lines light up and scroll, plain lyrics, "no lyrics" card; a short OK still pauses); the quick
+menu (Blue / hold OK: rows, love, shuffle, lyrics step, queue and back to the player, the sound rows only with the headphones);
 the headphones (route, muted picture, clock with the server's time, a start waits for the sink's ready, the output lost
 = pause + notice once, the web remote's choice); sized covers (?s=). Screenshots go to outdir.
 """
@@ -357,7 +357,7 @@ try:
         go_row("about"); ok()
         check(wait(lambda: top() == "set-about"), "About page")
         about = js("ltv.lists.top().list.entries.map(e => e.html ? e.html() : '').join(' ')")
-        check("0.7.2" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
+        check("0.7.2" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about and "Yellow" in about, "About: versions + key help")
         back()
 
         # ---------------------------------------------------------------- Mixes: add / remove / rename
@@ -420,10 +420,10 @@ try:
         check(wait(lambda: len(cmds("seek")) > n_seek and abs(cmds("seek")[-1]["position"] - (t0 + 15)) < 1.5),
               "▶ in the player jumps by the setting (+15 s)")
 
-        # ---------------------------------------------------------------- the lyrics screen (Blue)
-        tvkey(406)
-        check(wait(lambda: js("ltv.player.root.classList.contains('lyr')")), "Blue: the lyrics screen")
-        check(not js("ltv.quick.isOpen"), "... Blue no longer opens the quick menu")
+        # ---------------------------------------------------------------- the lyrics screen (Yellow)
+        tvkey(405)
+        check(wait(lambda: js("ltv.player.root.classList.contains('lyr')")), "Yellow: the lyrics screen")
+        check(not js("ltv.quick.isOpen"), "... Yellow does not open the quick menu")
         check(wait(lambda: js("document.querySelectorAll('.p-lyr-line').length") == 4), "... the synced lines (4)")
         rc("seek", position=3.0)
         check(wait(lambda: js("(document.querySelector('.p-lyr-line.on') || {}).textContent") == "Second line"),
@@ -432,7 +432,7 @@ try:
         rc("seek", position=7.0)
         check(wait(lambda: js("(document.querySelector('.p-lyr-line.on') || {}).textContent") == "Last line"
                    and js("document.querySelector('.p-lyr-col').style.transform") != y1), "... later: the next line, the column scrolls")
-        check(state()["playing"] is True, "Blue did not pause")
+        check(state()["playing"] is True, "Yellow did not pause")
         page.screenshot(path=str(OUT / "p5b-lyrics-screen.png"))
         page.keyboard.press("Enter")
         check(wait(lambda: state()["playing"] is False), "a short OK on the lyrics screen: pause")
@@ -446,8 +446,8 @@ try:
         rc("play_ids", ids=[SB], start_index=0)
         check(wait(lambda: cur() == SB and "NO LYRICS IN THIS FILE" in page.inner_text(".p-lyr-col")), "no lyrics: the info card")
         check("Song Bare" in page.inner_text(".p-lyr-col") and "Test Album" in page.inner_text(".p-lyr-col"), "... title and album")
-        tvkey(406)
-        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "Blue again: the lyrics screen goes")
+        tvkey(405)
+        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "Yellow again: the lyrics screen goes")
 
         # ---------------------------------------------------------------- the quick menu (hold OK)
         rc("play_ids", ids=[LC, PC, TC], start_index=0)
@@ -464,13 +464,19 @@ try:
               and len(cmds("love")) == n_love and state()["playing"] is True
               and len(cmds("pause")) + len(cmds("play")) == n_pp,
               "... the held key's repeats and its release do nothing in the menu (still open on Close, no pause)")
-        tvkey(406)
+        tvkey(405)
         check(wait(lambda: js("ltv.player.root.classList.contains('lyr')")) and js("ltv.quick.isOpen"),
-              "Blue with the menu open: the lyrics screen, the menu stays")
+              "Yellow with the menu open: the lyrics screen, the menu stays")
         check(wait(lambda: js("(document.querySelector('.qm-row[data-qm=lyrscreen] .qm-v') || {}).textContent") == "On"),
               "... its Lyrics screen row says On")
+        tvkey(405)
+        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "... Yellow again: off")
         tvkey(406)
-        check(wait(lambda: not js("ltv.player.root.classList.contains('lyr')")), "... Blue again: off")
+        check(wait(lambda: not js("ltv.quick.isOpen")), "Blue with the menu open: it closes")
+        tvkey(406)
+        check(wait(lambda: js("ltv.quick.isOpen")) and not js("ltv.player.root.classList.contains('lyr')"),
+              "Blue again: the quick menu opens (no lyrics screen)")
+        check(any(l == "key: Blue: quick menu" for l in journal()), "... journal: key: Blue: quick menu")
         qrows = js("[...document.querySelectorAll('.qm-row')].map(r => r.dataset.qm)")
         check(qrows == ["close", "love", "shuffle", "queue", "subs", "lyrscreen", "output", "version"],
               f"rows without the headphones ({qrows})")

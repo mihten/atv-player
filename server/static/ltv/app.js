@@ -2,8 +2,8 @@
 // when its load / control comes back. Socket down (plan 9.5): OK still plays / pauses the element itself, ◀ / ▶ seek it,
 // next / previous say so.
 // Keys (0.6.1): Green = play / pause and Red = Stop on EVERY screen (his remote has no transport keys); in the player OK
-// = play / pause on release, hold OK >= 0.5 s = the quick menu, Blue = the lyrics screen on / off (swapped in 0.6.1, his
-// wish), ▲▼ / CH = previous / next,
+// = play / pause on release, Blue = the quick menu (open / close; hold OK opens it too), Yellow = the lyrics screen on / off
+// (0.7.2, his choice: with the Magic Remote pointer shown a hold does not arrive), ▲▼ / CH = previous / next,
 // ◀ ▶ = jump back / forward (Settings → Playback). Stop: the picture goes away and the menu shows again; Play starts the
 // item again from 0:00 (server-side, like the TV Player).
 
@@ -266,7 +266,8 @@ function playerKey(k, e) {
   }
   if (quick.isOpen && quick.key(k)) return;
   switch (k) {
-    case KEY.BLUE: player.toggleLyricsScreen("Blue"); quick.refresh(); return;
+    case KEY.BLUE: if (quick.isOpen) quick.close(); else { sock.log("key: Blue: quick menu"); quick.open(); } return;
+    case KEY.YELLOW: player.toggleLyricsScreen("Yellow"); quick.refresh(); return;
     case KEY.PLAY: playPause(true); break;
     case KEY.PAUSE: playPause(false); break;
     case KEY.UP: case KEY.CH_DOWN: step("prev"); break;
@@ -329,7 +330,7 @@ document.addEventListener("keydown", (e) => {
     if (k === KEY.OK) okSwallow = true;
     return;
   }
-  if (e.repeat && (k === KEY.RED || k === KEY.GREEN || k === KEY.STOP || k === KEY.BLUE)) return;
+  if (e.repeat && (k === KEY.RED || k === KEY.GREEN || k === KEY.STOP || k === KEY.BLUE || k === KEY.YELLOW)) return;
   if (k === KEY.GREEN) { playPause(); if (screen === "player") player.show(); quick.refresh(); return; }
   if (k === KEY.RED || k === KEY.STOP) { stop(); return; }
   if (k === KEY.OK && screen !== "player") {   // menus: remember the press, act on its release (0.7.1, his report)

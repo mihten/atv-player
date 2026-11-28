@@ -1,9 +1,9 @@
-// LTVPlayer: the quick menu over the player (hold OK; port of Sources/QuickPanel.swift, rows as on the Apple TV): Close
+// LTVPlayer: the quick menu over the player (Blue or hold OK; port of Sources/QuickPanel.swift, rows as on the Apple TV): Close
 // menu, ♥ Love, Shuffle, Queue ("n of N", opens the queue), Lyrics / subtitles (◀▶ File
 // default / English / Croatian / Off), Lyrics screen, Audio output (TV / Headphones), Volume (headphones only), Equalizer (a list under the row),
 // Loudness, Boost (◀▶) and Version (a list). The sound rows exist only with the headphones: the TV's own sound cannot be
 // changed by an app. Keys: ▲▼ rows, OK = the row's action (opens / confirms a list), ◀▶ = previous / next value, Back
-// closes an open list, then the menu; Blue (lyrics screen), Green / Red (play / pause, stop) still work (app.js).
+// closes an open list, then the menu; Blue closes it; Yellow (lyrics screen), Green / Red (play / pause, stop) still work (app.js).
 
 import { icon } from "../icons.js";
 import { esc } from "../api.js";
@@ -150,7 +150,7 @@ export class QuickMenu {
       else if (k === 40) this.list.index = Math.min(n - 1, this.list.index + 1);
       else if (k === 13) { r?.pick(this.list.index); this.list = null; }
       else if (k === 461 || k === 8 || k === 27) this.list = null;
-      else return k === 37 || k === 39;   // ◀▶ do nothing in a list (Blue goes on to app.js: the lyrics screen)
+      else return k === 37 || k === 39;   // ◀▶ do nothing in a list (Blue / Yellow go on to app.js)
       this.render();
       return true;
     }
