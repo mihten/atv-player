@@ -36,6 +36,26 @@ export class PlayerView {
     this.visible = false;
     root.innerHTML = `
       <div class="p-cover"><img alt=""></div>
+      <div class="pn">
+        <div class="pn-num"></div>
+        <img class="pn-art" alt="">
+        <div class="pn-bottom">
+          <div class="pn-artist"></div><div class="pn-title"></div><div class="pn-facts"></div>
+          <div class="pn-row"><div class="pn-clock"><span class="pn-el"></span><span class="pn-dur"></span></div><div class="pn-next"></div></div>
+          <div class="pn-bar"><i class="pn-fill"></i></div>
+        </div>
+      </div>
+      <div class="pv">
+        <div class="pv-deck"><div class="pv-disc"><img class="pv-label" alt=""><i class="pv-hole"></i></div><div class="pv-shine"></div>
+          <div class="pv-arm"><i></i></div></div>
+        <div class="pv-text">
+          <div class="pv-side"></div>
+          <div class="pv-title"></div><div class="pv-artist"></div><div class="pv-album"></div><div class="pv-chips"></div>
+          <div class="pv-prog"><div class="pv-line"><i class="pv-fill"></i><b class="pv-needle"></b></div>
+            <div class="pv-times"><span class="pv-el"></span><span class="pv-dur"></span></div></div>
+          <div class="pv-next"></div>
+        </div>
+      </div>
       <div class="p-subs"><div class="p-sub2"></div><div class="p-sub1"></div></div>
       <div class="p-lyr">
         <div class="p-lyr-bd"></div>
@@ -78,7 +98,11 @@ export class PlayerView {
       if (k.startsWith("sub")) { this.applySubStyle(); this.lyr.key = ""; this.tickLyrics(); }
       if (k === "lyricsScreen") this.applyLyricsScreen();
       if (k === "effects") this.applyLyricsScreen();
+      if (k === "look") this.update();
     });
+    this.spin = null;   // the Vinyl record's turn (Web Animations: one compositor transform, see spinTick)
+    this.spinRate = 0;
+    this.spinTimer = null;
     setInterval(() => this.tickLyrics(), 250);
     this.applyLyricsScreen();
   }
@@ -98,10 +122,21 @@ export class PlayerView {
     this.$(".p-lyr-artist").textContent = it && it.artist ? it.artist : "";
     this.$(".p-lyr-album").textContent = it && song ? [it.album, it.year ? String(it.year).slice(0, 4) : null].filter(Boolean).join(" · ") : "";
     const art = it && it.art ? `/art/${it.id}` : "";
-    for (const [img, src] of [[this.$(".p-thumb"), art ? `${art}?s=320` : ""], [this.$(".p-cover img"), art]]) {
+    for (const [img, src] of [[this.$(".p-thumb"), art ? `${art}?s=320` : ""], [this.$(".p-cover img"), art],
+                              [this.$(".pn-art"), art ? `${art}?s=640` : ""], [this.$(".pv-label"), art ? `${art}?s=320` : ""]]) {
       img.style.visibility = src ? "" : "hidden";
       if (src) img.src = src; else img.removeAttribute("src");
     }
+    // Noir / Vinyl song screens (PlayerScreens.swift NoirPlayer / VinylPlayer)
+    const year = it && it.year ? String(it.year).slice(0, 4) : null;
+    this.$(".pn-num").textContent = it && it.track > 0 ? String(it.track).padStart(2, "0") : "";
+    this.$(".pn-artist").textContent = it ? it.artist || "" : "";
+    this.$(".pn-title").textContent = it ? it.title || "" : "";
+    this.$(".pn-facts").textContent = it ? [it.album, year, ...(it.badges || [])].filter(Boolean).join("   /   ") : "";
+    this.$(".pv-title").textContent = it ? it.title || "" : "";
+    this.$(".pv-artist").textContent = it ? it.artist || "" : "";
+    this.$(".pv-album").textContent = it ? [it.album, year].filter(Boolean).join(", ") : "";
+    this.$(".pv-chips").innerHTML = ((it && it.badges) || []).slice(0, 2).map((b) => `<span class="chip">${esc(b)}</span>`).join("");
     this.preview = null;
     this.lyr.key = "";
     if (it) this.opts.lyrics?.load(it).then(() => { this.lyr.key = ""; this.tickLyrics(); });
@@ -123,6 +158,12 @@ export class PlayerView {
     this.$(".p-lyr-next").innerHTML = up.length ? `<div class="hero-nlabel">UP NEXT</div>${up.map((n, i) => `
       <div class="p-lyr-nrow"><span class="p-lyr-num">${i + 1}</span><div class="hero-ntext"><div class="hero-ntitle">${esc(n.title)}</div>
       <div class="hero-nartist">${esc(n.artist || "")}</div></div></div>`).join("")}` : "";
+    const n = up[0];
+    this.$(".pn-next").innerHTML = n ? `<div class="pn-nl">NEXT</div><div class="pn-nt">${esc(n.title)}</div>
+      <div class="pn-na">${esc(n.artist || "")}</div>` : "";
+    this.$(".pv-next").innerHTML = up.length ? `<div class="pv-nl">Up next</div>${up.map((x, i) => `
+      <div class="pv-nrow"><span class="pv-num">${i + 1}</span><span class="pv-nt">${esc(x.title)}</span>
+      <span class="pv-na">${esc(x.artist || "")}</span></div>`).join("")}` : "";
   }
 
   update() {
@@ -137,17 +178,61 @@ export class PlayerView {
     this.$(".p-rem").textContent = e.item && d ? "-" + clock(d - t) : "";
     this.$(".p-lyr-el").textContent = e.item ? formatTime(t) : "";
     this.$(".p-lyr-rem").textContent = e.item && d ? "-" + formatTime(d - t) : "";
+    this.$(".pn-fill").style.transform = `scaleX(${f})`;
+    this.$(".pv-fill").style.transform = `scaleX(${f})`;
+    this.$(".pv-needle").style.transform = `translateX(${Math.round(f * 760)}px)`;
+    this.$(".pn-el").textContent = e.item ? formatTime(t) : "";
+    this.$(".pn-dur").textContent = e.item && d ? "/ " + formatTime(d) : "";
+    this.$(".pv-el").textContent = e.item ? formatTime(t) : "";
+    this.$(".pv-dur").textContent = e.item && d ? formatTime(d) : "";
     const up = this.state && this.state.upcoming && this.state.upcoming[0];
     this.$(".p-next").textContent = up ? `Next: ${up.title}` : "";
     const paused = !!e.item && !e.isPlaying();
     this.$(".p-state").textContent = !e.item ? "" : e.stopped ? "■" : paused ? "❚❚" : "▶";
     this.$(".p-lyr-state").textContent = e.stopped ? "STOPPED" : paused ? "PAUSED" : "NOW PLAYING";
+    const track = this.item && this.item.track > 0 ? this.item.track : 0;
+    this.$(".pv-side").textContent = track ? `SIDE A  ·  TRACK ${track}` : paused || e.stopped ? "PAUSED" : "NOW SPINNING";
     this.root.classList.toggle("paused", paused);
     this.root.classList.toggle("playing", !!e.item && !paused);
     if (paused) this.show(true);
     else if (this.wasPaused) this.show();   // playing again: the overlay goes HIDE_AFTER later
     this.wasPaused = paused;
     this.backdrop.still(!this.lyricsShown() || !settings.get("effects"));
+    this.spinTick();
+  }
+
+  // ---------------------------------------------------------------- Vinyl: the record turns
+  // Only on the visible song player with Vinyl + Theme effects on, never under a menu (menu frame rate, his rule
+  // 2026-11-28). 33⅓ rpm = 1.8 s a turn; spin-up / spin-down like SpinState (speed += (target - speed) * dt * 2.2):
+  // the rate is stepped every 100 ms while it changes, then the timer stops.
+  spinWanted() {
+    return settings.get("look") === "vinyl" && settings.get("effects") && this.visible && !this.lyricsShown()
+      && !!this.item && this.item.kind === "audio" && this.engine.isPlaying();
+  }
+
+  spinTick() {
+    const target = this.spinWanted() ? 1 : 0;
+    if (!this.spin) {
+      if (!target) return;
+      this.spin = this.$(".pv-disc").animate([{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+                                             { duration: 1800, iterations: Infinity });
+      this.spin.pause();
+    }
+    if (!target && (!settings.get("effects") || !this.visible || settings.get("look") !== "vinyl")) {
+      clearTimeout(this.spinTimer); this.spinTimer = null;   // effects off / screen gone: stop at once
+      this.spinRate = 0; this.spin.pause();
+      return;
+    }
+    if (this.spinTimer) return;
+    const step = () => {
+      const want = this.spinWanted() ? 1 : 0;
+      this.spinRate += (want - this.spinRate) * 0.22;
+      if (Math.abs(want - this.spinRate) < 0.01) this.spinRate = want;
+      if (this.spinRate === 0) this.spin.pause();
+      else { this.spin.playbackRate = this.spinRate; if (this.spin.playState !== "running") this.spin.play(); }
+      this.spinTimer = this.spinRate === want ? null : setTimeout(step, 100);
+    };
+    if (target !== this.spinRate) step();
   }
 
   /** Shows the overlay; while playing it hides again after HIDE_AFTER. */

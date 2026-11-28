@@ -79,7 +79,7 @@ class RootPage extends SettingsPage {
     const snd = st.sound || {}, presets = st.sound_presets || [];
     const eq = (presets.find(([v]) => v === snd.preset) || [null, "Off"])[1];
     const subs = !settings.get("subsOn") ? "Off" : label("subLang", settings.get("subLang")).replace("Default (as set in the file)", "On");
-    const out = [nav("theme", "palette", "Theme", "Aurora", () => this.lists.open("set-theme"))];
+    const out = [nav("theme", "palette", "Theme", label("look", settings.get("look")), () => this.lists.open("set-theme"))];
     if (st.mixes) out.push(nav("mixes", "shuffle", "Mixes", st.mixes.map((m) => m.name).join(", "), () => this.lists.open("set-mixes")));
     out.push(nav("sound", audio.on ? "headphones" : "speaker", "Sound", audio.on ? `Headphones · ${eq}` : "TV",
                  () => this.lists.open("set-sound")));
@@ -95,7 +95,7 @@ class ThemePage extends SettingsPage {
   constructor(lists) { super(lists, "set-theme", {}, "Theme"); }
   entries() {
     return [
-      info("look", "Look", "Aurora"),
+      this.pref("look", "palette", "Look"),
       toggle("effects", "layers", "Theme effects", settings.get("effects"), (v) => settings.set("effects", v)),
       this.pref("textSize", "playlists", "Text size in music & folder lists"),
     ];

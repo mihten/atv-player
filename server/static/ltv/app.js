@@ -19,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.6.1";
+export const LTV_VERSION = "0.7.0";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -38,6 +38,8 @@ let everOpen = false;
 
 // ---------------------------------------------------------------- settings that shape the page
 function applyBody() {
+  const look = settings.get("look");
+  document.body.dataset.look = ["noir", "vinyl"].includes(look) ? look : "aurora";
   document.body.classList.toggle("ts-compact", settings.get("textSize") === "compact");
   document.body.classList.toggle("ts-small", settings.get("textSize") === "small");
   document.body.classList.toggle("no-fx", !settings.get("effects"));

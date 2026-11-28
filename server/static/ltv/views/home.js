@@ -23,7 +23,7 @@ export class HomeView {
       <div class="h-bd"></div>
       <div class="h-page" data-page>
         <header class="h-head">
-          <div class="h-word">LTVPlayer</div>
+          <div class="h-word">LTV<span>Player</span></div>
           <div class="h-pill"><span class="h-dot"></span><span class="h-conn">Connecting…</span></div>
         </header>
         <section class="h-sec" data-section="hero"><div class="hero" data-focus="hero" data-action="hero"></div></section>

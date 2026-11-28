@@ -6,7 +6,8 @@
 const STORE = "ltv.settings";
 
 export const DEFAULTS = {
-  effects: true,         // Theme effects: the backdrop drifts (menus and the lyrics screen)
+  look: "aurora",        // Settings → Theme → Look: aurora | noir | vinyl (the Apple TV app's looks, Classic left out)
+  effects: true,         // Theme effects: the backdrop drifts (Aurora: menus and the lyrics screen), the record spins (Vinyl)
   textSize: "normal",    // list rows: normal | compact | small
   seekBack: 10, seekForward: 10,
   keepMusic: true,       // leaving the app: music keeps playing, music videos pause
@@ -19,6 +20,7 @@ export const DEFAULTS = {
 };
 
 export const CHOICES = {
+  look: [["aurora", "Aurora"], ["noir", "Noir"], ["vinyl", "Vinyl"]],
   textSize: [["normal", "Normal"], ["compact", "Compact"], ["small", "Small"]],
   seekBack: [5, 10, 15, 30].map((n) => [n, `${n} seconds`]),
   seekForward: [10, 15, 30, 60].map((n) => [n, `${n} seconds`]),

@@ -412,3 +412,162 @@ body.ts-small .r-th.sq .th, body.ts-small .r-th.sq .r-now { width: 38px; }
 #prompt .pr-t { font-size: 34px; font-weight: 800; margin-bottom: 24px; }
 #prompt input { width: 100%; font: inherit; font-size: 40px; padding: 14px 20px; border-radius: 14px; border: 2px solid var(--accent); background: #000; color: #fff; }
 #prompt .pr-h { font-size: 22px; opacity: .55; margin-top: 18px; }
+
+/* ================================================================ looks Noir + Vinyl (0.7.0, Settings → Theme → Look)
+   Port of Shared/Theme.swift, Backdrop.swift (NoirBackground / VinylBackground), TVStyle.swift (focus), HomeView.swift,
+   ThemedPieces.swift, PlayerScreens.swift (NoirPlayer / VinylPlayer), Ornaments.swift (VinylRecord). The markup is
+   shared; <body data-look> switches the colours, corners, type and the song player. Frame rate (his rule 2026-11-28):
+   nothing here moves under a menu: no drift, no blur, the grain is one static tile, the record turns only on the song
+   player (player.js spinTick). Noir's accent = the calm cover colour of Aurora (his choice); Vinyl's is amber. */
+@font-face { font-family: "ATV Condensed"; src: url("/static/fonts/barlow-condensed-800.woff2") format("woff2");
+             font-weight: 100 900; font-display: swap; }
+
+.pn, .pv { display: none; }
+body[data-look="noir"] { --corner: 4px; }
+body[data-look="vinyl"] { --corner: 10px; --ink: #faedd9; --accent: #eda84a; --accent-55: rgba(237, 168, 74, .55); }
+body[data-look="vinyl"], body[data-look="vinyl"] .screen { color: var(--ink); }
+
+/* backgrounds: no moving fields */
+body[data-look="noir"] .bd-field, body[data-look="noir"] .bd-shade,
+body[data-look="vinyl"] .bd-field, body[data-look="vinyl"] .bd-shade { display: none; }
+body[data-look="noir"] .backdrop, body[data-look="noir"] #player.song .p-cover {
+  background: radial-gradient(1440px circle at 100% 0%, color-mix(in srgb, var(--accent) 20%, transparent), transparent),
+              radial-gradient(1152px circle at 0% 100%, color-mix(in srgb, var(--t0) 22%, transparent), transparent), #000;
+}
+body[data-look="vinyl"] .backdrop, body[data-look="vinyl"] #player.song .p-cover {
+  background: radial-gradient(1344px circle at 28% -5%, rgba(255, 189, 107, .20), transparent),
+              radial-gradient(1056px circle at 95% 105%, color-mix(in srgb, var(--t0) 20%, transparent), transparent),
+              linear-gradient(#2b1c12, #0f0a08);
+}
+body[data-look="vinyl"] .backdrop::after, body[data-look="vinyl"] #player.song .p-cover::after,
+body[data-look="vinyl"] .tile.action::after, body[data-look="vinyl"] .hero::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .08; border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body[data-look="vinyl"] .tile.action::after { display: block; box-shadow: none; z-index: 0; }
+
+/* type: heavy condensed titles (theme.display), uppercase tracked section titles (ShelfTitle) */
+body[data-look="noir"] :is(.hero-title, .hero-etitle, .l-title, .p-lyr-title, .h-word, .act-t),
+body[data-look="vinyl"] :is(.hero-title, .hero-etitle, .l-title, .p-lyr-title, .h-word, .act-t) {
+  font-family: "ATV Condensed", "Nunito", sans-serif; font-weight: 800; letter-spacing: .5px;
+}
+body[data-look="noir"] :is(.shelf-title, .l-h, .l-header), body[data-look="vinyl"] :is(.shelf-title, .l-h, .l-header) {
+  font-family: "ATV Condensed", "Nunito", sans-serif; font-size: 30px; font-weight: 800; letter-spacing: 5px; text-transform: uppercase;
+}
+body[data-look="noir"] .h-word, body[data-look="vinyl"] .h-word {
+  background: none; color: var(--ink); text-transform: uppercase; letter-spacing: 4px; font-size: 64px;
+}
+body[data-look="noir"] .h-word span, body[data-look="vinyl"] .h-word span { color: var(--accent); }
+body[data-look="noir"] :is(.hero-times, .r-right, .p-times, .p-lyr-times) { font-family: "Courier New", monospace; }
+
+/* focus (TileButtonStyle): Noir = white 5 px border, half the lift, no glow; Vinyl = amber 4 px border + amber glow */
+body[data-look="noir"] :is(.tile, .hero)::before { border: 5px solid #fff; }
+body[data-look="noir"] :is(.tile, .hero)::after { display: none !important; }
+body[data-look="noir"] .tile.focused { transform: scale(1.04); }
+body[data-look="noir"] .hero.focused { transform: scale(1.0125); }
+body[data-look="vinyl"] .tile::before { border: 4px solid rgba(237, 168, 74, .95); }
+body[data-look="vinyl"] .hero.focused { outline: 4px solid rgba(237, 168, 74, .95); outline-offset: -4px; }
+
+/* cards and tiles */
+body[data-look="noir"] .hero { background: rgba(255, 255, 255, .035); border: 1.5px solid rgba(255, 255, 255, .14); border-radius: 10px; }
+body[data-look="vinyl"] .hero { background: linear-gradient(135deg, rgba(61, 41, 26, .85), rgba(31, 20, 13, .85));
+                                border: 1.5px solid rgba(237, 168, 74, .25); border-radius: 16px; }
+body[data-look="noir"] .tile.browse { background: #121212; border-top: 0; }
+body[data-look="vinyl"] .tile.browse { background: rgba(51, 33, 20, .85); border-top: 0; }
+body[data-look="noir"] .tile.action.v0, body[data-look="noir"] .tile.action.v1, body[data-look="noir"] .tile.action.v2 { background: #121212; }
+body[data-look="noir"] .tile.action .sheen, body[data-look="vinyl"] .tile.action .sheen { display: none; }
+body[data-look="vinyl"] .tile.action.v0 { background: linear-gradient(135deg, #5c331a, #2e1a0d); }
+body[data-look="vinyl"] .tile.action.v1 { background: linear-gradient(135deg, #4d381f, #241a0f); }
+body[data-look="vinyl"] .tile.action.v2 { background: linear-gradient(135deg, #52241f, #26120f); }
+body[data-look="noir"] .row { border-radius: 4px; }
+body[data-look="noir"] .row.focused { background: rgba(255, 255, 255, .10); border-top: 0; box-shadow: inset 4px 0 0 #fff; }
+body[data-look="vinyl"] .row { border-radius: 10px; }
+body[data-look="vinyl"] .row.focused { background: rgba(237, 168, 74, .16); border-top: 0; box-shadow: none; }
+body[data-look="noir"] :is(.chip, .r-chip) { background: transparent; border: 1.5px solid rgba(255, 255, 255, .5);
+                                            font-family: "Courier New", monospace; }
+body[data-look="vinyl"] :is(.chip, .r-chip) { background: rgba(237, 168, 74, .18); }
+body[data-look="noir"] :is(.qm-panel, #prompt .pr-box) { background: rgba(10, 10, 10, .95); border: 1.5px solid rgba(255, 255, 255, .16); border-radius: 8px; }
+body[data-look="vinyl"] :is(.qm-panel, #prompt .pr-box) { background: rgba(38, 25, 16, .95); border-top: 1px solid rgba(237, 168, 74, .3); border-radius: 16px; }
+body[data-look="noir"] #capsule { background: rgba(0, 0, 0, .9); border: 1.5px solid rgba(255, 255, 255, .5); border-radius: 6px;
+                                  font-family: "Courier New", monospace; }
+body[data-look="vinyl"] #capsule { background: rgba(38, 25, 16, .92); border: 1px solid rgba(237, 168, 74, .35); }
+
+/* Home Now Playing card for a song: Noir = black and white while paused; Vinyl = the record (still: no spin in menus) */
+body[data-look="noir"] .hero.song:not(.playing) .hero-art img { filter: grayscale(1); }
+body[data-look="noir"] .hero.song .hero-art img { box-shadow: none; }
+body[data-look="vinyl"] .hero.song .hero-art, body[data-look="vinyl"] .pv-disc {
+  border-radius: 50%;
+  background: radial-gradient(circle, transparent 0 17%, rgba(255, 255, 255, .05) 17.5%, transparent 18%),
+              repeating-radial-gradient(circle, #0d0d0d 0 2.6px, #171717 2.6px 3.4px), #0d0d0d;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .6);
+}
+body[data-look="vinyl"] .hero.song .hero-art img, body[data-look="vinyl"] .hero.song .hero-art .th {
+  position: absolute; left: 32%; top: 32%; width: 36%; height: 36%; border-radius: 50%; box-shadow: none;
+}
+
+/* the song player, Noir (NoirPlayer) */
+body[data-look="noir"] #player.song:not(.lyr) .pn, body[data-look="vinyl"] #player.song:not(.lyr) .pv { display: block; }
+body[data-look="noir"] #player.song .p-cover img, body[data-look="vinyl"] #player.song .p-cover img,
+body[data-look="noir"] #player.song .p-overlay, body[data-look="vinyl"] #player.song .p-overlay { display: none; }
+.pn { position: absolute; inset: 0; }
+.pn-num { position: absolute; left: 84px; top: -40px; font-family: "ATV Condensed", sans-serif; font-weight: 800; font-size: 400px;
+          line-height: 1.2; color: rgba(255, 255, 255, .055); }
+.pn-art { position: absolute; right: 100px; top: 90px; width: 540px; height: 540px; object-fit: cover; border-radius: 2px;
+          box-shadow: 0 20px 40px #000; transition: filter .8s ease; }
+#player.paused .pn-art { filter: grayscale(1); }
+.pn-bottom { position: absolute; left: 100px; right: 100px; bottom: 80px; }
+.pn-artist { font-size: 30px; font-weight: 800; letter-spacing: 9px; text-transform: uppercase; color: var(--accent);
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pn-title { font-family: "ATV Condensed", sans-serif; font-weight: 800; font-size: 132px; line-height: 1.02; max-width: 1180px;
+            margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.pn-facts { font-family: "Courier New", monospace; font-size: 24px; font-weight: 600; opacity: .5; margin-top: 8px;
+            white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.pn-row { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 34px; }
+.pn-clock { font-family: "Courier New", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pn-el { font-size: 96px; font-weight: 300; }
+.pn-dur { font-size: 30px; opacity: .45; margin-left: 14px; }
+.pn-next { max-width: 520px; text-align: right; min-width: 0; }
+.pn-nl { font-size: 20px; font-weight: 900; letter-spacing: 6px; color: var(--accent); }
+.pn-nt { font-size: 28px; font-weight: 700; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pn-na { font-size: 22px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pn-bar { height: 2px; background: rgba(255, 255, 255, .2); margin-top: 30px; }
+.pn-fill { display: block; height: 100%; background: #fff; transform-origin: left; transform: scaleX(0); transition: transform .5s linear; }
+
+/* the song player, Vinyl (VinylPlayer: turntable + text) */
+.pv { position: absolute; inset: 0; }
+.pv-deck { position: absolute; left: 120px; top: 190px; width: 700px; height: 700px; }
+.pv-disc { position: absolute; left: 50px; top: 50px; width: 600px; height: 600px; will-change: transform; }
+.pv-label { position: absolute; left: 192px; top: 192px; width: 216px; height: 216px; border-radius: 50%; object-fit: cover;
+            box-shadow: 0 0 0 2.4px rgba(0, 0, 0, .35); }
+.pv-hole { position: absolute; left: 291.6px; top: 291.6px; width: 16.8px; height: 16.8px; border-radius: 50%; background: #050505; }
+.pv-shine { position: absolute; left: 62px; top: 62px; width: 576px; height: 576px; border-radius: 50%; pointer-events: none;
+            background: conic-gradient(from -30deg, transparent, rgba(255, 255, 255, .13) 8%, transparent 16%, transparent 50%,
+                                       rgba(255, 255, 255, .09) 58%, transparent 66%, transparent); }
+.pv-arm { position: absolute; right: -10px; top: 10px; width: 40px; height: 430px; transform-origin: 20px 20px;
+          transform: rotate(-8deg); transition: transform .9s ease-in-out; }
+.pv-arm::before { content: ""; position: absolute; left: 4px; top: 4px; width: 32px; height: 32px; border-radius: 50%;
+                  background: #8a7a66; box-shadow: 0 4px 10px rgba(0, 0, 0, .6); }
+.pv-arm i { position: absolute; left: 17px; top: 20px; width: 6px; height: 380px; border-radius: 3px; background: #c9b9a2;
+            transform: rotate(4deg); transform-origin: top; }
+.pv-arm i::after { content: ""; position: absolute; left: -9px; bottom: -6px; width: 24px; height: 40px; border-radius: 4px; background: #3a2e22; }
+#player.playing .pv-arm { transform: rotate(12deg); }   /* the needle in the grooves, outside the label */
+.pv-text { position: absolute; left: 900px; top: 0; bottom: 0; width: 760px; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+.pv-side { font-size: 22px; font-weight: 900; letter-spacing: 5px; color: var(--accent); margin-bottom: 6px; }
+.pv-title { font-family: "ATV Condensed", sans-serif; font-weight: 800; font-size: 68px; line-height: 1.05;
+            display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.pv-artist { font-size: 38px; font-weight: 600; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-album { font-size: 28px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-album:empty, .pv-artist:empty, .pv-chips:empty { display: none; }
+.pv-chips { display: flex; gap: 10px; margin-top: 4px; }
+.pv-prog { margin-top: 26px; }
+.pv-line { position: relative; width: 760px; height: 4px; border-radius: 2px; background: rgba(250, 237, 217, .18); }
+.pv-fill { position: absolute; inset: 0; border-radius: 2px; background: var(--accent); transform-origin: left; transform: scaleX(0); transition: transform .5s linear; }
+.pv-needle { position: absolute; left: -2px; top: -12px; width: 4px; height: 28px; border-radius: 2px; background: var(--ink);
+             transition: transform .5s linear; }
+.pv-times { display: flex; justify-content: space-between; font-size: 22px; opacity: .6; margin-top: 12px; font-variant-numeric: tabular-nums; }
+.pv-next { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
+.pv-nl { font-size: 22px; font-weight: 800; opacity: .6; }
+.pv-nrow { display: flex; align-items: baseline; gap: 16px; font-size: 24px; min-width: 0; white-space: nowrap; }
+.pv-num { color: var(--accent); font-weight: 800; width: 24px; flex: none; }
+.pv-nt { font-weight: 600; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+.pv-na { opacity: .55; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
