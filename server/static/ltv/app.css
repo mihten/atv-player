@@ -214,13 +214,6 @@ img.th.broken { visibility: hidden; }
 .act-t { font-size: 32px; font-weight: 800; }
 .act-s { font-size: 22px; opacity: .75; margin-top: 6px; }
 
-/* pointer mode: edge chevrons on shelves that can scroll */
-.chev { position: absolute; top: 50%; width: 64px; height: 64px; margin-top: -32px; border-radius: 50%; z-index: 4;
-        display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, .55); color: #fff; }
-.chev-l { left: -72px; }
-.chev-r { right: -72px; }
-body.pointer .shelf.can-left .chev-l, body.pointer .shelf.can-right .chev-r { display: flex; }
-.chev.focused { background: var(--accent); color: #000; }
 
 /* ---------------------------------------------------------------- list screens (P5, plan 10.5 / 10.7) */
 #lists { background: #000; }

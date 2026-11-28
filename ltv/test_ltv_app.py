@@ -12,13 +12,13 @@ send the right commands, Back / Back twice, hidden page pauses, a server restart
 session shows playing again, blocked autoplay waits for OK. Navigation (P4, seeded playlists / mix / loved items, long
 titles with diacritics): Home sections and tiles, key sequences end on the expected tiles, Up / Down remember the tile
 per section, no wrap, the focused tile stays in view (shelf / page transforms), lazy covers, Back from the player keeps
-the focus, pointer focus + chevron + wheel, arrow keys leave pointer mode, OK on each kind of tile sends the exact
+the focus, keys only (the pointer, clicks and the wheel do nothing), OK on each kind of tile sends the exact
 command, font + accent colour, the palette port against a Python port of Shared/Artwork.swift, FPS log lines.
 List screens (P5): Playlists (For you + playlist card grids), a playlist (Play, entries by position, a deleted file dimmed and
 skipped, start_index), the open playlist reloads on a change / shows "deleted", an auto-list (Play / start_id), Music
 videos (Play + 4-column poster grid, the page follows the focus), Folders (roots, "including subfolders" / "only this
 folder", files with start_id), Queue (opens centred on the playing entry, virtualised rows, jump + log line, the focus
-stays on track changes, pointer / wheel), Back from the player returns to the list with its focus, Back to Home.
+stays on track changes, keys only), Back from the player returns to the list with its focus, Back to Home.
 Screenshots of Home, lists and player go to outdir.
 Desktop Chromium cannot play HEVC / most MKV: codec questions belong to the TV probe, not here.
 """
@@ -666,38 +666,23 @@ try:
         keys("Escape")
         check(wait(lambda: js("ltv.screen") == "home") and focused() == pick, "Back from the player keeps the poster focused")
 
-        # ---- pointer: hover focuses, chevron, wheel; an arrow key leaves pointer mode
+        # ---- keys only (0.7.2): the pointer, its clicks and the wheel do nothing on Home
         keys(*["ArrowLeft"] * (len(vids) + 1))
         page.wait_for_timeout(500)
         check(focused() == f"video:{vids[0]}" and tx("videos") == 0, "◀ to the first poster: shelf back at the start")
-        box = rect("#home .focused")
-        page.mouse.move(box["l"] + box["w"] / 2, box["t"] + box["h"] / 2)
-        page.wait_for_timeout(300)
-        hovered = focused()
-        check(js("document.body.classList.contains('pointer')") and (hovered or "").startswith("video:"),
-              f"pointer: mode on, the poster under it is focused ({hovered})")
-        x0 = tx("videos")
-        chev = rect("[data-section=videos] .chev-r")
-        check(chev["w"] > 0, "pointer: right chevron shown on a shelf that can scroll")
-        page.mouse.click(chev["l"] + chev["w"] / 2, chev["t"] + chev["h"] / 2)
-        page.wait_for_timeout(500)
-        check(tx("videos") < x0, f"chevron click moved the shelf ({x0} -> {tx('videos')})")
-        x1 = tx("videos")
-        vis = js("""(() => { const p = [...document.querySelectorAll('[data-section=videos] .tile.poster')].find(e => {
-            const r = e.getBoundingClientRect(); return r.left >= 100 && r.right <= 1800; });
+        f0, n_cmd = focused(), len(cmds())
+        vis = js("""(() => { const p = [...document.querySelectorAll('[data-section=videos] .tile.poster')][2];
             const r = p.getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2, id: p.dataset.focus}; })()""")
         page.mouse.move(vis["x"], vis["y"])
         page.wait_for_timeout(300)
-        check(focused() == vis["id"], f"pointer on a visible poster focuses it ({vis['id']})")
-        page.mouse.wheel(0, -120)
+        check(focused() == f0 and not js("document.body.classList.contains('pointer')"), f"pointer over another poster: the focus stays ({focused()})")
+        page.mouse.click(vis["x"], vis["y"])
         page.wait_for_timeout(500)
-        check(tx("videos") > x1, f"wheel over the shelf moved it back ({x1} -> {tx('videos')})")
-        under = js("document.elementFromPoint(%d, %d)?.closest('[data-focus]')?.dataset.focus || null" % (vis["x"], vis["y"]))
-        check(under is not None and under != vis["id"] and focused() == under,
-              f"after the shelf moved under the pointer, the tile now under it is focused ({focused()} / {under})")
-        page.screenshot(path=str(OUT / "p4-home-pointer.png"))
-        keys("ArrowLeft")
-        check(not js("document.body.classList.contains('pointer')"), "an arrow key leaves pointer mode")
+        check(len(cmds()) == n_cmd and js("ltv.screen") == "home", "a pointer click sends nothing")
+        page.mouse.wheel(0, 120)
+        page.wait_for_timeout(500)
+        check(tx("videos") == 0 and focused() == f0, "the wheel moves nothing on Home")
+        check(js("document.querySelectorAll('.chev').length") == 0, "no shelf chevrons")
 
         # ---- accent from the cover, palette port, long titles
         rc("play_ids", ids=[S], start_index=0)
@@ -1014,12 +999,10 @@ try:
         box = rect("#lists .l-screen:not(.hidden) [data-focus='q:3']")
         page.mouse.move(box["l"] + 300, box["t"] + box["h"] / 2)
         page.wait_for_timeout(300)
-        check(lf() == "q:3", f"pointer over a row focuses it ({lf()})")
+        check(lf() == "q:0", f"keys only: the pointer over a row does not focus it ({lf()})")
         page.mouse.wheel(0, 120)
         page.wait_for_timeout(500)
-        check(js("ltv.lists.top().list.ty") < 0, "wheel scrolls the list")
-        keys("ArrowDown")
-        check(not js("document.body.classList.contains('pointer')"), "an arrow key leaves pointer mode")
+        check(js("ltv.lists.top().list.ty") == 0, "keys only: the wheel does not scroll the list")
         to_menu()
         check(js("ltv.screen") == "home" and focused() == "browse:queue", "Back: Home on Browse / Queue")
         check(not errors, f"P5: no page errors ({errors[:2]})")

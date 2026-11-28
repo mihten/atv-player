@@ -19,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.7.1";
+export const LTV_VERSION = "0.7.2";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -280,6 +280,7 @@ function playerKey(k, e) {
 }
 
 function okUp() {
+  sock.log(`key: OK up after ${Math.round(performance.now() - okDown)} ms${pointerShown ? " (pointer shown)" : ""}`);
   if (okSwallow) { okSwallow = false; return; }
   if (holdTimer) {   // released before HOLD_MS: a press = play / pause
     clearTimeout(holdTimer);
@@ -377,7 +378,15 @@ document.addEventListener("keyup", (e) => {
   else if (e.keyCode === KEY.OK) { clearTimeout(holdTimer); holdTimer = null; okSwallow = false; }
 }, true);
 
-document.addEventListener("mousemove", () => { if (screen === "player") player.show(); }, true);
+// The Magic Remote pointer (0.7.2): the app is keys only. A web app cannot switch the pointer off (LG); an arrow key ends
+// pointer mode. Its state goes to the journal with every OK in the player, to see how OK arrives while it is shown.
+let pointerShown = false;
+document.addEventListener("cursorStateChange", (e) => {
+  const v = !!(e.detail && e.detail.visibility);
+  if (v === pointerShown) return;
+  pointerShown = v;
+  sock.log(`pointer ${v ? "shown" : "hidden"} on ${screen}`);
+});
 
 // ---------------------------------------------------------------- life cycle (plan 12.2)
 document.addEventListener("visibilitychange", () => {

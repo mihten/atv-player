@@ -159,10 +159,8 @@ export class HomeView {
 
   // ---------------------------------------------------------------- shelves
   shelf(id, title, inner, scroller = true) {
-    const chev = scroller ? `<div class="chev chev-l" data-focus="${id}:chev-l" data-ptr="left">${icon("chevronLeft", 44)}</div>
-      <div class="chev chev-r" data-focus="${id}:chev-r" data-ptr="right">${icon("chevronRight", 44)}</div>` : "";
     return `<section class="shelf" data-section="${id}"><h2 class="shelf-title">${esc(title)}</h2>
-      <div class="track-wrap"><div class="track" data-track>${inner}</div>${chev}</div></section>`;
+      <div class="track-wrap"><div class="track" data-track>${inner}</div></div></section>`;
   }
 
   renderShelves() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer P5b checks (app 0.7.1 + server 0.33.0): his requests of 2026-11-26 in desktop Chromium as the ltv player of a
+"""LTVPlayer P5b checks (app 0.7.2 + server 0.33.0): his requests of 2026-11-26 in desktop Chromium as the ltv player of a
 THROWAWAY server with a fake atv-audio sink.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_p5b.py [outdir]
@@ -251,8 +251,8 @@ try:
 
         page.goto(BASE + "/static/ltv/index.html?from=test")
         check(wait(lambda: state()["players"] == 1 and js("ltv.screen") == "home"), "the page joins as the ltv player, Home")
-        check(wait(lambda: any(re.match(r"ltv 0\.7\.1 .* settings=0 sound=tv", l) for l in journal())),
-              "start line: ltv 0.7.1, no stored settings, sound=tv")
+        check(wait(lambda: any(re.match(r"ltv 0\.7\.2 .* settings=0 sound=tv", l) for l in journal())),
+              "start line: ltv 0.7.2, no stored settings, sound=tv")
         check(wait(lambda: frames("route") and frames("route")[-1] == {"type": "route", "sink": False}
                    and frames("output") and frames("output")[-1]["sound"] == "hdmi"),
               "on connect: route false + output report (sound hdmi)")
@@ -357,7 +357,7 @@ try:
         go_row("about"); ok()
         check(wait(lambda: top() == "set-about"), "About page")
         about = js("ltv.lists.top().list.entries.map(e => e.html ? e.html() : '').join(' ')")
-        check("0.7.1" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
+        check("0.7.2" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
         back()
 
         # ---------------------------------------------------------------- Mixes: add / remove / rename

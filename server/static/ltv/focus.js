@@ -2,9 +2,8 @@
 // the class "focused" (no browser focus, no :hover). Sections = [data-section]; inside a section Left / Right move by
 // geometry and never leave it; Up / Down go to the neighbouring section and land on its remembered tile, else the one
 // nearest in x. No wrap. The focused tile is kept in view by moving its shelf track (translateX) and the page
-// (translateY) — transforms only, no native scrolling. Pointer: mousemove = pointer mode (the tile under the pointer is
-// focused, shelf chevrons appear), the TV's pointer click arrives as OK; a wheel turn scrolls the shelf under the
-// pointer, elsewhere the page; any arrow key leaves pointer mode. Covers ([data-src]) load within one screen of the view.
+// (translateY) — transforms only, no native scrolling. Keys only (0.7.2, his choice): the Magic Remote pointer, its
+// clicks and the wheel do nothing in the menus. Covers ([data-src]) load within one screen of the view.
 
 const SAFE_TOP = 40, SAFE_BOTTOM = 1080 - 50, VIEW_W = 1760;
 const FPS_LOGS = 20;   // shelf / page moves measured per app start (P4 exit: FPS numbers from the TV)
@@ -45,22 +44,13 @@ export class Focus {
     this.memory = new Map();   // section id -> focus id
     this.tx = new Map();       // track -> translateX
     this.ty = 0;
-    this.pointer = false;
     this.fps = opts.fps || { left: FPS_LOGS, measuring: false };
-    this.lastOk = 0;
-    this.moveRaf = 0;
-    root.addEventListener("mousemove", (e) => this.onMouse(e));
-    root.addEventListener("click", (e) => this.onClick(e));
-    root.addEventListener("wheel", (e) => this.onWheel(e), { passive: true });
-    document.addEventListener("cursorStateChange", (e) => {
-      if (e.detail && e.detail.visibility === false) this.setPointer(false);
-    });
   }
 
   page() { return this.root.querySelector("[data-page]"); }
 
   focusables(section = null) {
-    const all = [...this.root.querySelectorAll("[data-focus]")].filter((el) => !el.hasAttribute("data-ptr"));
+    const all = [...this.root.querySelectorAll("[data-focus]")];
     return section ? all.filter((el) => el.closest("[data-section]") === section) : all;
   }
 
@@ -81,7 +71,7 @@ export class Focus {
     for (const t of this.root.querySelectorAll("[data-track]")) {
       if (!this.tx.has(t)) this.tx.set(t, 0);
     }
-    this.set(next, { scroll: !this.pointer, quiet: true });
+    this.set(next, { scroll: true, quiet: true });
     this.lazy();
   }
 
@@ -91,13 +81,12 @@ export class Focus {
     if (!el) return;
     el.classList.add("focused");
     const sec = el.closest("[data-section]");
-    if (sec && !el.hasAttribute("data-ptr")) this.memory.set(sec.dataset.section, el.dataset.focus);
+    if (sec) this.memory.set(sec.dataset.section, el.dataset.focus);
     if (scroll) this.reveal(el, quiet);
   }
 
   // ---------------------------------------------------------------- keys
   move(dir) {
-    if (this.pointer) this.setPointer(false);
     const cur = this.el && this.el.isConnected ? this.el : null;
     if (!cur) { this.set(this.focusables()[0] || null); return; }
     const sec = cur.closest("[data-section]");
@@ -153,10 +142,8 @@ export class Focus {
   activate() {
     const el = this.el;
     if (!el || !el.isConnected) return;
-    this.lastOk = performance.now();
     el.classList.add("pressed");
     setTimeout(() => el.classList.remove("pressed"), 120);
-    if (el.hasAttribute("data-ptr")) { this.page_track(el); return; }
     this.opts.onActivate(el);
   }
 
@@ -212,61 +199,7 @@ export class Focus {
     if (page) page.style.transform = `translateY(${y}px)`;
   }
 
-  /** Chevron (pointer only): one view further along its shelf. */
-  page_track(chev) {
-    const track = chev.closest("[data-section]")?.querySelector("[data-track]");
-    if (!track) return;
-    const step = (chev.dataset.ptr === "left" ? 1 : -1) * VIEW_W * 0.8;
-    this.setX(track, this.clampX(track, (this.tx.get(track) || 0) + step));
-    this.measure("shelf", track.closest("[data-section]")?.dataset.section || "-");
-    setTimeout(() => { this.lazy(); this.hitTest(); }, 360);
-  }
 
-  // ---------------------------------------------------------------- pointer
-  setPointer(on) {
-    if (this.pointer === on) return;
-    this.pointer = on;
-    document.body.classList.toggle("pointer", on);
-  }
-
-  onMouse(e) {
-    this.setPointer(true);
-    this.px = e.clientX;
-    this.py = e.clientY;
-    if (this.moveRaf) return;
-    this.moveRaf = requestAnimationFrame(() => { this.moveRaf = 0; this.hitTest(); });
-  }
-
-  /** The tile under the pointer gets the focus (also after a shelf moved under a still pointer). */
-  hitTest() {
-    if (!this.pointer || this.px === undefined) return;
-    const hit = document.elementFromPoint(this.px, this.py)?.closest("[data-focus]");
-    if (hit && this.root.contains(hit) && hit !== this.el) this.set(hit, { scroll: false });
-  }
-
-  onClick(e) {
-    if (performance.now() - this.lastOk < 400) return;   // the TV's pointer OK already came as Enter
-    const hit = e.target.closest?.("[data-focus]");
-    if (!hit || !this.root.contains(hit)) return;
-    this.set(hit, { scroll: false });
-    this.activate();
-  }
-
-  onWheel(e) {
-    this.setPointer(true);
-    const track = e.target.closest?.("[data-section]")?.querySelector("[data-track]");
-    if (track && e.target.closest("[data-section]").contains(e.target)) {
-      this.setX(track, this.clampX(track, (this.tx.get(track) || 0) - Math.sign(e.deltaY) * 420));
-      this.measure("shelf", track.closest("[data-section]").dataset.section);
-    } else {
-      const page = this.page();
-      if (!page) return;
-      const min = Math.min(0, SAFE_BOTTOM - page.offsetHeight);
-      this.setY(Math.max(min, Math.min(0, this.ty - Math.sign(e.deltaY) * 300)));
-      this.measure("page", "-");
-    }
-    setTimeout(() => { this.lazy(); this.hitTest(); }, 360);
-  }
 
   // ---------------------------------------------------------------- covers within one screen of the view
   lazy() {

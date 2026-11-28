@@ -32,12 +32,7 @@ export class VList {
     this.fi = -1;          // focused entry index
     this.ty = 0;
     this.nodes = new Map();   // entry index -> element (the rendered window)
-    this.pointer = false;
-    this.lastOk = 0;
-    this.raf = 0;
-    screenRoot.addEventListener("mousemove", (e) => this.onMouse(e));
-    screenRoot.addEventListener("click", (e) => this.onClick(e));
-    screenRoot.addEventListener("wheel", (e) => this.onWheel(e), { passive: true });
+    this.raf = 0;   // keys only (0.7.2): no pointer focus, clicks or wheel in the lists
   }
 
   /** New entries; the focus stays on the entry with the same key (else the same index, else the first focusable). */
@@ -126,7 +121,6 @@ export class VList {
   }
 
   move(dir) {
-    if (this.pointer) this.setPointer(false);
     if (dir !== "up" && dir !== "down") return false;   // rows: ◀ / ▶ do nothing
     const step = dir === "down" ? 1 : -1;
     let i = this.fi + step;
@@ -168,7 +162,6 @@ export class VList {
   activate() {
     const e = this.focused();
     if (!e) return;
-    this.lastOk = performance.now();
     const el = this.nodes.get(this.fi);
     if (el) { el.classList.add("pressed"); setTimeout(() => el.classList.remove("pressed"), 120); }
     e.act?.();
@@ -176,46 +169,6 @@ export class VList {
 
   measure() {
     measureMove(this.opts.fps, "list", this.opts.name, this.opts.log, !!this.opts.videoPlaying?.());
-  }
-
-  // ---------------------------------------------------------------- pointer
-  setPointer(on) {
-    if (this.pointer === on) return;
-    this.pointer = on;
-    document.body.classList.toggle("pointer", on);
-  }
-
-  onMouse(e) {
-    this.setPointer(true);
-    this.px = e.clientX;
-    this.py = e.clientY;
-    if (this.raf) return;
-    this.raf = requestAnimationFrame(() => { this.raf = 0; this.hitTest(); });
-  }
-
-  hitTest() {
-    if (!this.pointer || this.px === undefined) return;
-    const hit = document.elementFromPoint(this.px, this.py)?.closest("[data-vi]");
-    if (!hit || !this.body.contains(hit)) return;
-    const i = Number(hit.dataset.vi);
-    if (i !== this.fi && this.entries[i]?.focusable) this.set(i, { scroll: false });
-  }
-
-  onClick(e) {
-    if (performance.now() - this.lastOk < 400) return;   // the TV's pointer OK already came as Enter
-    const hit = e.target.closest?.("[data-vi]");
-    if (!hit || !this.body.contains(hit) || !this.entries[Number(hit.dataset.vi)]?.focusable) return;
-    this.set(Number(hit.dataset.vi), { scroll: false });
-    this.activate();
-  }
-
-  onWheel(e) {
-    this.setPointer(true);
-    this.ty -= Math.sign(e.deltaY) * 3 * size().pitch;
-    this.clampTy();
-    this.render();
-    this.measure();
-    setTimeout(() => this.hitTest(), 360);
   }
 }
 

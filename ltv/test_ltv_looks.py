@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer looks (app 0.7.1): Settings -> Theme -> Look = Aurora / Noir / Vinyl in desktop Chromium as the ltv player
+"""LTVPlayer looks (app 0.7.2): Settings -> Theme -> Look = Aurora / Noir / Vinyl in desktop Chromium as the ltv player
 of a THROWAWAY server.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_looks.py [outdir]
@@ -243,7 +243,7 @@ try:
 
         page.goto(BASE + "/static/ltv/index.html?from=test")
         check(wait(lambda: state()["players"] == 1 and js("ltv.screen") == "home"), "the page joins as the ltv player, Home")
-        check(wait(lambda: any(re.match(r"ltv 0\.7\.1 ", l) for l in journal())), "start line: ltv 0.7.1")
+        check(wait(lambda: any(re.match(r"ltv 0\.7\.2 ", l) for l in journal())), "start line: ltv 0.7.2")
         check(js("document.body.dataset.look") == "aurora", "default look: Aurora")
 
         def css(sel, prop):
