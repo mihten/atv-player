@@ -19,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.7.0";
+export const LTV_VERSION = "0.7.1";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -292,6 +292,7 @@ function okUp() {
 }
 
 function listsKey(k) {
+  if (k === KEY.OK) return;   // menus act on OK's release (menuOkUp): a held OK does nothing there
   if (lists.key(k)) return;   // arrows move the focus, OK activates
   if (k === KEY.PLAY || k === KEY.PAUSE) {
     playPause(k === KEY.PLAY);
@@ -302,6 +303,7 @@ function listsKey(k) {
 }
 
 function homeKey(k) {
+  if (k === KEY.OK) return;   // see listsKey
   if (home.key(k)) return;   // arrows move the focus, OK activates the focused tile
   if (k === KEY.PLAY || k === KEY.PAUSE) {
     playPause(k === KEY.PLAY);
@@ -329,12 +331,48 @@ document.addEventListener("keydown", (e) => {
   if (e.repeat && (k === KEY.RED || k === KEY.GREEN || k === KEY.STOP || k === KEY.BLUE)) return;
   if (k === KEY.GREEN) { playPause(); if (screen === "player") player.show(); quick.refresh(); return; }
   if (k === KEY.RED || k === KEY.STOP) { stop(); return; }
+  if (k === KEY.OK && screen !== "player") {   // menus: remember the press, act on its release (0.7.1, his report)
+    const t = performance.now(), repeat = e.repeat || (okHeld && t - okLast < 600);
+    okLast = t;
+    if (repeat) return;
+    okHeld = true;
+    menuOk = { at: t, screen };
+    return;
+  }
   if (screen === "player") playerKey(k, e); else if (screen === "lists") listsKey(k); else homeKey(k);
 }, true);
 
+// A menu OK counts on release when it was shorter than HOLD_MS (held longer = nothing: in the player a hold opens the
+// quick menu, in the menus it used to fire the focused tile again with every key repeat).
+let menuOk = null;
+function menuOkUp() {
+  const m = menuOk;
+  menuOk = null;
+  if (!m || m.screen !== screen) return;
+  const held = performance.now() - m.at;
+  if (held >= HOLD_MS) { sock.log(`key: OK held ${Math.round(held)} ms on ${screen}: ignored`); return; }
+  if (screen === "lists") lists.key(KEY.OK); else if (screen === "home") home.key(KEY.OK);
+}
+
+// The wheel in the player = the headphones' volume (5 % a notch; nothing with the TV's own sound: an app cannot set it).
+let wheelAcc = 0;
+document.addEventListener("wheel", (e) => {
+  if (screen !== "player" || quick.isOpen) return;
+  wheelAcc += e.deltaY;
+  if (Math.abs(wheelAcc) < 100) return;
+  const up = wheelAcc < 0;
+  wheelAcc = 0;
+  const vol = quick.volume();
+  if (!audio.on || !vol) return;
+  const p = up ? Math.min(100, (Math.floor(vol.percent / 5) + 1) * 5) : Math.max(0, (Math.ceil(vol.percent / 5) - 1) * 5);
+  quick.setVolume(p, up ? false : vol.muted);
+  notice(`Headphones ${p} %`, 1500);
+}, { passive: true });
+
 document.addEventListener("keyup", (e) => {
   if (e.keyCode === KEY.OK) okHeld = false;
-  if (promptDone) return;
+  if (promptDone) { menuOk = null; return; }
+  if (e.keyCode === KEY.OK && menuOk) { menuOkUp(); return; }
   if (e.keyCode === KEY.OK && screen === "player" && !quick.isOpen) okUp();
   else if (e.keyCode === KEY.OK) { clearTimeout(holdTimer); holdTimer = null; okSwallow = false; }
 }, true);

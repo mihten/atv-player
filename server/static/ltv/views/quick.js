@@ -1,6 +1,6 @@
 // LTVPlayer: the quick menu over the player (hold OK; port of Sources/QuickPanel.swift, rows as on the Apple TV): Close
-// menu, Volume (headphones only), ♥ Love, Shuffle, Queue ("n of N", opens the queue), Lyrics / subtitles (◀▶ File
-// default / English / Croatian / Off), Lyrics screen, Audio output (TV / Headphones), Equalizer (a list under the row),
+// menu, ♥ Love, Shuffle, Queue ("n of N", opens the queue), Lyrics / subtitles (◀▶ File
+// default / English / Croatian / Off), Lyrics screen, Audio output (TV / Headphones), Volume (headphones only), Equalizer (a list under the row),
 // Loudness, Boost (◀▶) and Version (a list). The sound rows exist only with the headphones: the TV's own sound cannot be
 // changed by an app. Keys: ▲▼ rows, OK = the row's action (opens / confirms a list), ◀▶ = previous / next value, Back
 // closes an open list, then the menu; Blue (lyrics screen), Green / Red (play / pause, stop) still work (app.js).
@@ -28,6 +28,7 @@ export class QuickMenu {
   open() {
     this.isOpen = true;
     this.sel = 0;
+    this.selId = "close";   // the focus follows the row, not its index, when rows come and go
     this.list = null;
     this.root.classList.add("on");
     this.render();
@@ -48,14 +49,6 @@ export class QuickMenu {
     const out = [{ id: "close", ic: "close", t: "Close menu", v: "", act: () => this.close() }];
     const hp = audio.on;
     const o = audio.sink && audio.sink.output;
-    if (hp) {
-      const vol = this.volume();
-      out.push({ id: "volume", ic: vol && vol.muted ? "speakerOff" : "speaker", t: "Volume", v: vol ? `${vol.percent} %` : "—",
-                 bar: vol ? vol.percent / 100 : null, muted: vol && vol.muted,
-                 step: (d) => { if (!vol) return; const p = d > 0 ? Math.min(100, (Math.floor(vol.percent / 5) + 1) * 5)
-                   : Math.max(0, (Math.ceil(vol.percent / 5) - 1) * 5); this.setVolume(p, vol.muted); },
-                 act: () => { if (vol) this.setVolume(vol.percent, !vol.muted); } });
-    }
     const loved = !!(cur && cur.loved);
     out.push({ id: "love", ic: loved ? "heart" : "heartOutline", t: "Love", v: loved ? "On" : "Off", act: () => {
       if (!it) return;
@@ -78,6 +71,14 @@ export class QuickMenu {
     out.push({ id: "output", ic: hp ? "headphones" : "tv", t: "Audio output", v: hp ? `Headphones${o && o.ready ? "" : " (not connected)"}` : "TV",
                act: () => { if (!hp && !(audio.sink && audio.sink.connected)) { this.ctx.notice("atv-audio is not connected", 3000); this.log("audio output -> headphones refused: not connected"); return; }
                  audio.setOn(!hp, "quick menu"); } });
+    if (hp) {   // Volume below Audio output (0.7.1, his wish): switching the output no longer moves the rows above it
+      const vol = this.volume();
+      out.push({ id: "volume", ic: vol && vol.muted ? "speakerOff" : "speaker", t: "Volume", v: vol ? `${vol.percent} %` : "—",
+                 bar: vol ? vol.percent / 100 : null, muted: vol && vol.muted,
+                 step: (d) => { if (!vol) return; const p = d > 0 ? Math.min(100, (Math.floor(vol.percent / 5) + 1) * 5)
+                   : Math.max(0, (Math.ceil(vol.percent / 5) - 1) * 5); this.setVolume(p, vol.muted); },
+                 act: () => { if (vol) this.setVolume(vol.percent, !vol.muted); } });
+    }
     if (hp) {
       const snd = st.sound || {}, presets = st.sound_presets || [];
       const pi = Math.max(0, presets.findIndex(([v]) => v === snd.preset));
@@ -119,7 +120,9 @@ export class QuickMenu {
 
   render() {
     const rows = this.rows();
-    this.sel = Math.min(this.sel, rows.length - 1);
+    const at = rows.findIndex((r) => r.id === this.selId);
+    this.sel = at >= 0 ? at : Math.min(this.sel, rows.length - 1);
+    this.selId = rows[this.sel] && rows[this.sel].id;
     const listRow = this.list ? rows.find((r) => r.id === this.list.id) : null;
     if (this.list && !listRow) this.list = null;
     this.root.innerHTML = `<div class="qm-panel"><div class="qm-title">QUICK MENU</div>${rows.map((r, i) => {
@@ -151,8 +154,8 @@ export class QuickMenu {
       this.render();
       return true;
     }
-    if (k === 38) this.sel = Math.max(0, this.sel - 1);
-    else if (k === 40) this.sel = Math.min(rows.length - 1, this.sel + 1);
+    if (k === 38) { this.sel = Math.max(0, this.sel - 1); this.selId = rows[this.sel].id; }
+    else if (k === 40) { this.sel = Math.min(rows.length - 1, this.sel + 1); this.selId = rows[this.sel].id; }
     else if (k === 37 || k === 39) rows[this.sel]?.step?.(k === 39 ? 1 : -1);
     else if (k === 13) rows[this.sel]?.act();
     else if (k === 461 || k === 8 || k === 27) { this.close(); return true; }

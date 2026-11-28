@@ -52,6 +52,9 @@ html, body {
 body[data-screen="home"] #home, body[data-screen="player"] #player, body[data-screen="lists"] #lists {
   opacity: 1; visibility: visible; transition: opacity .25s ease, visibility 0s;
 }
+/* 0.7.1 (his report): Home <-> lists <-> Settings switch at once. A cross-fade let both menus be half transparent for
+   .25 s, so a playing video under them showed through on every move. Only the player fades. */
+#home, #lists, body[data-screen="home"] #home, body[data-screen="lists"] #lists { transition: none; }
 .ico { display: block; flex: none; }
 
 /* ---------------------------------------------------------------- Aurora backdrop (backdrop.js) */

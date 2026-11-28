@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer P5b checks (app 0.7.0 + server 0.33.0): his requests of 2026-11-26 in desktop Chromium as the ltv player of a
+"""LTVPlayer P5b checks (app 0.7.1 + server 0.33.0): his requests of 2026-11-26 in desktop Chromium as the ltv player of a
 THROWAWAY server with a fake atv-audio sink.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_p5b.py [outdir]
@@ -251,8 +251,8 @@ try:
 
         page.goto(BASE + "/static/ltv/index.html?from=test")
         check(wait(lambda: state()["players"] == 1 and js("ltv.screen") == "home"), "the page joins as the ltv player, Home")
-        check(wait(lambda: any(re.match(r"ltv 0\.7\.0 .* settings=0 sound=tv", l) for l in journal())),
-              "start line: ltv 0.7.0, no stored settings, sound=tv")
+        check(wait(lambda: any(re.match(r"ltv 0\.7\.1 .* settings=0 sound=tv", l) for l in journal())),
+              "start line: ltv 0.7.1, no stored settings, sound=tv")
         check(wait(lambda: frames("route") and frames("route")[-1] == {"type": "route", "sink": False}
                    and frames("output") and frames("output")[-1]["sound"] == "hdmi"),
               "on connect: route false + output report (sound hdmi)")
@@ -291,6 +291,20 @@ try:
         check(wait(lambda: state()["playing"] is False), "Green on Home again: pause")
         tvkey(404)
         check(wait(lambda: state()["playing"] is True), "... and Green once more: playing")
+        # 0.7.1: a held OK in the menus does nothing (it used to fire the focused tile with every key repeat)
+        n_cmd, n_load = len(cmds()), len(frames("load", got))
+        tvkey(13, "keydown")
+        for _ in range(16):
+            page.wait_for_timeout(50)
+            tvkey(13, "keydown")
+        tvkey(13, "keyup")
+        page.wait_for_timeout(600)
+        check(len(cmds()) == n_cmd and len(frames("load", got)) == n_load and js("ltv.screen") == "home",
+              "hold OK on Home: nothing happens (no command, no new item, still Home)")
+        check(any(re.match(r"key: OK held \d+ ms on home: ignored", l) for l in journal()), "... journal: OK held … ignored")
+        check(js("getComputedStyle(document.getElementById('home')).transitionDuration") == "0s"
+              and js("getComputedStyle(document.getElementById('lists')).transitionDuration") == "0s",
+              "menus switch without a cross-fade (no video showing through)")
 
         # ---------------------------------------------------------------- Settings tile + root page
         check(home_settings(), "Browse / Settings opens the Settings page")
@@ -343,7 +357,7 @@ try:
         go_row("about"); ok()
         check(wait(lambda: top() == "set-about"), "About page")
         about = js("ltv.lists.top().list.entries.map(e => e.html ? e.html() : '').join(' ')")
-        check("0.7.0" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
+        check("0.7.1" in about and "server 0.33.0" in about and "Red" in about and "Blue" in about, "About: versions + key help")
         back()
 
         # ---------------------------------------------------------------- Mixes: add / remove / rename
@@ -587,12 +601,40 @@ try:
         check(wait(lambda: js("ltv.quick.isOpen")), "hold OK: the quick menu (headphones)")
         qrows = js("[...document.querySelectorAll('.qm-row')].map(r => r.dataset.qm)")
         check(all(r in qrows for r in ("volume", "eq", "loud", "boost")), f"quick menu with the headphones: volume + sound rows ({qrows})")
+        check(qrows.index("volume") == qrows.index("output") + 1, f"... Volume right below Audio output ({qrows})")
         qm_go("volume"); page.keyboard.press("ArrowRight")
         check(wait(lambda: any(m.get("percent") == 45 for m in sink_msgs("volume"))), "Volume ▶: 40 -> 45 % on the sink")
+        qfocus = lambda: js("(document.querySelector('.qm-row.focused') || {}).dataset?.qm")  # noqa: E731
+        qlist = lambda: js("[...document.querySelectorAll('.qm-row')].map(r => r.dataset.qm)")  # noqa: E731
         qm_go("output"); page.keyboard.press("Enter")
         check(wait(lambda: frames("route")[-1] == {"type": "route", "sink": False} and not js("document.getElementById('v').muted")),
               "Audio output -> TV: route false, sound on")
+        check(wait(lambda: "volume" not in qlist()) and qfocus() == "output", "... the focus stays on Audio output")
+        page.keyboard.press("Enter")
+        check(wait(lambda: frames("route")[-1].get("sink") is True), "Audio output -> Headphones again")
+        check(wait(lambda: "volume" in qlist()) and qfocus() == "output", "... Volume comes back below, the focus stays on Audio output")
         page.keyboard.press("Escape")
+        check(wait(lambda: not js("ltv.quick.isOpen")), "menu closed")
+        # 0.7.1: the wheel in the player = the headphones' volume
+        page.wait_for_timeout(1700)   # the menu's own pending value is gone: the sink's 40 % counts
+        n_vol = len(sink_msgs("volume"))
+        page.mouse.move(960, 540)
+        page.mouse.wheel(0, -120)
+        check(wait(lambda: len(sink_msgs("volume")) > n_vol and sink_msgs("volume")[-1]["percent"] == 45),
+              "wheel up in the player: headphones 40 -> 45 %")
+        check(wait(lambda: "Headphones 45 %" in page.inner_text("#capsule")), "... the notice shows it")
+        page.wait_for_timeout(1700)
+        page.mouse.wheel(0, 120)
+        check(wait(lambda: sink_msgs("volume")[-1]["percent"] == 35), "wheel down: 40 -> 35 %")
+        hold_ok()
+        check(wait(lambda: js("ltv.quick.isOpen")), "hold OK: the quick menu")
+        qm_go("output"); page.keyboard.press("Enter")
+        check(wait(lambda: frames("route")[-1] == {"type": "route", "sink": False}), "Audio output -> TV for the rest")
+        page.keyboard.press("Escape")
+        n_vol = len(sink_msgs("volume"))
+        page.mouse.wheel(0, -120)
+        page.wait_for_timeout(600)
+        check(len(sink_msgs("volume")) == n_vol, "wheel with the TV's own sound: nothing sent")
 
         # the web remote's choice
         r = send_json("/api/mtv-sound", {"session": "ltv", "output": "headphones"})
