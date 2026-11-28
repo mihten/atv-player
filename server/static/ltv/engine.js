@@ -30,6 +30,8 @@ export class Engine {
     this.started = false;
     this.blocked = false;
     this.stopped = false;   // Stop: the picture is gone, the item stays (Play loads it again from 0:00, server-side)
+    this.released = null;   // {at, why}: the video decoder is given back (release), the item stays; restore() reopens it
+    this.pausedSince = null;   // performance.now() of the last pause / paused load (app.js: release after 10 min)
     this.gate = null;
     this.onLoad = null;
     this.onSeek = null;
@@ -52,6 +54,7 @@ export class Engine {
   }
 
   position() {
+    if (this.released) return this.released.at;   // the element is empty: where it will open again
     if (!this.item || this.stopped) return 0;
     if (this.v.readyState < 1) return this.L ? this.L.startAt : 0;   // before metadata: where it will start
     return this.v.currentTime;
@@ -74,12 +77,21 @@ export class Engine {
     if (!it) {
       this.finish("unload");
       this.item = null;
+      this.released = null;
       this.loadId += 1;
       this.wantPlay = false;
       this.v.removeAttribute("src");
       this.v.load();
       this.log("load: nothing");
       this.ui.item(null);
+      return;
+    }
+    if (!m.autoplay && this.released && this.item && this.item.id === it.id && !m.restore) {
+      // a reconnect resync while the decoder is given back: stay released (the screensaver may be using it)
+      this.item = it;
+      this.log(`load #${it.id} resync: kept released at ${r1(this.released.at)}`);
+      this.status();
+      this.ui.item(it);
       return;
     }
     if (!m.autoplay && this.item && this.item.id === it.id && this.v.getAttribute("src")) {
@@ -96,6 +108,8 @@ export class Engine {
     this.finish("replaced");
     this.loadId += 1;
     this.item = it;
+    this.released = null;
+    this.pausedSince = m.autoplay ? null : now();
     this.wantPlay = !!m.autoplay;
     this.started = false;
     this.blocked = false;
@@ -137,6 +151,12 @@ export class Engine {
       return;
     }
     if (this.stopped) return;   // nothing loaded: the server answers a Play with a new load
+    if (this.released) {   // the decoder was given back: Play / a seek open the item again first
+      if (a === "play" || a === "toggle") { this.restore("play", true); return; }
+      if (a === "seek") { this.released.at = Math.max(0, Number(m.position) || 0); this.restore("seek"); return; }
+      this.status();
+      return;
+    }
     if (a === "play" || (a === "toggle" && this.v.paused)) {
       this.wantPlay = true;
       this.tryPlay();
@@ -152,8 +172,9 @@ export class Engine {
   /** Stop (Red / the web remote): the picture goes away, the item stays current; the server's next Play loads it again. */
   stop() {
     if (this.stopped) return;
-    const at = this.v.currentTime;
-    this.finish("stopped");
+    const at = this.position();
+    if (!this.released) this.finish("stopped");
+    this.released = null;
     this.wantPlay = false;
     this.stopped = true;
     this.seek = null;
@@ -169,12 +190,42 @@ export class Engine {
 
   /** A pause the app decides itself (headphones gone, sound output changed): the element and the server. */
   localPause(why) {
-    if (!this.item || this.stopped) return;
+    if (!this.item || this.stopped || this.released) return;
     this.wantPlay = false;
     this.v.pause();
     this.sock.cmd("pause");
     this.log(`paused (${why})`);
     this.status();
+  }
+
+  /** Gives the TV's video decoder back (0.8.2, his choice): the LG screen saver plays its scenes only while no app holds
+   *  one, else it shows a clock on black. The element empties; the item and its position stay (position() and the
+   *  status report them). Videos only (a song uses no video decoder). restore() opens it again. */
+  release(why) {
+    if (!this.item || this.item.kind !== "video" || this.stopped || this.released || !this.v.getAttribute("src")) return false;
+    const at = this.position();
+    this.finish("released");
+    this.released = { at, why };
+    this.wantPlay = false;
+    this.seek = null;
+    this.stall = null;
+    this.loadId += 1;
+    this.v.pause();
+    this.v.removeAttribute("src");
+    this.v.load();
+    this.log(`release #${this.item.id} at ${r1(at)} (${why}): video decoder free`);
+    this.status();
+    return true;
+  }
+
+  /** Opens a released item again at its position, paused (play = true: then plays, no new wait for the headphones). */
+  restore(why, play = false) {
+    const r = this.released;
+    if (!r || !this.item) return false;
+    this.log(`restore #${this.item.id} at ${r1(r.at)} (${why})`);
+    this.load({ item: this.item, position: r.at, autoplay: false, restore: true });
+    if (play) { this.wantPlay = true; this.pausedSince = null; }
+    return true;
   }
 
   // ---------------------------------------------------------------- local actions
@@ -211,14 +262,21 @@ export class Engine {
   /** Socket down (plan 9.5): OK still plays / pauses the element itself. */
   localToggle() {
     if (!this.item) return;
+    if (this.released) { this.restore("play", true); return; }
     if (this.v.paused) { this.wantPlay = true; this.tryPlay(); } else { this.wantPlay = false; this.v.pause(); }
     this.status();
   }
 
   seekTo(target, why) {
     if (!this.item || this.stopped) return;
+    if (this.released) { this.released.at = Math.max(0, target); this.restore(`seek (${why})`); return; }
     const d = this.duration();
     const t = Math.max(0, d ? Math.min(target, d - 0.5) : target);
+    if (this.L && this.L.meta === null) {   // before the metadata: the start seek of the load would undo it
+      this.L.startAt = t;
+      this.status();
+      return;
+    }
     if (this.seek && this.seek.running === null) this.seekLine("superseded");
     this.seek = { from: this.v.currentTime, target: t, why, at: now(), seeked: null, landed: null, running: null,
                   paused: this.v.paused };
@@ -249,6 +307,7 @@ export class Engine {
 
   on_playing() {
     if (!this.L) return;
+    this.pausedSince = null;
     if (!this.started) {
       this.started = true;
       this.L.first = Math.round(now() - this.L.t0);
@@ -258,7 +317,7 @@ export class Engine {
     this.status();
   }
 
-  on_pause() { this.status(); }
+  on_pause() { if (this.item && !this.released) this.pausedSince = now(); this.status(); }
 
   on_waiting() { if (this.L) this.L.waiting += 1; }
 

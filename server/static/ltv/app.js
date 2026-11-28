@@ -19,7 +19,7 @@ import { LyricsStore } from "./lyrics.js";
 import { settings } from "./settings.js";
 import { paletteFor, applyPalette, FALLBACK } from "./palette.js";
 
-export const LTV_VERSION = "0.8.1";
+export const LTV_VERSION = "0.8.2";
 
 const Q = new URLSearchParams(location.search);
 const DEBUG = Q.get("debug") === "1";
@@ -146,6 +146,7 @@ function show(name) {
   screen = name;
   if (name !== "player") { menu = name; quick.close(); }
   document.body.dataset.screen = name;
+  if (name === "player" && engine.released && !document.hidden) engine.restore("player shown");
   if (name === "player") player.show();
   player.shown(name === "player");
   home.shown(name === "home");
@@ -328,6 +329,7 @@ document.addEventListener("keydown", (e) => {
   const k = e.keyCode;
   if (DEBUG) sock.log(`key ${k}${e.repeat ? " repeat" : ""} on ${screen}`);
   if (screen === "player") player.wake();   // OLED care: any key = full brightness (the key still does its job)
+  if (screen === "player" && engine.released && !promptDone) engine.restore("key");   // the picture back, paused; the key acts too
   if (promptDone) {   // the text prompt has the TV keyboard: only OK / Back are ours
     if (k === KEY.OK) { e.preventDefault(); promptDone($("prompt").querySelector("input").value); }
     else if (k === KEY.BACK || k === KEY.ESC) { e.preventDefault(); promptDone(null); }
@@ -409,11 +411,22 @@ document.addEventListener("visibilitychange", () => {
     }
     if (was) { engine.wantPlay = false; video.pause(); sock.cmd("pause"); }
     sock.log(`hidden${was ? ": paused" : ""}`);
+    engine.release("left the app");   // 0.8.2: the screen saver gets the video decoder (scenes, not a clock on black)
   } else {
     sock.log("visible");
     sock.wake();
+    if (engine.released && screen === "player") engine.restore("back in the app");
   }
 });
+
+// 0.8.2 (his choice): a video paused for 10 minutes inside the app gives the video decoder back too; the item and its
+// position stay, a key in the player / opening the player / Play opens it again (paused, at the same place).
+const PAUSE_RELEASE = Number(Q.get("release")) || 10 * 60000;   // ?release=<ms> in tests only
+setInterval(() => {
+  const since = engine.pausedSince;
+  if (!engine.item || engine.stopped || engine.released || !video.paused || since === null) return;
+  if (performance.now() - since >= PAUSE_RELEASE) engine.release(`paused ${Math.round((performance.now() - since) / 1000)} s`);
+}, Math.min(10000, PAUSE_RELEASE / 2));
 
 window.addEventListener("error", (e) => {
   if (e.target && e.target !== window) return;   // media / image errors have their own handling

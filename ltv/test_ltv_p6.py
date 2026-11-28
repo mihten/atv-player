@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""LTVPlayer P6 (app 0.8.1): the Aurora song player, OLED care and the song player's FPS lines in desktop Chromium as
+"""LTVPlayer P6 (app 0.8.2): the Aurora song player, OLED care and the song player's FPS lines in desktop Chromium as
 the ltv player of a THROWAWAY server.
 
     SERVER_PY=<python with aiohttp mutagen pillow> PYTHONPATH=<dir with aiohttp> python3.13 ltv/test_ltv_p6.py [outdir]
@@ -178,7 +178,7 @@ try:
 
         page.goto(BASE + f"/static/ltv/index.html?from=test&oled={OLED_MS}")
         check(wait(lambda: state()["players"] == 1 and js("ltv.screen") == "home"), "the page joins as the ltv player, Home")
-        check(wait(lambda: any(re.match(r"ltv 0\.8\.1 ", l) for l in journal())), "start line: ltv 0.8.1")
+        check(wait(lambda: any(re.match(r"ltv 0\.8\.2 ", l) for l in journal())), "start line: ltv 0.8.2")
         check(js("document.body.dataset.look") == "aurora", "default look: Aurora")
         check(js("ltv.settings.get('dimAfter')") == 0, "default: Dim the player when idle = Off (his choice)")
         js("ltv.lists.open('set-theme')")

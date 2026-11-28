@@ -114,7 +114,7 @@ export class SinkLink {
     if (at === null || state === null) return;
     if (!force && state !== "playing" && state === this.sentState) return;
     this.sentState = state;
-    this.sock.send({ type: "clock", item: this.e.item.id, position: Math.round(Math.max(0, this.v.currentTime) * 1000) / 1000,
+    this.sock.send({ type: "clock", item: this.e.item.id, position: Math.round(Math.max(0, this.e.position()) * 1000) / 1000,
                      at: Math.round(at * 1000) / 1000, state });
   }
 
